@@ -49,14 +49,27 @@ POINT g_LastMousePos = { 0, 0 };
 float g_CurrentPitch = 0.52359879f; // Default SC4 Zoom 1 pitch
 float g_CurrentYaw = -0.39269909f;  // Default SC4 yaw
 
+UINT_PTR g_IdleTimerID = 0;
+
 typedef bool(__thiscall* pfn_cSC4CameraControl_UpdateCameraPosition)(cSC4CameraControl* pThis, uint32_t updateMode);
 static pfn_cSC4CameraControl_UpdateCameraPosition UpdateCameraPosition = reinterpret_cast<pfn_cSC4CameraControl_UpdateCameraPosition>(0x7ccf80);
 
 void OverwriteMemoryFloat(uintptr_t address, float newValue) {
     DWORD oldProtect;
     if (VirtualProtect(reinterpret_cast<void*>(address), sizeof(float), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        float oldValue = *reinterpret_cast<float*>(address);
         *reinterpret_cast<float*>(address) = newValue;
         VirtualProtect(reinterpret_cast<void*>(address), sizeof(float), oldProtect, &oldProtect);
+        
+        if (oldValue != newValue) {
+            char hexAddr[32];
+            sprintf_s(hexAddr, sizeof(hexAddr), "0x%X", address);
+            Logger::GetInstance().WriteLine(LogLevel::Info, std::string("Memory Patch [") + hexAddr + "]: " + std::to_string(oldValue) + " -> " + std::to_string(newValue));
+        }
+    } else {
+        char hexAddr[32];
+        sprintf_s(hexAddr, sizeof(hexAddr), "0x%X", address);
+        Logger::GetInstance().WriteLine(LogLevel::Error, std::string("VirtualProtect FAILED at ") + hexAddr);
     }
 }
 
@@ -78,6 +91,38 @@ void UpdateCameraPitchYaw(float pitchDelta, float yawDelta) {
     for (int i = 0; i < 5; i++) {
         OverwriteMemoryFloat(yawAddress1 + i * 4, g_CurrentYaw);
         OverwriteMemoryFloat(yawAddress2 + i * 4, g_CurrentYaw);
+    }
+}
+
+void TriggerCityRedraw() {
+    Logger::GetInstance().WriteLine(LogLevel::Info, "Executing ForceFullRedraw()...");
+    cISC4AppPtr pSC4App;
+    if (pSC4App) {
+        cIGZWin* mainWindow = pSC4App->GetMainWindow();
+        if (mainWindow) {
+            cIGZWin* pParentWin = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+            if (pParentWin) {
+                cISC4View3DWin* pView3D = nullptr;
+                if (pParentWin->GetChildAs(kGZWin_SC4View3DWin, kGZIID_cISC4View3DWin, reinterpret_cast<void**>(&pView3D))) {
+                    cISC43DRender* renderer = pView3D->GetRenderer();
+                    if (renderer) {
+                        renderer->ForceFullRedraw();
+                        Logger::GetInstance().WriteLine(LogLevel::Info, "ForceFullRedraw() Success.");
+                    }
+                    pView3D->Release();
+                }
+            }
+        }
+    }
+}
+
+VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    Logger& log = Logger::GetInstance();
+    if (idEvent == g_IdleTimerID && g_IdleTimerID != 0) {
+        log.WriteLine(LogLevel::Info, "Camera Idle Timer Reached 0: Firing TriggerCityRedraw");
+        KillTimer(NULL, g_IdleTimerID);
+        g_IdleTimerID = 0;
+        TriggerCityRedraw();
     }
 }
 
@@ -107,25 +152,53 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
             Logger& log = Logger::GetInstance();
 
             switch (wParam) {
+                case WM_LBUTTONDOWN: {
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_LBUTTONDOWN (Left Mouse Down) at X:" + std::to_string(pMouse->pt.x) + " Y:" + std::to_string(pMouse->pt.y));
+                    break;
+                }
+                case WM_LBUTTONUP: {
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_LBUTTONUP (Left Mouse Up) at X:" + std::to_string(pMouse->pt.x) + " Y:" + std::to_string(pMouse->pt.y));
+                    break;
+                }
+                case WM_RBUTTONDOWN: {
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_RBUTTONDOWN (Right Mouse Down) at X:" + std::to_string(pMouse->pt.x) + " Y:" + std::to_string(pMouse->pt.y));
+                    break;
+                }
+                case WM_RBUTTONUP: {
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_RBUTTONUP (Right Mouse Up) at X:" + std::to_string(pMouse->pt.x) + " Y:" + std::to_string(pMouse->pt.y));
+                    break;
+                }
                 case WM_MBUTTONDOWN: {
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MBUTTONDOWN (Middle Mouse Down)");
                     g_IsMiddleMouseDown = true;
                     g_LastMousePos = pMouse->pt;
+                    if (g_IdleTimerID != 0) {
+                        log.WriteLine(LogLevel::Info, "Action Interrupted: Killing Idle Timer");
+                        KillTimer(NULL, g_IdleTimerID);
+                        g_IdleTimerID = 0;
+                    }
                     break;
                 }
                 case WM_MBUTTONUP: {
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MBUTTONUP (Middle Mouse Up)");
                     g_IsMiddleMouseDown = false;
+                    if (g_IdleTimerID != 0) {
+                        KillTimer(NULL, g_IdleTimerID);
+                    }
+                    log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
+                    g_IdleTimerID = SetTimer(NULL, 0, 1000, RedrawTimerProc);
                     break;
                 }
                 case WM_MOUSEMOVE: {
                     if (g_IsMiddleMouseDown) {
                         int deltaX = pMouse->pt.x - g_LastMousePos.x;
                         int deltaY = pMouse->pt.y - g_LastMousePos.y;
+                        
+                        log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MOUSEMOVE (Raw X:" + std::to_string(pMouse->pt.x) + " Y:" + std::to_string(pMouse->pt.y) + ") (DeltaX: " + std::to_string(deltaX) + " DeltaY: " + std::to_string(deltaY) + ")");
 
                         // Calculate rotation deltas (adjust multipliers for sensitivity)
                         float yawDelta = static_cast<float>(deltaX) * 0.005f;
                         float pitchDelta = static_cast<float>(deltaY) * 0.005f;
-
-                        UpdateCameraPitchYaw(pitchDelta, yawDelta);
 
                         // Trigger visual update properly using internal engine call
                         cISC4AppPtr pSC4App;
@@ -139,11 +212,17 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
                                         cISC43DRender* renderer = pView3D->GetRenderer();
                                         if (renderer) {
                                             cSC4CameraControl* pCamControl = renderer->GetCameraControl();
+                                            log.WriteLine(LogLevel::Info, "Renderer Acquired. Patching Memory...");
+                                            
+                                            // Execute brutal memory patch
+                                            UpdateCameraPitchYaw(pitchDelta, yawDelta);
+                                            
                                             if (pCamControl) {
-                                                // Sync the struct's internal state
-                                                pCamControl->yaw = g_CurrentYaw;
-                                                // Call the internal game engine function to safely update the matrices and view boundaries!
-                                                UpdateCameraPosition(pCamControl, 2); 
+                                                log.WriteLine(LogLevel::Info, "Calling Engine UpdateCameraPosition(pCamControl, 2)...");
+                                                bool updateResult = UpdateCameraPosition(pCamControl, 2); 
+                                                log.WriteLine(LogLevel::Info, "Engine UpdateCameraPosition Returned: " + std::to_string(updateResult));
+                                            } else {
+                                                log.WriteLine(LogLevel::Error, "Failed to get cSC4CameraControl from Renderer!");
                                             }
                                         }
                                         pView3D->Release();
@@ -158,11 +237,18 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 }
                 case WM_MOUSEWHEEL: {
                     short zDelta = HIWORD(pMouse->mouseData);
+                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
                     
                     // The "Reverse Arch Down to Street Level" logic
                     // When scrolling, we tie the Pitch to the scroll delta to simulate an arching dive
                     float pitchArchDelta = (zDelta > 0) ? -0.08f : 0.08f; 
                     UpdateCameraPitchYaw(pitchArchDelta, 0.0f);
+
+                    if (g_IdleTimerID != 0) {
+                        KillTimer(NULL, g_IdleTimerID);
+                    }
+                    log.WriteLine(LogLevel::Info, "Zoom Scrolled: Starting/Resetting 1500ms Idle Timer");
+                    g_IdleTimerID = SetTimer(NULL, 0, 1500, RedrawTimerProc);
 
                     cISC4AppPtr pSC4App;
                     if (pSC4App) {
@@ -176,7 +262,9 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
                                     if (renderer) {
                                         cSC4CameraControl* pCamControl = renderer->GetCameraControl();
                                         if (pCamControl) {
-                                            UpdateCameraPosition(pCamControl, 2);
+                                            log.WriteLine(LogLevel::Info, "Scroll Hook: Calling Engine UpdateCameraPosition(pCamControl, 2)...");
+                                            bool updateResult = UpdateCameraPosition(pCamControl, 2);
+                                            log.WriteLine(LogLevel::Info, "Scroll Hook: Engine Update Returned: " + std::to_string(updateResult));
                                         }
                                     }
                                     pView3D->Release();
@@ -205,29 +293,29 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
             
             DWORD vkCode = pKey->vkCode;
             
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                log.WriteLine(LogLevel::Info, "Keyboard Hook: Key Down [VK_CODE: " + std::to_string(vkCode) + "]");
+            } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                log.WriteLine(LogLevel::Info, "Keyboard Hook: Key Up [VK_CODE: " + std::to_string(vkCode) + "]");
+            }
+
             // Normalize left/right modifiers to their standard generic code so the array checks properly
             if (vkCode == VK_LSHIFT || vkCode == VK_RSHIFT) vkCode = VK_SHIFT;
             if (vkCode == VK_LCONTROL || vkCode == VK_RCONTROL) vkCode = VK_CONTROL;
             if (vkCode == VK_LMENU || vkCode == VK_RMENU) vkCode = VK_MENU;
 
-            if (vkCode == VK_MENU || vkCode == VK_SHIFT || vkCode == VK_CONTROL ||
-                vkCode == 'W' || vkCode == 'A' || vkCode == 'S' || vkCode == 'D' ||
-                vkCode == VK_UP || vkCode == VK_DOWN || vkCode == VK_LEFT || vkCode == VK_RIGHT) {
-                
-                std::string keyName = GetKeyName(vkCode);
-                
-                if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-                    if (!g_KeyState[vkCode]) {
-                        g_KeyState[vkCode] = true;
-                        log.WriteLine(LogLevel::Info, "Keyboard '" + keyName + "' Pressed");
-                    } else {
-                        // It's auto-repeating, log as Held (optional, might spam a bit but good for debugging holds)
-                        log.WriteLine(LogLevel::Info, "Keyboard '" + keyName + "' Held");
-                    }
-                } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-                    g_KeyState[vkCode] = false;
-                    log.WriteLine(LogLevel::Info, "Keyboard '" + keyName + "' Released");
+            std::string keyName = GetKeyName(vkCode);
+            
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                if (!g_KeyState[vkCode]) {
+                    g_KeyState[vkCode] = true;
+                    log.WriteLine(LogLevel::Info, "Keyboard State: '" + keyName + "' Pressed");
+                } else {
+                    log.WriteLine(LogLevel::Info, "Keyboard State: '" + keyName + "' Held");
                 }
+            } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                g_KeyState[vkCode] = false;
+                log.WriteLine(LogLevel::Info, "Keyboard State: '" + keyName + "' Released");
             }
         }
     }
