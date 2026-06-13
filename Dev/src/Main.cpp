@@ -5,6 +5,7 @@
 #include "cIGZMessageTarget2.h"
 #include "cIGZMessage2Standard.h"
 #include "GZServPtrs.h"
+#include "SC4VersionDetection.h"
 #include "cISC4App.h"
 #include "cIGZWin.h"
 #include "cISC4View3DWin.h"
@@ -349,6 +350,24 @@ public:
 		}
 		Logger::GetInstance().Initialize(logPath);
 		Logger::GetInstance().WriteLine(LogLevel::Info, "Plugin Loaded. Waiting for city to load...");
+
+        const uint16_t gameVersion = SC4VersionDetection::GetGameVersion();
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Detected SimCity 4 game version: " + std::to_string(gameVersion));
+
+        if (!SC4VersionDetection::IsDigitalDistributionVersion()) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Error,
+                "Unsupported SimCity 4 version. SC4-3DMouseCam requires version 641, the Steam/GOG digital distribution build. The plugin will not activate.");
+
+            MessageBoxA(
+                NULL,
+                "SC4-3DMouseCam requires SimCity 4 version 1.1.641, the Steam/GOG digital distribution build.\n\n"
+                "This plugin uses version-specific camera memory addresses and will not activate on this executable.",
+                "SC4-3DMouseCam: Unsupported Game Version",
+                MB_OK | MB_ICONEXCLAMATION);
+
+            return true;
+        }
 
         // Register to receive messages from the game
         cIGZMessageServer2Ptr pMsgServ;
