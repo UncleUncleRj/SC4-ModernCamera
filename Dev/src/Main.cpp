@@ -1,13 +1,16 @@
 #include <Windows.h>
-#include "cRZCOMDllDirector.h"
+#include <windowsx.h>
+#include "cRZMessage2COMDirector.h"
 #include "Logger.h"
 #include "cIGZMessageServer2.h"
-#include "cIGZMessageTarget2.h"
 #include "cIGZMessage2Standard.h"
 #include "GZServPtrs.h"
 #include "SC4VersionDetection.h"
 #include "cISC4App.h"
 #include "cIGZWin.h"
+#include "cIGZCanvasW32.h"
+#include "cIGZGraphicSystem.h"
+#include "cIGZWinProcFilterW32.h"
 #include "cISC4View3DWin.h"
 #include "cISC43DRender.h"
 #include "cS3DCamera.h"
@@ -39,11 +42,9 @@ static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr float kWheelPitchStep = 0.08f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
-static constexpr uint32_t kGZIID_cIGZMessageTarget2 = 0x090fa124;
 
 // Global State
 bool g_IsCityLoaded = false;
-HHOOK g_MouseHook = NULL;
 HHOOK g_KeyboardHook = NULL;
 bool g_KeyState[256] = { false };
 
@@ -57,6 +58,7 @@ static constexpr uintptr_t kYawAddress2 = 0xabacb8;
 // Cinematic Camera State
 bool g_IsMiddleMouseDown = false;
 POINT g_LastMousePos = { 0, 0 };
+HWND g_CapturedMouseWindow = NULL;
 float g_CurrentPitch = kDefaultPitch;
 float g_CurrentYaw = kDefaultYaw;
 
@@ -65,7 +67,6 @@ UINT_PTR g_IdleTimerID = 0;
 typedef bool(__thiscall* pfn_cSC4CameraControl_UpdateCameraPosition)(cSC4CameraControl* pThis, uint32_t updateMode);
 static pfn_cSC4CameraControl_UpdateCameraPosition UpdateCameraPosition = reinterpret_cast<pfn_cSC4CameraControl_UpdateCameraPosition>(0x7ccf80);
 
-LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 
@@ -212,11 +213,17 @@ void TriggerCityRedraw() {
     });
 }
 
+POINT MakePointFromLParam(LPARAM lParam)
+{
+    POINT point = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+    return point;
+}
+
 void LogMouseButtonEvent(const char* name, const POINT& point)
 {
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
-        std::string("Mouse Hook: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
+        std::string("Canvas WinProc Filter: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
 }
 
 void NormalizeModifierKey(DWORD& vkCode)
@@ -244,11 +251,6 @@ bool IsKeyUpMessage(WPARAM wParam)
 
 void UninstallHooks()
 {
-    if (g_MouseHook) {
-        UnhookWindowsHookEx(g_MouseHook);
-        g_MouseHook = NULL;
-    }
-
     if (g_KeyboardHook) {
         UnhookWindowsHookEx(g_KeyboardHook);
         g_KeyboardHook = NULL;
@@ -257,10 +259,6 @@ void UninstallHooks()
 
 void InstallHooks()
 {
-    if (!g_MouseHook) {
-        g_MouseHook = SetWindowsHookEx(WH_MOUSE_LL, MouseHookProc, GetModuleHandle(NULL), 0);
-    }
-
     if (!g_KeyboardHook) {
         g_KeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardHookProc, GetModuleHandle(NULL), 0);
     }
@@ -268,8 +266,13 @@ void InstallHooks()
 
 void ResetInputState()
 {
+    if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
+        ReleaseCapture();
+    }
+
     memset(g_KeyState, 0, sizeof(g_KeyState));
     g_IsMiddleMouseDown = false;
+    g_CapturedMouseWindow = NULL;
 }
 
 std::string GetDefaultLogPath()
@@ -349,85 +352,93 @@ std::string GetKeyName(DWORD vkCode) {
     }
 }
 
-LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode >= 0 && g_IsCityLoaded) {
-        if (IsCurrentProcessForeground()) {
-            MSLLHOOKSTRUCT* pMouse = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
-            Logger& log = Logger::GetInstance();
+LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
+{
+    if (!g_IsCityLoaded) {
+        return 0;
+    }
 
-            switch (wParam) {
-                case WM_LBUTTONDOWN: {
-                    LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", pMouse->pt);
-                    break;
-                }
-                case WM_LBUTTONUP: {
-                    LogMouseButtonEvent("WM_LBUTTONUP (Left Mouse Up)", pMouse->pt);
-                    break;
-                }
-                case WM_RBUTTONDOWN: {
-                    LogMouseButtonEvent("WM_RBUTTONDOWN (Right Mouse Down)", pMouse->pt);
-                    break;
-                }
-                case WM_RBUTTONUP: {
-                    LogMouseButtonEvent("WM_RBUTTONUP (Right Mouse Up)", pMouse->pt);
-                    break;
-                }
-                case WM_MBUTTONDOWN: {
-                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MBUTTONDOWN (Middle Mouse Down)");
-                    g_IsMiddleMouseDown = true;
-                    g_LastMousePos = pMouse->pt;
-                    if (g_IdleTimerID != 0) {
-                        log.WriteLine(LogLevel::Info, "Action Interrupted: Killing Idle Timer");
-                        KillIdleTimer();
-                    }
-                    break;
-                }
-                case WM_MBUTTONUP: {
-                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MBUTTONUP (Middle Mouse Up)");
-                    g_IsMiddleMouseDown = false;
-                    log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
-                    StartIdleTimer(kPanIdleRedrawDelayMs);
-                    break;
-                }
-                case WM_MOUSEMOVE: {
-                    if (g_IsMiddleMouseDown) {
-                        int deltaX = pMouse->pt.x - g_LastMousePos.x;
-                        int deltaY = pMouse->pt.y - g_LastMousePos.y;
-                        
-                        // Calculate rotation deltas (adjust multipliers for sensitivity)
-                        float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
-                        float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
+    Logger& log = Logger::GetInstance();
 
-                        UpdateCameraPitchYaw(pitchDelta, yawDelta);
-                        UpdateCameraPositionFromRenderer(log, true);
-
-                        g_LastMousePos = pMouse->pt;
-                    }
-                    break;
-                }
-                case WM_MOUSEWHEEL: {
-                    short zDelta = HIWORD(pMouse->mouseData);
-                    log.WriteLine(LogLevel::Info, "Mouse Hook: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
-                    LogCameraPositionFromRenderer(log, "Before wheel update");
-                    
-                    // The "Reverse Arch Down to Street Level" logic
-                    // When scrolling, we tie the Pitch to the scroll delta to simulate an arching dive
-                    float pitchArchDelta = (zDelta > 0) ? -kWheelPitchStep : kWheelPitchStep;
-                    UpdateCameraPitchYaw(pitchArchDelta, 0.0f);
-
-                    log.WriteLine(LogLevel::Info, "Zoom Scrolled: Starting/Resetting 1500ms Idle Timer");
-                    StartIdleTimer(kZoomIdleRedrawDelayMs);
-                    UpdateCameraPositionFromRenderer(log, false);
-                    LogCameraPositionFromRenderer(log, "After plugin wheel update");
-                    
-                    // We DO NOT return 1 here anymore. We WANT the game's internal DirectInput 
-                    // to execute the standard 5-step zoom while we alter the pitch to create the arch.
-                    break;
-                }
+    switch (uMsg) {
+        case WM_LBUTTONDOWN: {
+            LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", MakePointFromLParam(lParam));
+            break;
+        }
+        case WM_LBUTTONUP: {
+            LogMouseButtonEvent("WM_LBUTTONUP (Left Mouse Up)", MakePointFromLParam(lParam));
+            break;
+        }
+        case WM_RBUTTONDOWN: {
+            LogMouseButtonEvent("WM_RBUTTONDOWN (Right Mouse Down)", MakePointFromLParam(lParam));
+            break;
+        }
+        case WM_RBUTTONUP: {
+            LogMouseButtonEvent("WM_RBUTTONUP (Right Mouse Up)", MakePointFromLParam(lParam));
+            break;
+        }
+        case WM_MBUTTONDOWN: {
+            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+            g_IsMiddleMouseDown = true;
+            g_LastMousePos = MakePointFromLParam(lParam);
+            SetCapture(hWnd);
+            g_CapturedMouseWindow = hWnd;
+            if (g_IdleTimerID != 0) {
+                log.WriteLine(LogLevel::Info, "Action Interrupted: Killing Idle Timer");
+                KillIdleTimer();
             }
+            handled = true;
+            return 0;
+        }
+        case WM_MBUTTONUP: {
+            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
+            if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
+                ReleaseCapture();
+            }
+            g_IsMiddleMouseDown = false;
+            g_CapturedMouseWindow = NULL;
+            log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
+            StartIdleTimer(kPanIdleRedrawDelayMs);
+            handled = true;
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            if (g_IsMiddleMouseDown) {
+                POINT mousePos = MakePointFromLParam(lParam);
+                int deltaX = mousePos.x - g_LastMousePos.x;
+                int deltaY = mousePos.y - g_LastMousePos.y;
+
+                float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
+                float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
+
+                UpdateCameraPitchYaw(pitchDelta, yawDelta);
+                UpdateCameraPositionFromRenderer(log, true);
+
+                g_LastMousePos = mousePos;
+                handled = true;
+                return 0;
+            }
+            break;
+        }
+        case WM_MOUSEWHEEL: {
+            short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
+            LogCameraPositionFromRenderer(log, "Before wheel update");
+
+            float pitchArchDelta = (zDelta > 0) ? -kWheelPitchStep : kWheelPitchStep;
+            UpdateCameraPitchYaw(pitchArchDelta, 0.0f);
+
+            log.WriteLine(LogLevel::Info, "Zoom Scrolled: Starting/Resetting 1500ms Idle Timer");
+            StartIdleTimer(kZoomIdleRedrawDelayMs);
+            UpdateCameraPositionFromRenderer(log, false);
+            LogCameraPositionFromRenderer(log, "After plugin wheel update");
+
+            // Let SC4 continue processing the wheel so its standard zoom still runs.
+            break;
         }
     }
-    return CallNextHookEx(g_MouseHook, nCode, wParam, lParam);
+
+    return 0;
 }
 
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -462,26 +473,22 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
 }
 
-class cSC4MouseCamDirector : public cRZCOMDllDirector, public cIGZMessageTarget2
+class cSC4MouseCamDirector : public cRZMessage2COMDirector, public cIGZWinProcFilterW32
 {
 public:
 	cSC4MouseCamDirector()
+        : mpCanvasW32(nullptr)
 	{
 		AddRef();
 	}
 
     // Resolve COM multiple inheritance ambiguity
-    uint32_t AddRef() override { return cRZCOMDllDirector::AddRef(); }
-    uint32_t Release() override { return cRZCOMDllDirector::Release(); }
+    uint32_t AddRef() override { return cRZMessage2COMDirector::AddRef(); }
+    uint32_t Release() override { return cRZMessage2COMDirector::Release(); }
 
     bool QueryInterface(uint32_t riid, void** ppvObj) override
     {
-        if (riid == kGZIID_cIGZMessageTarget2) {
-            *ppvObj = static_cast<cIGZMessageTarget2*>(this);
-            AddRef();
-            return true;
-        }
-        return cRZCOMDllDirector::QueryInterface(riid, ppvObj);
+        return cRZMessage2COMDirector::QueryInterface(riid, ppvObj);
     }
 
 	uint32_t GetDirectorID() const override
@@ -510,20 +517,70 @@ public:
         uint32_t msgType = pMsg->GetType();
 
         if (msgType == kSC4MessagePostCityInit) {
-            Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating Hooks...");
+            Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating input handlers...");
             g_IsCityLoaded = true;
             ResetInputState();
+            RegisterCanvasWinProcFilter();
             InstallHooks();
         }
         else if (msgType == kSC4MessagePreCityShutdown) {
-            Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating Hooks...");
+            Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating input handlers...");
             g_IsCityLoaded = false;
             ResetInputState();
+            UnregisterCanvasWinProcFilter();
             UninstallHooks();
         }
 
         return true;
     }
+
+    LRESULT FilterMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled) override
+    {
+        return HandleCanvasMouseMessage(hWnd, uMsg, wParam, lParam, handled);
+    }
+
+private:
+    void RegisterCanvasWinProcFilter()
+    {
+        if (mpCanvasW32) {
+            return;
+        }
+
+        cIGZGraphicSystemPtr pGraphicSystem;
+        if (!pGraphicSystem) {
+            Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get cIGZGraphicSystem for canvas WinProc filter.");
+            return;
+        }
+
+        cIGZCanvasW32* canvasW32 = nullptr;
+        if (!pGraphicSystem->GetCanvas(GZIID_cIGZCanvasW32, reinterpret_cast<void**>(&canvasW32)) || !canvasW32) {
+            Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get cIGZCanvasW32 for canvas WinProc filter.");
+            return;
+        }
+
+        if (canvasW32->AddWinProcFilter(this, true)) {
+            mpCanvasW32 = canvasW32;
+            Logger::GetInstance().WriteLine(LogLevel::Info, "Registered canvas WinProc filter.");
+        }
+        else {
+            Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to register canvas WinProc filter.");
+            canvasW32->Release();
+        }
+    }
+
+    void UnregisterCanvasWinProcFilter()
+    {
+        if (!mpCanvasW32) {
+            return;
+        }
+
+        mpCanvasW32->AddWinProcFilter(this, false);
+        mpCanvasW32->Release();
+        mpCanvasW32 = nullptr;
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Unregistered canvas WinProc filter.");
+    }
+
+    cIGZCanvasW32* mpCanvasW32;
 };
 
 cRZCOMDllDirector* RZGetCOMDllDirector() {

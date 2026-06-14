@@ -22,19 +22,20 @@
 #pragma once
 #include "cIGZMessageTarget2.h"
 #include "cRZCOMDllDirector.h"
-#include "GZCLSIDDefs.h"
+
+static const uint32_t GZIID_cIGZMessageTarget2 = 0x090fa124;
 
 class cRZMessage2COMDirector : public cRZCOMDllDirector, public cIGZMessageTarget2
 {
 	public:
 		bool QueryInterface(uint32_t riid, void** ppvObj) {
-			if (riid == GZCLSID::kcIGZMessageTarget2) {
+			if (riid == GZIID_cIGZMessageTarget2) {
 				*ppvObj = static_cast<cIGZMessageTarget2*>(this);
 				AddRef();
 				return true;
 			}
 			else {
-				return cRZMessage2COMDirector::QueryInterface(riid, ppvObj);
+				return cRZCOMDllDirector::QueryInterface(riid, ppvObj);
 			}
 		}
 
