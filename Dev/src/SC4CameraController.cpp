@@ -217,16 +217,6 @@ SC4CameraController::SC4CameraController()
 {
 }
 
-float SC4CameraController::GetPitch() const
-{
-	return currentPitch;
-}
-
-float SC4CameraController::GetYaw() const
-{
-	return currentYaw;
-}
-
 void SC4CameraController::Reset()
 {
 	currentPitch = kDefaultPitch;
@@ -286,8 +276,10 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 	});
 }
 
-bool SC4CameraController::DollyByWheel(int32_t wheelDelta)
+bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 {
+	changed = false;
+
 	if (wheelDelta == 0) {
 		return false;
 	}
@@ -295,7 +287,7 @@ bool SC4CameraController::DollyByWheel(int32_t wheelDelta)
 	return WithRenderer([&](cISC43DRender* renderer) {
 		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
 		if (!cameraControl) {
-			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for dolly.");
+			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for zoom.");
 			return false;
 		}
 
@@ -320,8 +312,12 @@ bool SC4CameraController::DollyByWheel(int32_t wheelDelta)
 			--targetZoom;
 		}
 
+		if (targetZoom == oldZoom && targetMagnification == oldMagnification) {
+			return true;
+		}
+
 		if (targetZoom != oldZoom && !renderer->SetZoom(targetZoom)) {
-			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Dolly: renderer SetZoom failed.");
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Zoom: renderer SetZoom failed.");
 			return false;
 		}
 
@@ -329,21 +325,22 @@ bool SC4CameraController::DollyByWheel(int32_t wheelDelta)
 		auto setCustomMagnification = GetSetCustomMagnification();
 
 		if (!cameraControl || !setCustomMagnification) {
-			Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Dolly: custom magnification thunk unavailable.");
+			Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Zoom: custom magnification thunk unavailable.");
 			return false;
 		}
 
-		const bool result = setCustomMagnification(cameraControl, std::clamp(targetMagnification, 0.001f, 10.0f));
+		const bool result = setCustomMagnification(cameraControl, targetMagnification);
 
 		Logger::GetInstance().WriteLine(
 			LogLevel::Info,
-			"Camera Dolly: WheelDelta:" + std::to_string(wheelDelta)
+			"Camera Zoom: WheelDelta:" + std::to_string(wheelDelta)
 			+ " OldZoom:" + std::to_string(oldZoom)
 			+ " NewZoom:" + std::to_string(targetZoom)
 			+ " OldMagnification:" + std::to_string(oldMagnification)
 			+ " NewMagnification:" + std::to_string(targetMagnification)
 			+ " Result:" + std::to_string(result ? 1 : 0));
 
+		changed = result;
 		return result;
 	});
 }

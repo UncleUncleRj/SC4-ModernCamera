@@ -94,12 +94,10 @@ public:
 
 	SC4CameraController();
 
-	float GetPitch() const;
-	float GetYaw() const;
 	void Reset();
 
 	bool ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw);
-	bool DollyByWheel(int32_t wheelDelta);
+	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
 	bool ForceFullRedraw();
 	bool DumpCameraInfo(const char* reason) const;
 	bool ShowCameraDumpConfirmation() const;

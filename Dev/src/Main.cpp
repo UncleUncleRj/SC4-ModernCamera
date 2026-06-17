@@ -258,9 +258,12 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
             log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
 
-            if (g_CameraController.DollyByWheel(zDelta)) {
-                log.WriteLine(LogLevel::Info, "Camera Dolly: Starting/Resetting 1500ms Idle Timer");
-                StartIdleTimer(kZoomIdleRedrawDelayMs);
+            bool zoomChanged = false;
+            if (g_CameraController.ZoomByWheel(zDelta, zoomChanged)) {
+                if (zoomChanged) {
+                    log.WriteLine(LogLevel::Info, "Camera Zoom: Starting/Resetting 1500ms Idle Timer");
+                    StartIdleTimer(kZoomIdleRedrawDelayMs);
+                }
                 handled = true;
                 return 0;
             }
