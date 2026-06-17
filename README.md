@@ -25,7 +25,8 @@ Older disc/retail builds are not supported, and at this time support is not plan
 ## Current Controls
 
 - **Middle Mouse Button (M3) + drag**: Adjusts the camera angle.
-- **Mouse wheel**: WIP - A true smooth virtual dolly/zoom system is planned, but it is not complete in this alpha.
+- **Mouse wheel**: Experimental smooth magnification/zoom while preserving the current camera angle.
+- **F8**: Dumps the current camera and renderer state to `SC4-3DMouseCam.log` for debugging.
 
 
 ## Debug Logging

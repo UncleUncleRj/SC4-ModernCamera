@@ -17,9 +17,10 @@
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
 static constexpr float kMouseRotationSensitivity = 0.005f;
-static constexpr float kWheelPitchStep = 0.08f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
+static constexpr UINT kCameraDumpConfirmationDelayMs = 2500;
+static constexpr UINT kDumpCameraInfoKey = VK_F8;
 
 // Global State
 bool g_IsCityLoaded = false;
@@ -31,8 +32,10 @@ HWND g_CapturedMouseWindow = NULL;
 SC4CameraController g_CameraController;
 
 UINT_PTR g_IdleTimerID = 0;
+UINT_PTR g_CameraDumpConfirmationTimerID = 0;
 
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 
 void KillIdleTimer()
 {
@@ -46,6 +49,20 @@ void StartIdleTimer(UINT delayMs)
 {
     KillIdleTimer();
     g_IdleTimerID = SetTimer(NULL, 0, delayMs, RedrawTimerProc);
+}
+
+void KillCameraDumpConfirmationTimer()
+{
+    if (g_CameraDumpConfirmationTimerID != 0) {
+        KillTimer(NULL, g_CameraDumpConfirmationTimerID);
+        g_CameraDumpConfirmationTimerID = 0;
+    }
+}
+
+void StartCameraDumpConfirmationTimer()
+{
+    KillCameraDumpConfirmationTimer();
+    g_CameraDumpConfirmationTimerID = SetTimer(NULL, 0, kCameraDumpConfirmationDelayMs, ClearCameraDumpConfirmationTimerProc);
 }
 
 void TriggerCityRedraw() {
@@ -76,6 +93,8 @@ void LogMouseButtonEvent(const char* name, const POINT& point)
 void ResetInputState()
 {
     KillIdleTimer();
+    KillCameraDumpConfirmationTimer();
+    g_CameraController.ClearCameraDumpConfirmation();
 
     if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
         ReleaseCapture();
@@ -146,6 +165,13 @@ VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
     }
 }
 
+VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    if (idEvent == g_CameraDumpConfirmationTimerID && g_CameraDumpConfirmationTimerID != 0) {
+        KillCameraDumpConfirmationTimer();
+        g_CameraController.ClearCameraDumpConfirmation();
+    }
+}
+
 LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
     if (!g_IsCityLoaded) {
@@ -155,6 +181,21 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     Logger& log = Logger::GetInstance();
 
     switch (uMsg) {
+        case WM_KEYDOWN: {
+            const bool isRepeat = (lParam & (1 << 30)) != 0;
+
+            if (wParam == kDumpCameraInfoKey && !isRepeat) {
+                log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: F8 pressed, dumping camera info.");
+                g_CameraController.DumpCameraInfo("F8 hotkey");
+                if (g_CameraController.ShowCameraDumpConfirmation()) {
+                    StartCameraDumpConfirmationTimer();
+                }
+                handled = true;
+                return 0;
+            }
+
+            break;
+        }
         case WM_LBUTTONDOWN: {
             LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", MakePointFromLParam(lParam));
             break;
@@ -217,13 +258,13 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
             log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
 
-            float pitchArchDelta = (zDelta > 0) ? -kWheelPitchStep : kWheelPitchStep;
-            g_CameraController.ApplyDelta(pitchArchDelta, 0.0f, false);
+            if (g_CameraController.DollyByWheel(zDelta)) {
+                log.WriteLine(LogLevel::Info, "Camera Dolly: Starting/Resetting 1500ms Idle Timer");
+                StartIdleTimer(kZoomIdleRedrawDelayMs);
+                handled = true;
+                return 0;
+            }
 
-            log.WriteLine(LogLevel::Info, "Zoom Scrolled: Starting/Resetting 1500ms Idle Timer");
-            StartIdleTimer(kZoomIdleRedrawDelayMs);
-
-            // Let SC4 continue processing the wheel so its standard zoom still runs.
             break;
         }
     }

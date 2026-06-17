@@ -99,7 +99,11 @@ public:
 	void Reset();
 
 	bool ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw);
+	bool DollyByWheel(int32_t wheelDelta);
 	bool ForceFullRedraw();
+	bool DumpCameraInfo(const char* reason) const;
+	bool ShowCameraDumpConfirmation() const;
+	bool ClearCameraDumpConfirmation() const;
 
 private:
 	static SC4CameraControlLayout* GetActiveCameraControl();
