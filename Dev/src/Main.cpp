@@ -1,15 +1,15 @@
-#include <Windows.h>
-#include <windowsx.h>
-#include "cRZMessage2COMDirector.h"
-#include "Logger.h"
-#include "SC4CameraController.h"
-#include "cIGZMessageServer2.h"
-#include "cIGZMessage2Standard.h"
-#include "GZServPtrs.h"
-#include "SC4VersionDetection.h"
 #include "cIGZCanvasW32.h"
 #include "cIGZGraphicSystem.h"
+#include "cIGZMessage2Standard.h"
+#include "cIGZMessageServer2.h"
 #include "cIGZWinProcFilterW32.h"
+#include "cRZMessage2COMDirector.h"
+#include "GZServPtrs.h"
+#include "Logger.h"
+#include "SC4CameraController.h"
+#include "SC4VersionDetection.h"
+#include <Windows.h>
+#include <windowsx.h>
 
 #include <cstdlib>
 #include <string>
@@ -128,16 +128,7 @@ bool CheckGameVersion()
     if (!SC4VersionDetection::IsDigitalDistributionVersion()) {
         Logger::GetInstance().WriteLine(
             LogLevel::Error,
-            "Unsupported SimCity 4 version. SC4-3DMouseCam requires version 641, the Steam/GOG digital distribution build. The plugin will not activate.");
-
-        MessageBoxA(
-            NULL,
-            "SC4-3DMouseCam requires SimCity 4 version 1.1.641, the Steam/GOG digital distribution build.\n\n"
-            "This plugin uses version-specific camera memory addresses and will not activate on this executable.",
-            "SC4-3DMouseCam: Unsupported Game Version",
-            MB_OK | MB_ICONEXCLAMATION);
-
-        return false;
+            "Unsupported Game Version. This plugin currently only supports the Steam/GOG/EA digital distribution build.");
     }
 
     return true;
@@ -181,95 +172,95 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     Logger& log = Logger::GetInstance();
 
     switch (uMsg) {
-        case WM_KEYDOWN: {
-            const bool isRepeat = (lParam & (1 << 30)) != 0;
+    case WM_KEYDOWN: {
+        const bool isRepeat = (lParam & (1 << 30)) != 0;
 
-            if (wParam == kDumpCameraInfoKey && !isRepeat) {
-                log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: F8 pressed, dumping camera info.");
-                g_CameraController.DumpCameraInfo("F8 hotkey");
-                if (g_CameraController.ShowCameraDumpConfirmation()) {
-                    StartCameraDumpConfirmationTimer();
-                }
-                handled = true;
-                return 0;
-            }
-
-            break;
-        }
-        case WM_LBUTTONDOWN: {
-            LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", MakePointFromLParam(lParam));
-            break;
-        }
-        case WM_LBUTTONUP: {
-            LogMouseButtonEvent("WM_LBUTTONUP (Left Mouse Up)", MakePointFromLParam(lParam));
-            break;
-        }
-        case WM_RBUTTONDOWN: {
-            LogMouseButtonEvent("WM_RBUTTONDOWN (Right Mouse Down)", MakePointFromLParam(lParam));
-            break;
-        }
-        case WM_RBUTTONUP: {
-            LogMouseButtonEvent("WM_RBUTTONUP (Right Mouse Up)", MakePointFromLParam(lParam));
-            break;
-        }
-        case WM_MBUTTONDOWN: {
-            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
-            g_IsMiddleMouseDown = true;
-            g_LastMousePos = MakePointFromLParam(lParam);
-            SetCapture(hWnd);
-            g_CapturedMouseWindow = hWnd;
-            if (g_IdleTimerID != 0) {
-                log.WriteLine(LogLevel::Info, "Action Interrupted: Killing Idle Timer");
-                KillIdleTimer();
+        if (wParam == kDumpCameraInfoKey && !isRepeat) {
+            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: F8 pressed, dumping camera info.");
+            g_CameraController.DumpCameraInfo("F8 hotkey");
+            if (g_CameraController.ShowCameraDumpConfirmation()) {
+                StartCameraDumpConfirmationTimer();
             }
             handled = true;
             return 0;
         }
-        case WM_MBUTTONUP: {
-            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
-            if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
-                ReleaseCapture();
-            }
-            g_IsMiddleMouseDown = false;
-            g_CapturedMouseWindow = NULL;
-            log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
-            StartIdleTimer(kPanIdleRedrawDelayMs);
+
+        break;
+    }
+    case WM_LBUTTONDOWN: {
+        LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", MakePointFromLParam(lParam));
+        break;
+    }
+    case WM_LBUTTONUP: {
+        LogMouseButtonEvent("WM_LBUTTONUP (Left Mouse Up)", MakePointFromLParam(lParam));
+        break;
+    }
+    case WM_RBUTTONDOWN: {
+        LogMouseButtonEvent("WM_RBUTTONDOWN (Right Mouse Down)", MakePointFromLParam(lParam));
+        break;
+    }
+    case WM_RBUTTONUP: {
+        LogMouseButtonEvent("WM_RBUTTONUP (Right Mouse Up)", MakePointFromLParam(lParam));
+        break;
+    }
+    case WM_MBUTTONDOWN: {
+        log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+        g_IsMiddleMouseDown = true;
+        g_LastMousePos = MakePointFromLParam(lParam);
+        SetCapture(hWnd);
+        g_CapturedMouseWindow = hWnd;
+        if (g_IdleTimerID != 0) {
+            // log.WriteLine(LogLevel::Info, "Action Interrupted: Killing Idle Timer");
+            KillIdleTimer();
+        }
+        handled = true;
+        return 0;
+    }
+    case WM_MBUTTONUP: {
+        log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
+        if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
+            ReleaseCapture();
+        }
+        g_IsMiddleMouseDown = false;
+        g_CapturedMouseWindow = NULL;
+        log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
+        StartIdleTimer(kPanIdleRedrawDelayMs);
+        handled = true;
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        if (g_IsMiddleMouseDown) {
+            POINT mousePos = MakePointFromLParam(lParam);
+            int deltaX = mousePos.x - g_LastMousePos.x;
+            int deltaY = mousePos.y - g_LastMousePos.y;
+
+            float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
+            float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
+
+            g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
+
+            g_LastMousePos = mousePos;
             handled = true;
             return 0;
         }
-        case WM_MOUSEMOVE: {
-            if (g_IsMiddleMouseDown) {
-                POINT mousePos = MakePointFromLParam(lParam);
-                int deltaX = mousePos.x - g_LastMousePos.x;
-                int deltaY = mousePos.y - g_LastMousePos.y;
+        break;
+    }
+    case WM_MOUSEWHEEL: {
+        short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+        log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
 
-                float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
-                float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
-
-                g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
-
-                g_LastMousePos = mousePos;
-                handled = true;
-                return 0;
+        bool zoomChanged = false;
+        if (g_CameraController.ZoomByWheel(zDelta, zoomChanged)) {
+            if (zoomChanged) {
+                log.WriteLine(LogLevel::Info, "Camera Zoom: Starting/Resetting 1500ms Idle Timer");
+                StartIdleTimer(kZoomIdleRedrawDelayMs);
             }
-            break;
+            handled = true;
+            return 0;
         }
-        case WM_MOUSEWHEEL: {
-            short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
 
-            bool zoomChanged = false;
-            if (g_CameraController.ZoomByWheel(zDelta, zoomChanged)) {
-                if (zoomChanged) {
-                    log.WriteLine(LogLevel::Info, "Camera Zoom: Starting/Resetting 1500ms Idle Timer");
-                    StartIdleTimer(kZoomIdleRedrawDelayMs);
-                }
-                handled = true;
-                return 0;
-            }
-
-            break;
-        }
+        break;
+    }
     }
 
     return 0;
@@ -278,11 +269,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 class cSC4MouseCamDirector : public cRZMessage2COMDirector, public cIGZWinProcFilterW32
 {
 public:
-	cSC4MouseCamDirector()
+    cSC4MouseCamDirector()
         : mpCanvasW32(nullptr)
-	{
-		AddRef();
-	}
+    {
+        AddRef();
+    }
 
     // Resolve COM multiple inheritance ambiguity
     uint32_t AddRef() override { return cRZMessage2COMDirector::AddRef(); }
@@ -293,15 +284,15 @@ public:
         return cRZMessage2COMDirector::QueryInterface(riid, ppvObj);
     }
 
-	uint32_t GetDirectorID() const override
-	{
-		return 0x8C4B3A11;
-	}
+    uint32_t GetDirectorID() const override
+    {
+        return 0x8C4B3A11;
+    }
 
-	bool OnStart(cIGZCOM* pCOM) override
-	{
-		Logger::GetInstance().Initialize(GetDefaultLogPath());
-		Logger::GetInstance().WriteLine(LogLevel::Info, "Plugin Loaded. Waiting for city to load...");
+    bool OnStart(cIGZCOM* pCOM) override
+    {
+        Logger::GetInstance().Initialize(GetDefaultLogPath());
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Plugin Loaded. Waiting for city to load...");
 
         if (!CheckGameVersion()) {
             return true;
@@ -311,9 +302,9 @@ public:
             Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to subscribe to the required notifications.");
         }
 
-		return true;
-	}
-    
+        return true;
+    }
+
     bool DoMessage(cIGZMessage2* pMsg) override
     {
         uint32_t msgType = pMsg->GetType();
@@ -384,6 +375,6 @@ private:
 };
 
 cRZCOMDllDirector* RZGetCOMDllDirector() {
-	static cSC4MouseCamDirector sDirector;
-	return &sDirector;
+    static cSC4MouseCamDirector sDirector;
+    return &sDirector;
 }
