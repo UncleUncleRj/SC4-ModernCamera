@@ -3,7 +3,7 @@
 This document defines the intended camera behavior for GitHub issue
 [#4](https://github.com/UncleUncleRj/SC4-3DMouseCam/issues/4). It incorporates
 the original camera concept, play testing in SC4, and comparison testing with
-the numbered reference sequence in `useful/camera-road-shots`.
+other city-building camera systems.
 
 ## Core Principle
 
@@ -117,6 +117,14 @@ healthy and broken states before assigning unverified meanings to fields.
 - M3 horizontal drag changes yaw.
 - M3 vertical drag changes pitch.
 - M3 down freezes the current rotation pivot; M3 up releases it.
+- M3 captures the current orthographic scale. During rotation, custom
+  magnification counters SC4's square-to-diamond bounds-fit so the visible zoom
+  does not bounce merely to keep every map corner inside the viewport.
+- Native yaw uses a `[-70 degrees, +30 degrees]` hysteresis window. Building
+  side meshes were observed disappearing when an exact 90-degree window mapped
+  a healthy low-end orientation directly onto the opposite high-end boundary.
+  The wider window delays that handoff and maps it into the safer interior of
+  the adjacent bucket instead.
 - Gesture anchor capture/release and every zoom update are logged.
 - The experimental automatic pitch curve, vertical-M3 dolly zoom, and Shift
   free-look mode have been removed.
@@ -134,3 +142,12 @@ healthy and broken states before assigning unverified meanings to fields.
 - Camera movement does not unnecessarily remove buildings or introduce void
   artifacts.
 - No camera orientation can invert or enter an invalid singular state.
+
+## Stabilization Summary
+
+Runtime testing confirmed that SC4 expands its orthographic scale by roughly
+the square-to-diamond fit factor while rotating. Compensating that scale removed
+the prominent camera bounce at top-down, angled, and close views. A widened
+native-yaw hysteresis window also substantially reduced disappearing building
+sides at quarter-turn handoffs. Small rendering artifacts remain possible at
+non-native camera angles and are intentionally deferred for later refinement.

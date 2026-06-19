@@ -121,6 +121,7 @@ private:
 	float currentYaw;
 	bool anglesInitialized;
 	bool rotationGestureActive;
+	float rotationOrthoScale;
 	cS3DVector3 rotationViewTarget;
 	cS3DVector3 rotationBaseTarget;
 };

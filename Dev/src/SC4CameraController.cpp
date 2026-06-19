@@ -29,8 +29,13 @@ namespace
 	constexpr float kZoomRangeMagnificationMax = 2.0f;
 	constexpr size_t kZoomCount = 5;
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
-	constexpr float kMaxNativeYawOffset = 35.0f * SC4CameraController::kPi / 180.0f;
-	constexpr float kMinNativeYawOffset = kMaxNativeYawOffset - (SC4CameraController::kPi * 0.5f);
+	// Rebalance before SC4 enters the high-positive end of its native yaw
+	// bucket, where building side meshes begin to disappear. The window is
+	// deliberately wider than 90 degrees: this gives the quarter-turn handoff
+	// hysteresis and maps either direction into the safe interior of the next
+	// bucket instead of directly onto its opposite artifact boundary.
+	constexpr float kMaxNativeYawOffset = 30.0f * SC4CameraController::kPi / 180.0f;
+	constexpr float kMinNativeYawOffset = -70.0f * SC4CameraController::kPi / 180.0f;
 
 	constexpr uintptr_t kPitchAddress1 = 0x00ABCFD8;
 	constexpr uintptr_t kPitchAddress2 = 0x00ABACCC;
@@ -218,6 +223,7 @@ SC4CameraController::SC4CameraController()
 	  currentYaw(kDefaultYaw),
 	  anglesInitialized(false),
 	  rotationGestureActive(false),
+	  rotationOrthoScale(0.0f),
 	  rotationViewTarget{},
 	  rotationBaseTarget{}
 {
@@ -229,6 +235,7 @@ void SC4CameraController::Reset()
 	currentYaw = kDefaultYaw;
 	anglesInitialized = false;
 	rotationGestureActive = false;
+	rotationOrthoScale = 0.0f;
 	rotationViewTarget = {};
 	rotationBaseTarget = {};
 }
@@ -244,12 +251,14 @@ bool SC4CameraController::BeginRotationGesture()
 		SyncAngles(*cameraControl);
 		rotationViewTarget = cameraControl->viewTargetPosition;
 		rotationBaseTarget = cameraControl->baseTargetForRotation;
+		rotationOrthoScale = cameraControl->orthoScale;
 		rotationGestureActive = true;
 
 		Logger::GetInstance().WriteLine(
 			LogLevel::Info,
 			"Camera Rotation Anchor Frozen: ViewTarget[" + FormatVector(rotationViewTarget)
-			+ "] BaseTarget[" + FormatVector(rotationBaseTarget) + "]");
+			+ "] BaseTarget[" + FormatVector(rotationBaseTarget)
+			+ "] OrthoScale:" + std::to_string(rotationOrthoScale));
 		return true;
 	});
 }
@@ -261,6 +270,7 @@ void SC4CameraController::EndRotationGesture()
 	}
 
 	rotationGestureActive = false;
+	rotationOrthoScale = 0.0f;
 }
 
 bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw)
@@ -317,8 +327,40 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 
 		cameraControl->pitch = currentPitch;
 
-		const bool result = Refresh(*cameraControl);
+		bool result = Refresh(*cameraControl);
 		RestoreRotationAnchor(*cameraControl);
+
+		// SC4 expands orthoScale as a square city rotates toward a diamond so the
+		// corners remain inside the viewport. Counter that native bounds-fit with
+		// magnification, preserving the visual zoom captured when M3 was pressed.
+		if (result && rotationGestureActive && rotationOrthoScale > 0.0f
+			&& cameraControl->orthoScale > 0.0f && cameraControl->customMagnification > 0.0f) {
+			const float fitCorrection = cameraControl->orthoScale / rotationOrthoScale;
+
+			if (std::abs(fitCorrection - 1.0f) > 0.0005f) {
+				const float correctedMagnification = std::clamp(
+					cameraControl->customMagnification * fitCorrection,
+					0.001f,
+					10.0f);
+				auto setCustomMagnification = GetSetCustomMagnification();
+
+				if (setCustomMagnification && setCustomMagnification(cameraControl, correctedMagnification)) {
+					cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+					if (!cameraControl) {
+						return false;
+					}
+
+					ApplyPitchOverride(currentPitch);
+					ApplyYawOverride(currentYaw);
+					cameraControl->pitch = currentPitch;
+					cameraControl->yaw = currentYaw;
+					RestoreRotationAnchor(*cameraControl);
+					result = Refresh(*cameraControl);
+					RestoreRotationAnchor(*cameraControl);
+				}
+			}
+		}
+
 		return result;
 	});
 }
@@ -524,6 +566,8 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 			+ " NearClipToCameraTargetDistance:" + std::to_string(nearClipToCameraTargetRatio));
 		log.WriteLine(LogLevel::Info, "Camera Diagnostics YawBuckets: NearestQuarterTurnOffsetRadians:" + std::to_string(GetNearestQuarterTurnOffset(cameraControl->yaw))
 			+ " NearestQuarterTurnOffsetDegrees:" + std::to_string(RadToDeg(GetNearestQuarterTurnOffset(cameraControl->yaw)))
+			+ " ActiveWindowOffsetRadians:" + std::to_string(cameraControl->yaw - kNativeYawAnchor)
+			+ " ActiveWindowOffsetDegrees:" + std::to_string(RadToDeg(cameraControl->yaw - kNativeYawAnchor))
 			+ " NativeAnchorOffsetRadians:" + std::to_string(GetNativeYawAnchorOffset(cameraControl->yaw))
 			+ " NativeAnchorOffsetDegrees:" + std::to_string(RadToDeg(GetNativeYawAnchorOffset(cameraControl->yaw)))
 			+ " NativeWindowMinDegrees:" + std::to_string(RadToDeg(kMinNativeYawOffset))
