@@ -25,10 +25,17 @@ namespace
 	constexpr uint32_t kCameraDumpCursorTextId = 0x3D0C4D01;
 	constexpr uint32_t kCameraDumpCursorTextPriority = 1000;
 	constexpr float kMagnificationScalePerWheelNotch = 1.04f;
+	constexpr float kZoomRangeMagnificationMin = 0.5f;
+	constexpr float kZoomRangeMagnificationMax = 2.0f;
 	constexpr size_t kZoomCount = 5;
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
-	constexpr float kMaxNativeYawOffset = 35.0f * SC4CameraController::kPi / 180.0f;
-	constexpr float kMinNativeYawOffset = kMaxNativeYawOffset - (SC4CameraController::kPi * 0.5f);
+	// Rebalance before SC4 enters the high-positive end of its native yaw
+	// bucket, where building side meshes begin to disappear. The window is
+	// deliberately wider than 90 degrees: this gives the quarter-turn handoff
+	// hysteresis and maps either direction into the safe interior of the next
+	// bucket instead of directly onto its opposite artifact boundary.
+	constexpr float kMaxNativeYawOffset = 30.0f * SC4CameraController::kPi / 180.0f;
+	constexpr float kMinNativeYawOffset = -70.0f * SC4CameraController::kPi / 180.0f;
 
 	constexpr uintptr_t kPitchAddress1 = 0x00ABCFD8;
 	constexpr uintptr_t kPitchAddress2 = 0x00ABACCC;
@@ -213,7 +220,12 @@ namespace
 
 SC4CameraController::SC4CameraController()
 	: currentPitch(kDefaultPitch),
-	  currentYaw(kDefaultYaw)
+	  currentYaw(kDefaultYaw),
+	  anglesInitialized(false),
+	  rotationGestureActive(false),
+	  rotationOrthoScale(0.0f),
+	  rotationViewTarget{},
+	  rotationBaseTarget{}
 {
 }
 
@@ -221,6 +233,44 @@ void SC4CameraController::Reset()
 {
 	currentPitch = kDefaultPitch;
 	currentYaw = kDefaultYaw;
+	anglesInitialized = false;
+	rotationGestureActive = false;
+	rotationOrthoScale = 0.0f;
+	rotationViewTarget = {};
+	rotationBaseTarget = {};
+}
+
+bool SC4CameraController::BeginRotationGesture()
+{
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			return false;
+		}
+
+		SyncAngles(*cameraControl);
+		rotationViewTarget = cameraControl->viewTargetPosition;
+		rotationBaseTarget = cameraControl->baseTargetForRotation;
+		rotationOrthoScale = cameraControl->orthoScale;
+		rotationGestureActive = true;
+
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			"Camera Rotation Anchor Frozen: ViewTarget[" + FormatVector(rotationViewTarget)
+			+ "] BaseTarget[" + FormatVector(rotationBaseTarget)
+			+ "] OrthoScale:" + std::to_string(rotationOrthoScale));
+		return true;
+	});
+}
+
+void SC4CameraController::EndRotationGesture()
+{
+	if (rotationGestureActive) {
+		Logger::GetInstance().WriteLine(LogLevel::Info, "Camera Rotation Anchor Released.");
+	}
+
+	rotationGestureActive = false;
+	rotationOrthoScale = 0.0f;
 }
 
 bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw)
@@ -231,6 +281,9 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control from renderer.");
 			return false;
 		}
+
+		SyncAngles(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
 
 		currentPitch = SanitizePitch(currentPitch + pitchDelta);
 		currentYaw = SanitizeYaw(currentYaw + yawDelta);
@@ -260,6 +313,8 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 					Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Rotation Rebalance: camera control unavailable after SetRotation.");
 					return false;
 				}
+
+				RestoreRotationAnchor(*cameraControl);
 			}
 		}
 
@@ -272,17 +327,57 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 
 		cameraControl->pitch = currentPitch;
 
-		return Refresh(*cameraControl);
+		bool result = Refresh(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
+
+		// SC4 expands orthoScale as a square city rotates toward a diamond so the
+		// corners remain inside the viewport. Counter that native bounds-fit with
+		// magnification, preserving the visual zoom captured when M3 was pressed.
+		if (result && rotationGestureActive && rotationOrthoScale > 0.0f
+			&& cameraControl->orthoScale > 0.0f && cameraControl->customMagnification > 0.0f) {
+			const float fitCorrection = cameraControl->orthoScale / rotationOrthoScale;
+
+			if (std::abs(fitCorrection - 1.0f) > 0.0005f) {
+				const float correctedMagnification = std::clamp(
+					cameraControl->customMagnification * fitCorrection,
+					0.001f,
+					10.0f);
+				auto setCustomMagnification = GetSetCustomMagnification();
+
+				if (setCustomMagnification && setCustomMagnification(cameraControl, correctedMagnification)) {
+					cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+					if (!cameraControl) {
+						return false;
+					}
+
+					ApplyPitchOverride(currentPitch);
+					ApplyYawOverride(currentYaw);
+					cameraControl->pitch = currentPitch;
+					cameraControl->yaw = currentYaw;
+					RestoreRotationAnchor(*cameraControl);
+					result = Refresh(*cameraControl);
+					RestoreRotationAnchor(*cameraControl);
+				}
+			}
+		}
+
+		return result;
 	});
 }
 
 bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 {
-	changed = false;
-
 	if (wheelDelta == 0) {
+		changed = false;
 		return false;
 	}
+
+	return ZoomByNotches(static_cast<float>(wheelDelta) / 120.0f, changed);
+}
+
+bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
+{
+	changed = false;
 
 	return WithRenderer([&](cISC43DRender* renderer) {
 		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
@@ -291,14 +386,18 @@ bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 			return false;
 		}
 
+		SyncAngles(*cameraControl);
+
 		float targetMagnification = cameraControl->customMagnification
-			* std::pow(kMagnificationScalePerWheelNotch, static_cast<float>(wheelDelta) / 120.0f);
+			* std::pow(kMagnificationScalePerWheelNotch, wheelNotches);
 		int32_t targetZoom = cameraControl->zoom;
 
 		const float oldMagnification = cameraControl->customMagnification;
 		const int32_t oldZoom = cameraControl->zoom;
 		const int32_t minZoom = static_cast<int32_t>(std::floor(cameraControl->minZoom));
 		const int32_t maxZoom = static_cast<int32_t>(std::floor(cameraControl->maxZoomLevelWithoutCustom));
+		const float minContinuousZoom = static_cast<float>(minZoom) + std::log2(kZoomRangeMagnificationMin);
+		const float maxContinuousZoom = static_cast<float>(maxZoom) + std::log2(kZoomRangeMagnificationMax);
 
 		targetMagnification = std::clamp(targetMagnification, 0.001f, 10.0f);
 
@@ -311,6 +410,12 @@ bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 			targetMagnification *= 2.0f;
 			--targetZoom;
 		}
+
+		float targetContinuousZoom = static_cast<float>(targetZoom) + std::log2((std::max)(targetMagnification, 0.001f));
+		targetContinuousZoom = std::clamp(targetContinuousZoom, minContinuousZoom, maxContinuousZoom);
+
+		targetZoom = std::clamp(static_cast<int32_t>(std::lround(targetContinuousZoom)), minZoom, maxZoom);
+		targetMagnification = std::pow(2.0f, targetContinuousZoom - static_cast<float>(targetZoom));
 
 		if (targetZoom == oldZoom && targetMagnification == oldMagnification) {
 			return true;
@@ -329,15 +434,35 @@ bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 			return false;
 		}
 
-		const bool result = setCustomMagnification(cameraControl, targetMagnification);
+		const bool magnificationResult = setCustomMagnification(cameraControl, targetMagnification);
+		if (!magnificationResult) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Zoom: setting custom magnification failed.");
+			return false;
+		}
+
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			return false;
+		}
+
+		// Zoom never owns orientation. Reapply the player's current pitch and yaw
+		// after SC4 changes native zoom stages, which may otherwise reload its
+		// per-stage angle tables.
+		ApplyPitchOverride(currentPitch);
+		ApplyYawOverride(currentYaw);
+		cameraControl->pitch = currentPitch;
+		cameraControl->yaw = currentYaw;
+		const bool result = Refresh(*cameraControl);
 
 		Logger::GetInstance().WriteLine(
 			LogLevel::Info,
-			"Camera Zoom: WheelDelta:" + std::to_string(wheelDelta)
+			"Camera Zoom: Notches:" + std::to_string(wheelNotches)
 			+ " OldZoom:" + std::to_string(oldZoom)
 			+ " NewZoom:" + std::to_string(targetZoom)
 			+ " OldMagnification:" + std::to_string(oldMagnification)
 			+ " NewMagnification:" + std::to_string(targetMagnification)
+			+ " Pitch:" + std::to_string(currentPitch)
+			+ " Yaw:" + std::to_string(currentYaw)
 			+ " Result:" + std::to_string(result ? 1 : 0));
 
 		changed = result;
@@ -441,6 +566,8 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 			+ " NearClipToCameraTargetDistance:" + std::to_string(nearClipToCameraTargetRatio));
 		log.WriteLine(LogLevel::Info, "Camera Diagnostics YawBuckets: NearestQuarterTurnOffsetRadians:" + std::to_string(GetNearestQuarterTurnOffset(cameraControl->yaw))
 			+ " NearestQuarterTurnOffsetDegrees:" + std::to_string(RadToDeg(GetNearestQuarterTurnOffset(cameraControl->yaw)))
+			+ " ActiveWindowOffsetRadians:" + std::to_string(cameraControl->yaw - kNativeYawAnchor)
+			+ " ActiveWindowOffsetDegrees:" + std::to_string(RadToDeg(cameraControl->yaw - kNativeYawAnchor))
 			+ " NativeAnchorOffsetRadians:" + std::to_string(GetNativeYawAnchorOffset(cameraControl->yaw))
 			+ " NativeAnchorOffsetDegrees:" + std::to_string(RadToDeg(GetNativeYawAnchorOffset(cameraControl->yaw)))
 			+ " NativeWindowMinDegrees:" + std::to_string(RadToDeg(kMinNativeYawOffset))
@@ -579,6 +706,28 @@ float SC4CameraController::SanitizeYaw(float yaw)
 	}
 
 	return normalizedYaw;
+}
+
+void SC4CameraController::SyncAngles(const SC4CameraControlLayout& cameraControl)
+{
+	if (anglesInitialized) {
+		return;
+	}
+
+	currentPitch = SanitizePitch(cameraControl.pitch);
+	currentYaw = SanitizeYaw(cameraControl.yaw);
+	anglesInitialized = true;
+}
+
+void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraControl) const
+{
+	if (!rotationGestureActive) {
+		return;
+	}
+
+	cameraControl.viewTargetPosition = rotationViewTarget;
+	cameraControl.baseTargetForRotation = rotationBaseTarget;
+	cameraControl.viewTargetVelocity = {};
 }
 
 void SC4CameraController::ApplyPitchOverride(float pitch)

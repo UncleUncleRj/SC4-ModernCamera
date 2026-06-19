@@ -207,6 +207,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
         g_IsMiddleMouseDown = true;
         g_LastMousePos = MakePointFromLParam(lParam);
+		g_CameraController.BeginRotationGesture();
         SetCapture(hWnd);
         g_CapturedMouseWindow = hWnd;
         if (g_IdleTimerID != 0) {
@@ -222,6 +223,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             ReleaseCapture();
         }
         g_IsMiddleMouseDown = false;
+		g_CameraController.EndRotationGesture();
         g_CapturedMouseWindow = NULL;
         log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
         StartIdleTimer(kPanIdleRedrawDelayMs);
@@ -234,10 +236,10 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             int deltaX = mousePos.x - g_LastMousePos.x;
             int deltaY = mousePos.y - g_LastMousePos.y;
 
-            float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
-            float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
+			float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
+			const float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
 
-            g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
+			g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
 
             g_LastMousePos = mousePos;
             handled = true;

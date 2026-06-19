@@ -95,6 +95,8 @@ public:
 	SC4CameraController();
 
 	void Reset();
+	bool BeginRotationGesture();
+	void EndRotationGesture();
 
 	bool ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw);
 	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
@@ -111,7 +113,15 @@ private:
 	static void ApplyPitchOverride(float pitch);
 	static void ApplyYawOverride(float yaw);
 	static void OverwriteMemoryFloat(uintptr_t address, float value);
+	bool ZoomByNotches(float wheelNotches, bool& changed);
+	void SyncAngles(const SC4CameraControlLayout& cameraControl);
+	void RestoreRotationAnchor(SC4CameraControlLayout& cameraControl) const;
 
 	float currentPitch;
 	float currentYaw;
+	bool anglesInitialized;
+	bool rotationGestureActive;
+	float rotationOrthoScale;
+	cS3DVector3 rotationViewTarget;
+	cS3DVector3 rotationBaseTarget;
 };
