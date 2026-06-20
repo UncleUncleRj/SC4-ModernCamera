@@ -16,14 +16,17 @@
 
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
+static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500;
+static constexpr UINT kNativeCameraBaselineDelayMs = 1000;
 static constexpr UINT kDumpCameraInfoKey = VK_F8;
 
 // Global State
 bool g_IsCityLoaded = false;
+bool g_IsModernCamEnabled = true;
 
 // Cinematic Camera State
 bool g_IsMiddleMouseDown = false;
@@ -33,9 +36,11 @@ SC4CameraController g_CameraController;
 
 UINT_PTR g_IdleTimerID = 0;
 UINT_PTR g_CameraDumpConfirmationTimerID = 0;
+UINT_PTR g_NativeCameraBaselineTimerID = 0;
 
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 
 void KillIdleTimer()
 {
@@ -65,8 +70,30 @@ void StartCameraDumpConfirmationTimer()
     g_CameraDumpConfirmationTimerID = SetTimer(NULL, 0, kCameraDumpConfirmationDelayMs, ClearCameraDumpConfirmationTimerProc);
 }
 
+void KillNativeCameraBaselineTimer()
+{
+    if (g_NativeCameraBaselineTimerID != 0) {
+        KillTimer(NULL, g_NativeCameraBaselineTimerID);
+        g_NativeCameraBaselineTimerID = 0;
+    }
+}
+
+void StartNativeCameraBaselineTimer()
+{
+    KillNativeCameraBaselineTimer();
+    g_NativeCameraBaselineTimerID = SetTimer(NULL, 0, kNativeCameraBaselineDelayMs, NativeCameraBaselineTimerProc);
+    if (g_NativeCameraBaselineTimerID == 0) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start native camera baseline timer.");
+    }
+}
+
 void TriggerCityRedraw() {
     Logger& log = Logger::GetInstance();
+
+    if (!g_IsModernCamEnabled) {
+        return;
+    }
+
     log.WriteLine(LogLevel::Info, "Executing ForceFullRedraw()...");
 
     if (g_CameraController.ForceFullRedraw()) {
@@ -94,6 +121,7 @@ void ResetInputState()
 {
     KillIdleTimer();
     KillCameraDumpConfirmationTimer();
+    KillNativeCameraBaselineTimer();
     g_CameraController.ClearCameraDumpConfirmation();
 
     if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
@@ -140,8 +168,9 @@ bool RegisterNotifications(cIGZMessageTarget2* target)
     if (pMsgServ) {
         const bool addedPostCityInit = pMsgServ->AddNotification(target, kSC4MessagePostCityInit);
         const bool addedPreCityShutdown = pMsgServ->AddNotification(target, kSC4MessagePreCityShutdown);
+        const bool addedPreSave = pMsgServ->AddNotification(target, kSC4MessagePreSave);
 
-        return addedPostCityInit && addedPreCityShutdown;
+        return addedPostCityInit && addedPreCityShutdown && addedPreSave;
     }
 
     return false;
@@ -163,6 +192,15 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
     }
 }
 
+VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    if (idEvent == g_NativeCameraBaselineTimerID && g_NativeCameraBaselineTimerID != 0) {
+        KillNativeCameraBaselineTimer();
+        if (g_IsCityLoaded) {
+            g_CameraController.DumpCameraInfo("post-city-init native baseline (1000ms delayed)");
+        }
+    }
+}
+
 LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
     if (!g_IsCityLoaded) {
@@ -170,6 +208,15 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     }
 
     Logger& log = Logger::GetInstance();
+
+    const bool resumesCameraInteraction = uMsg == WM_LBUTTONDOWN
+        || uMsg == WM_RBUTTONDOWN
+        || uMsg == WM_MBUTTONDOWN
+        || uMsg == WM_MOUSEWHEEL
+        || uMsg == WM_KEYDOWN;
+    if (resumesCameraInteraction && g_CameraController.IsSavePreviewNormalizationActive()) {
+        g_CameraController.EndSavePreviewNormalization();
+    }
 
     switch (uMsg) {
     case WM_KEYDOWN: {
@@ -204,7 +251,14 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_MBUTTONDOWN: {
+        if (!g_IsModernCamEnabled) {
+            break;
+        }
+
         log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+        if (!g_CameraController.HasNativeCameraState()) {
+            g_CameraController.DumpCameraInfo("immediately before first custom rotation");
+        }
         g_IsMiddleMouseDown = true;
         g_LastMousePos = MakePointFromLParam(lParam);
 		g_CameraController.BeginRotationGesture();
@@ -218,6 +272,10 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MBUTTONUP: {
+        if (!g_IsModernCamEnabled) {
+            break;
+        }
+
         log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
         if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
             ReleaseCapture();
@@ -231,7 +289,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MOUSEMOVE: {
-        if (g_IsMiddleMouseDown) {
+        if (g_IsModernCamEnabled && g_IsMiddleMouseDown) {
             POINT mousePos = MakePointFromLParam(lParam);
             int deltaX = mousePos.x - g_LastMousePos.x;
             int deltaY = mousePos.y - g_LastMousePos.y;
@@ -248,8 +306,16 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_MOUSEWHEEL: {
+        if (!g_IsModernCamEnabled) {
+            break;
+        }
+
         short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
         log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
+
+        if (!g_CameraController.HasNativeCameraState()) {
+            g_CameraController.DumpCameraInfo("immediately before first custom zoom");
+        }
 
         bool zoomChanged = false;
         if (g_CameraController.ZoomByWheel(zDelta, zoomChanged)) {
@@ -295,6 +361,10 @@ public:
     {
         Logger::GetInstance().Initialize(GetDefaultLogPath());
         Logger::GetInstance().WriteLine(LogLevel::Info, "Plugin Loaded. Waiting for city to load...");
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string("Modern Camera Enabled: ") + (g_IsModernCamEnabled ? "true" : "false")
+            + (g_IsModernCamEnabled ? "" : " (passive diagnostics mode)"));
 
         if (!CheckGameVersion()) {
             return true;
@@ -316,9 +386,20 @@ public:
             g_IsCityLoaded = true;
             ResetInputState();
             RegisterCanvasWinProcFilter();
+            StartNativeCameraBaselineTimer();
+        }
+        else if (msgType == kSC4MessagePreSave) {
+            Logger::GetInstance().WriteLine(LogLevel::Info, "Pre-save notification received.");
+            if (g_IsModernCamEnabled && g_IsCityLoaded
+                && !g_CameraController.BeginSavePreviewNormalization()
+                && !g_CameraController.IsSavePreviewNormalizationActive()) {
+                Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: failed to normalize camera at pre-save.");
+            }
         }
         else if (msgType == kSC4MessagePreCityShutdown) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating input handlers...");
+            g_CameraController.DumpCameraInfo("pre-city-shutdown");
+            g_CameraController.AbandonSavePreviewNormalization();
             g_IsCityLoaded = false;
             ResetInputState();
             UnregisterCanvasWinProcFilter();

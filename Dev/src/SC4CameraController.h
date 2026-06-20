@@ -83,6 +83,31 @@ static_assert(offsetof(SC4CameraControlLayout, yaw) == 0x118);
 static_assert(offsetof(SC4CameraControlLayout, pitch) == 0x11C);
 static_assert(sizeof(SC4CameraControlLayout) == 0x160);
 
+// The native camera values observed before this plugin applies any free-camera
+// rotation or continuous zoom changes. Pointer-owned and transient fields from
+// SC4CameraControlLayout are deliberately excluded.
+struct SC4NativeCameraState
+{
+	cS3DVector3 cameraPosition;
+	cS3DVector3 viewTargetPosition;
+	cS3DVector3 baseTargetForRotation;
+	cS3DVector3 cameraOffset;
+	float customMagnification;
+	int32_t prevZoom;
+	int32_t prevRotation;
+	int32_t zoom;
+	int32_t rotation;
+	int32_t postZoom;
+	int32_t postRotation;
+	float yaw;
+	float pitch;
+	float cameraDistance;
+	float nearClip;
+	float farClip;
+	float orthoScale;
+	float invOrthoScale;
+};
+
 class SC4CameraController
 {
 public:
@@ -104,8 +129,15 @@ public:
 	bool DumpCameraInfo(const char* reason) const;
 	bool ShowCameraDumpConfirmation() const;
 	bool ClearCameraDumpConfirmation() const;
+	bool HasNativeCameraState() const;
+	const SC4NativeCameraState& GetNativeCameraState() const;
+	bool BeginSavePreviewNormalization();
+	void EndSavePreviewNormalization();
+	void AbandonSavePreviewNormalization();
+	bool IsSavePreviewNormalizationActive() const;
 
 private:
+	bool EnsureNativeCameraStateCaptured(const SC4CameraControlLayout& cameraControl);
 	static SC4CameraControlLayout* GetActiveCameraControl();
 	static bool Refresh(SC4CameraControlLayout& cameraControl);
 	static float SanitizePitch(float pitch);
@@ -124,4 +156,14 @@ private:
 	float rotationOrthoScale;
 	cS3DVector3 rotationViewTarget;
 	cS3DVector3 rotationBaseTarget;
+	bool nativeCameraStateCaptured;
+	SC4NativeCameraState nativeCameraState;
+	bool savePreviewNormalizationActive;
+	float savedPitchTables[2][5];
+	float savedYawInstruction;
+	float savedYawTables[2][5];
+	float savedPreviewPitch;
+	float savedPreviewYaw;
+	cS3DVector3 savedPreviewViewTarget;
+	cS3DVector3 savedPreviewBaseTarget;
 };

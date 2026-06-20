@@ -28,6 +28,13 @@ namespace
 	constexpr float kZoomRangeMagnificationMin = 0.5f;
 	constexpr float kZoomRangeMagnificationMax = 2.0f;
 	constexpr size_t kZoomCount = 5;
+	constexpr float kNativePitchByZoom[kZoomCount] = {
+		0.52359879f,
+		0.61086524f,
+		0.69813170f,
+		0.78539816f,
+		0.78539816f,
+	};
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
 	// Rebalance before SC4 enters the high-positive end of its native yaw
 	// bucket, where building side meshes begin to disappear. The window is
@@ -172,6 +179,28 @@ namespace
 		return stream.str();
 	}
 
+	const char* ClassifyCityTileSize(float sizeX, float sizeZ)
+	{
+		const float size = (std::max)(sizeX, sizeZ);
+		const auto approximately = [size](float expected) {
+			return std::fabs(size - expected) < 0.5f;
+		};
+
+		// Different camera implementations have reported these dimensions in
+		// terrain cells (64/128/256) or world units (1024/2048/4096).
+		if (approximately(64.0f) || approximately(1024.0f)) {
+			return "Small";
+		}
+		if (approximately(128.0f) || approximately(2048.0f)) {
+			return "Medium";
+		}
+		if (approximately(256.0f) || approximately(4096.0f)) {
+			return "Large";
+		}
+
+		return "Unknown";
+	}
+
 	std::string FormatVector(const cS3DVector3& value)
 	{
 		return "X:" + std::to_string(value.fX)
@@ -225,7 +254,17 @@ SC4CameraController::SC4CameraController()
 	  rotationGestureActive(false),
 	  rotationOrthoScale(0.0f),
 	  rotationViewTarget{},
-	  rotationBaseTarget{}
+	  rotationBaseTarget{},
+	  nativeCameraStateCaptured(false),
+	  nativeCameraState{},
+	  savePreviewNormalizationActive(false),
+	  savedPitchTables{},
+	  savedYawInstruction(kDefaultYaw),
+	  savedYawTables{},
+	  savedPreviewPitch(kDefaultPitch),
+	  savedPreviewYaw(kDefaultYaw),
+	  savedPreviewViewTarget{},
+	  savedPreviewBaseTarget{}
 {
 }
 
@@ -238,6 +277,180 @@ void SC4CameraController::Reset()
 	rotationOrthoScale = 0.0f;
 	rotationViewTarget = {};
 	rotationBaseTarget = {};
+	nativeCameraStateCaptured = false;
+	nativeCameraState = {};
+}
+
+bool SC4CameraController::HasNativeCameraState() const
+{
+	return nativeCameraStateCaptured;
+}
+
+const SC4NativeCameraState& SC4CameraController::GetNativeCameraState() const
+{
+	return nativeCameraState;
+}
+
+bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControlLayout& cameraControl)
+{
+	if (nativeCameraStateCaptured) {
+		return true;
+	}
+
+	nativeCameraState = {
+		cameraControl.cameraPosition,
+		cameraControl.viewTargetPosition,
+		cameraControl.baseTargetForRotation,
+		cameraControl.cameraOffset,
+		cameraControl.customMagnification,
+		cameraControl.prevZoom,
+		cameraControl.prevRotation,
+		cameraControl.zoom,
+		cameraControl.rotation,
+		cameraControl.postZoom,
+		cameraControl.postRotation,
+		cameraControl.yaw,
+		cameraControl.pitch,
+		cameraControl.cameraDistance,
+		cameraControl.nearClip,
+		cameraControl.farClip,
+		cameraControl.orthoScale,
+		cameraControl.invOrthoScale,
+	};
+	nativeCameraStateCaptured = true;
+
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		"Native Camera State Captured: Position[" + FormatVector(nativeCameraState.cameraPosition)
+		+ "] ViewTarget[" + FormatVector(nativeCameraState.viewTargetPosition)
+		+ "] Zoom:" + std::to_string(nativeCameraState.zoom)
+		+ " Rotation:" + std::to_string(nativeCameraState.rotation)
+		+ " Magnification:" + std::to_string(nativeCameraState.customMagnification)
+		+ " Pitch:" + std::to_string(nativeCameraState.pitch)
+		+ " Yaw:" + std::to_string(nativeCameraState.yaw));
+
+	return true;
+}
+
+bool SC4CameraController::BeginSavePreviewNormalization()
+{
+	if (savePreviewNormalizationActive) {
+		return false;
+	}
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: camera control unavailable.");
+			return false;
+		}
+
+		for (size_t i = 0; i < kZoomCount; ++i) {
+			savedPitchTables[0][i] = ReadMemoryFloat(kPitchAddress1 + (i * sizeof(float)));
+			savedPitchTables[1][i] = ReadMemoryFloat(kPitchAddress2 + (i * sizeof(float)));
+			savedYawTables[0][i] = ReadMemoryFloat(kYawAddress1 + (i * sizeof(float)));
+			savedYawTables[1][i] = ReadMemoryFloat(kYawAddress2 + (i * sizeof(float)));
+		}
+		savedYawInstruction = ReadMemoryFloat(kYawAddress0);
+
+		savedPreviewPitch = cameraControl->pitch;
+		savedPreviewYaw = cameraControl->yaw;
+		savedPreviewViewTarget = cameraControl->viewTargetPosition;
+		savedPreviewBaseTarget = cameraControl->baseTargetForRotation;
+
+		for (size_t i = 0; i < kZoomCount; ++i) {
+			OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
+			OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
+			OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
+			OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
+		}
+		OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+
+		const int32_t nativeZoom = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
+		cameraControl->pitch = kNativePitchByZoom[nativeZoom];
+		cameraControl->yaw = kDefaultYaw;
+		cameraControl->viewTargetVelocity = {};
+		const bool refreshed = Refresh(*cameraControl);
+		if (!refreshed) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: native camera refresh failed.");
+			for (size_t i = 0; i < kZoomCount; ++i) {
+				OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
+				OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
+				OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
+				OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
+			}
+			OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
+			cameraControl->pitch = savedPreviewPitch;
+			cameraControl->yaw = savedPreviewYaw;
+			cameraControl->viewTargetPosition = savedPreviewViewTarget;
+			cameraControl->baseTargetForRotation = savedPreviewBaseTarget;
+			cameraControl->viewTargetVelocity = {};
+			Refresh(*cameraControl);
+			return false;
+		}
+		renderer->ForceFullRedraw();
+
+		savePreviewNormalizationActive = true;
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			"Save Preview: normalized camera from Pitch:" + std::to_string(savedPreviewPitch)
+			+ " Yaw:" + std::to_string(savedPreviewYaw)
+			+ " to native Pitch:" + std::to_string(kNativePitchByZoom[nativeZoom])
+			+ " Yaw:" + std::to_string(kDefaultYaw)
+			+ " Zoom:" + std::to_string(cameraControl->zoom)
+			+ " Rotation:" + std::to_string(cameraControl->rotation));
+
+		return true;
+	});
+}
+
+void SC4CameraController::EndSavePreviewNormalization()
+{
+	if (!savePreviewNormalizationActive) {
+		return;
+	}
+
+	for (size_t i = 0; i < kZoomCount; ++i) {
+		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
+		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
+		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
+		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
+	}
+	OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
+
+	const bool restored = WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			return false;
+		}
+
+		cameraControl->pitch = savedPreviewPitch;
+		cameraControl->yaw = savedPreviewYaw;
+		cameraControl->viewTargetPosition = savedPreviewViewTarget;
+		cameraControl->baseTargetForRotation = savedPreviewBaseTarget;
+		cameraControl->viewTargetVelocity = {};
+		return Refresh(*cameraControl);
+	});
+
+	savePreviewNormalizationActive = false;
+	Logger::GetInstance().WriteLine(
+		restored ? LogLevel::Info : LogLevel::Warning,
+		restored ? "Save Preview: restored free-camera state." : "Save Preview: renderer unavailable after save; global tables restored.");
+}
+
+void SC4CameraController::AbandonSavePreviewNormalization()
+{
+	if (!savePreviewNormalizationActive) {
+		return;
+	}
+
+	savePreviewNormalizationActive = false;
+	Logger::GetInstance().WriteLine(LogLevel::Info, "Save Preview: city is closing; retained native camera tables.");
+}
+
+bool SC4CameraController::IsSavePreviewNormalizationActive() const
+{
+	return savePreviewNormalizationActive;
 }
 
 bool SC4CameraController::BeginRotationGesture()
@@ -248,6 +461,7 @@ bool SC4CameraController::BeginRotationGesture()
 			return false;
 		}
 
+		EnsureNativeCameraStateCaptured(*cameraControl);
 		SyncAngles(*cameraControl);
 		rotationViewTarget = cameraControl->viewTargetPosition;
 		rotationBaseTarget = cameraControl->baseTargetForRotation;
@@ -386,6 +600,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 			return false;
 		}
 
+		EnsureNativeCameraStateCaptured(*cameraControl);
 		SyncAngles(*cameraControl);
 
 		float targetMagnification = cameraControl->customMagnification
@@ -614,6 +829,7 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 			+ "] BoundsB[" + FormatVector(cameraControl->boundsB)
 			+ "] CitySizeX:" + std::to_string(cameraControl->citySizeX)
 			+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ)
+			+ " CityTileSize:" + ClassifyCityTileSize(cameraControl->citySizeX, cameraControl->citySizeZ)
 			+ " ScrollBoundsEnabled:" + std::to_string(cameraControl->scrollBoundsEnabled));
 		log.WriteLine(LogLevel::Info, "Camera Control Scroll Bounds: Begin:" + FormatPointer(cameraControl->scrollBoundsBegin)
 			+ " End:" + FormatPointer(cameraControl->scrollBoundsEnd)

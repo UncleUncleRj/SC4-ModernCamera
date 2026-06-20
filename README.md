@@ -38,6 +38,11 @@ The plugin writes debug logs to the Plugins folder:
 
 These files can be safely ignored or deleted.
 
+## Technical Documentation
+
+- [SimCity 4 default camera behavior](docs/default-camera.md) records the verified native zoom, pitch, yaw, and rotation behavior.
+- [Region preview save fix](docs/region-preview-save-fix.md) documents the save lifecycle integration, rejected hook approaches, and final normalization design.
+
 ## Building
 
 Open `SC4-3DMouseCam.slnx` in Visual Studio and build the `Dev` project for `Win32`.
