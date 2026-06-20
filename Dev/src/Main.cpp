@@ -3,15 +3,20 @@
 #include "cIGZMessage2Standard.h"
 #include "cIGZMessageServer2.h"
 #include "cIGZWinProcFilterW32.h"
+#include "cRZBaseString.h"
 #include "cRZMessage2COMDirector.h"
 #include "GZServPtrs.h"
 #include "Logger.h"
+#include "PluginPaths.h"
+#include "PluginSettings.h"
+#include "PluginVersion.h"
 #include "SC4CameraController.h"
 #include "SC4VersionDetection.h"
 #include <Windows.h>
 #include <windowsx.h>
 
-#include <cstdlib>
+#include <cmath>
+#include <exception>
 #include <string>
 
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
@@ -20,9 +25,14 @@ static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
+static constexpr UINT kHighPeriodicRedrawDelayMs = 15000;
+static constexpr UINT kAggressivePeriodicRedrawDelayMs = 7000;
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500;
 static constexpr UINT kNativeCameraBaselineDelayMs = 1000;
 static constexpr UINT kDumpCameraInfoKey = VK_F8;
+
+using CreateSC4NotificationDialog = bool(__cdecl*)(cIGZString const& caption, cIGZString const& message);
+static constexpr uintptr_t kCreateSC4NotificationDialogAddress = 0x78dd80;
 
 // Global State
 bool g_IsCityLoaded = false;
@@ -33,12 +43,15 @@ bool g_IsMiddleMouseDown = false;
 POINT g_LastMousePos = { 0, 0 };
 HWND g_CapturedMouseWindow = NULL;
 SC4CameraController g_CameraController;
+PluginSettings g_Settings;
 
 UINT_PTR g_IdleTimerID = 0;
+UINT_PTR g_PeriodicRedrawTimerID = 0;
 UINT_PTR g_CameraDumpConfirmationTimerID = 0;
 UINT_PTR g_NativeCameraBaselineTimerID = 0;
 
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 
@@ -48,12 +61,65 @@ void KillIdleTimer()
         KillTimer(NULL, g_IdleTimerID);
         g_IdleTimerID = 0;
     }
+
+}
+
+void KillPeriodicRedrawTimer()
+{
+    if (g_PeriodicRedrawTimerID != 0) {
+        KillTimer(NULL, g_PeriodicRedrawTimerID);
+        g_PeriodicRedrawTimerID = 0;
+    }
+}
+
+void KillRedrawTimers()
+{
+    KillIdleTimer();
+    KillPeriodicRedrawTimer();
+}
+
+void StartPeriodicRedrawTimer()
+{
+    KillPeriodicRedrawTimer();
+
+    if (!g_IsCityLoaded || !g_IsModernCamEnabled || g_IsMiddleMouseDown) {
+        return;
+    }
+
+    UINT delayMs = 0;
+    if (g_Settings.redrawAggression == RedrawAggression::High) {
+        delayMs = kHighPeriodicRedrawDelayMs;
+    }
+    else if (g_Settings.redrawAggression == RedrawAggression::Aggressive) {
+        delayMs = kAggressivePeriodicRedrawDelayMs;
+    }
+
+    if (delayMs == 0) {
+        return;
+    }
+
+    g_PeriodicRedrawTimerID = SetTimer(NULL, 0, delayMs, PeriodicRedrawTimerProc);
+    if (g_PeriodicRedrawTimerID == 0) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the periodic redraw timer.");
+    }
 }
 
 void StartIdleTimer(UINT delayMs)
 {
-    KillIdleTimer();
+    KillRedrawTimers();
+
+    if (g_Settings.redrawAggression == RedrawAggression::Off) {
+        return;
+    }
+
+    if (g_Settings.redrawAggression == RedrawAggression::Aggressive) {
+        delayMs = (delayMs * 2) / 3;
+    }
+
     g_IdleTimerID = SetTimer(NULL, 0, delayMs, RedrawTimerProc);
+    if (g_IdleTimerID == 0) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the redraw timer.");
+    }
 }
 
 void KillCameraDumpConfirmationTimer()
@@ -94,12 +160,9 @@ void TriggerCityRedraw() {
         return;
     }
 
-    log.WriteLine(LogLevel::Info, "Executing ForceFullRedraw()...");
+    log.WriteLine(LogLevel::Verbose, "Executing forced redraw.");
 
-    if (g_CameraController.ForceFullRedraw()) {
-        log.WriteLine(LogLevel::Info, "ForceFullRedraw() Success.");
-    }
-    else {
+    if (!g_CameraController.ForceFullRedraw()) {
         log.WriteLine(LogLevel::Warning, "ForceFullRedraw() failed.");
     }
 }
@@ -113,13 +176,13 @@ POINT MakePointFromLParam(LPARAM lParam)
 void LogMouseButtonEvent(const char* name, const POINT& point)
 {
     Logger::GetInstance().WriteLine(
-        LogLevel::Info,
+        LogLevel::Verbose,
         std::string("Canvas WinProc Filter: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
 }
 
 void ResetInputState()
 {
-    KillIdleTimer();
+    KillRedrawTimers();
     KillCameraDumpConfirmationTimer();
     KillNativeCameraBaselineTimer();
     g_CameraController.ClearCameraDumpConfirmation();
@@ -131,21 +194,6 @@ void ResetInputState()
     g_IsMiddleMouseDown = false;
     g_CapturedMouseWindow = NULL;
     g_CameraController.Reset();
-}
-
-std::string GetDefaultLogPath()
-{
-    char* userProfile = nullptr;
-    size_t len = 0;
-    _dupenv_s(&userProfile, &len, "USERPROFILE");
-
-    std::string logPath = "SC4-3DMouseCam.log";
-    if (userProfile) {
-        logPath = std::string(userProfile) + "\\Documents\\SimCity 4\\Plugins\\SC4-3DMouseCam.log";
-        free(userProfile);
-    }
-
-    return logPath;
 }
 
 bool CheckGameVersion()
@@ -176,12 +224,42 @@ bool RegisterNotifications(cIGZMessageTarget2* target)
     return false;
 }
 
+bool ShowSC4Notification(const char* caption, const char* message)
+{
+    if (!SC4VersionDetection::IsDigitalDistributionVersion()) {
+        return false;
+    }
+
+    const auto createDialog = reinterpret_cast<CreateSC4NotificationDialog>(
+        kCreateSC4NotificationDialogAddress);
+    cRZBaseString captionString(caption);
+    cRZBaseString messageString(message);
+    return createDialog(captionString, messageString);
+}
+
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     Logger& log = Logger::GetInstance();
     if (idEvent == g_IdleTimerID && g_IdleTimerID != 0) {
-        log.WriteLine(LogLevel::Info, "Camera Idle Timer Reached 0: Firing TriggerCityRedraw");
-        KillIdleTimer();
+        log.WriteLine(LogLevel::Verbose, "Camera redraw timer fired.");
+        KillTimer(NULL, g_IdleTimerID);
+        g_IdleTimerID = 0;
+
         TriggerCityRedraw();
+        StartPeriodicRedrawTimer();
+    }
+}
+
+VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    if (idEvent == g_PeriodicRedrawTimerID && g_PeriodicRedrawTimerID != 0) {
+        KillTimer(NULL, g_PeriodicRedrawTimerID);
+        g_PeriodicRedrawTimerID = 0;
+
+        if (!g_IsMiddleMouseDown) {
+            Logger::GetInstance().WriteLine(LogLevel::Verbose, "Periodic camera redraw timer fired.");
+            TriggerCityRedraw();
+        }
+
+        StartPeriodicRedrawTimer();
     }
 }
 
@@ -255,7 +333,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             break;
         }
 
-        log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
         if (!g_CameraController.HasNativeCameraState()) {
             g_CameraController.DumpCameraInfo("immediately before first custom rotation");
         }
@@ -264,10 +342,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 		g_CameraController.BeginRotationGesture();
         SetCapture(hWnd);
         g_CapturedMouseWindow = hWnd;
-        if (g_IdleTimerID != 0) {
-            // log.WriteLine(LogLevel::Info, "Action Interrupted: Killing Idle Timer");
-            KillIdleTimer();
-        }
+        KillRedrawTimers();
         handled = true;
         return 0;
     }
@@ -276,14 +351,14 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             break;
         }
 
-        log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
+        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
         if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
             ReleaseCapture();
         }
         g_IsMiddleMouseDown = false;
 		g_CameraController.EndRotationGesture();
         g_CapturedMouseWindow = NULL;
-        log.WriteLine(LogLevel::Info, "Pan Stopped: Starting 1000ms Idle Timer");
+        log.WriteLine(LogLevel::Verbose, "Pan stopped: scheduling redraw sequence.");
         StartIdleTimer(kPanIdleRedrawDelayMs);
         handled = true;
         return 0;
@@ -294,8 +369,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             int deltaX = mousePos.x - g_LastMousePos.x;
             int deltaY = mousePos.y - g_LastMousePos.y;
 
-			float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity;
-			const float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity;
+			float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
+			float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
+			if (g_Settings.invertVertical) {
+				pitchDelta = -pitchDelta;
+			}
 
 			g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
 
@@ -311,16 +389,18 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
 
         short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-        log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
+        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
 
         if (!g_CameraController.HasNativeCameraState()) {
             g_CameraController.DumpCameraInfo("immediately before first custom zoom");
         }
 
         bool zoomChanged = false;
-        if (g_CameraController.ZoomByWheel(zDelta, zoomChanged)) {
+        const int32_t adjustedZoomDelta = static_cast<int32_t>(
+            std::lround(static_cast<float>(zDelta) * g_Settings.zoomSensitivity));
+        if (g_CameraController.ZoomByWheel(adjustedZoomDelta, zoomChanged)) {
             if (zoomChanged) {
-                log.WriteLine(LogLevel::Info, "Camera Zoom: Starting/Resetting 1500ms Idle Timer");
+                log.WriteLine(LogLevel::Verbose, "Camera zoom changed: scheduling redraw sequence.");
                 StartIdleTimer(kZoomIdleRedrawDelayMs);
             }
             handled = true;
@@ -359,8 +439,40 @@ public:
 
     bool OnStart(cIGZCOM* pCOM) override
     {
-        Logger::GetInstance().Initialize(GetDefaultLogPath());
-        Logger::GetInstance().WriteLine(LogLevel::Info, "Plugin Loaded. Waiting for city to load...");
+        try {
+            Logger::GetInstance().Initialize(PluginPaths::GetLogPath().string());
+        }
+        catch (const std::exception&) {
+            Logger::GetInstance().Initialize("SC4-3DMouseCam.log");
+        }
+
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string("Plugin v") + PluginVersion::String + " loaded. Waiting for city to load...");
+
+        try {
+            g_Settings.Load(PluginPaths::GetSettingsPath());
+        }
+        catch (const std::exception& exception) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Error,
+                std::string("Failed to initialize settings: ") + exception.what());
+        }
+
+        g_IsModernCamEnabled = g_Settings.cameraMode == CameraMode::Modern;
+
+        switch (g_Settings.debugLogging) {
+        case DebugLogging::Off:
+            Logger::GetInstance().SetVerbosity(LogVerbosity::Off);
+            break;
+        case DebugLogging::Verbose:
+            Logger::GetInstance().SetVerbosity(LogVerbosity::Verbose);
+            break;
+        default:
+            Logger::GetInstance().SetVerbosity(LogVerbosity::Normal);
+            break;
+        }
+
         Logger::GetInstance().WriteLine(
             LogLevel::Info,
             std::string("Modern Camera Enabled: ") + (g_IsModernCamEnabled ? "true" : "false")
@@ -383,10 +495,12 @@ public:
 
         if (msgType == kSC4MessagePostCityInit) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating input handlers...");
+            ShowVersionNoticeIfNeeded();
             g_IsCityLoaded = true;
             ResetInputState();
             RegisterCanvasWinProcFilter();
             StartNativeCameraBaselineTimer();
+            StartPeriodicRedrawTimer();
         }
         else if (msgType == kSC4MessagePreSave) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "Pre-save notification received.");
@@ -414,6 +528,33 @@ public:
     }
 
 private:
+    void ShowVersionNoticeIfNeeded()
+    {
+        if (!g_Settings.NeedsVersionNotice()) {
+            return;
+        }
+
+        const char* title = "SC4 3D Mouse Camera 0.7.0";
+        const char* message =
+            "Welcome to SC4 3D Mouse Camera 0.7.0.\n\n"
+            "This release introduces persistent camera settings and prepares optional WASD camera movement. "
+            "When WASD movement is enabled, the QWE / ASD / ZXC zoning shortcuts will use the Shift key.\n\n"
+            "Your settings are stored in SC4-3DMouseCam.json beside the plugin DLL.";
+
+        if (!ShowSC4Notification(title, message)) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Warning,
+                "The in-game version notification could not be displayed.");
+            return;
+        }
+
+        if (!g_Settings.AcknowledgeCurrentVersion()) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Warning,
+                "The version notice was shown, but its acknowledgement could not be saved.");
+        }
+    }
+
     void RegisterCanvasWinProcFilter()
     {
         if (mpCanvasW32) {

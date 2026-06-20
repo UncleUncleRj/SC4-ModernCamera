@@ -12,6 +12,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="src\PluginPaths.cpp" />
+    <ClCompile Include="src\PluginSettings.cpp" />
     <ClCompile Include="src\SC4CameraController.cpp" />
     <ClCompile Include="src\SC4VersionDetection.cpp" />
   </ItemGroup>
@@ -118,6 +120,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Logger.h" />
+    <ClInclude Include="src\PluginPaths.h" />
+    <ClInclude Include="src\PluginSettings.h" />
+    <ClInclude Include="src\PluginVersion.h" />
     <ClInclude Include="src\SC4CameraController.h" />
     <ClInclude Include="src\SC4VersionDetection.h" />
   </ItemGroup>

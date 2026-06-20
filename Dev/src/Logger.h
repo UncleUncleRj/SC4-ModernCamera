@@ -10,9 +10,16 @@
 #include <filesystem>
 
 enum class LogLevel {
+	Verbose,
 	Info,
 	Warning,
 	Error
+};
+
+enum class LogVerbosity {
+	Off,
+	Normal,
+	Verbose
 };
 
 class Logger {
@@ -43,11 +50,22 @@ public:
 		m_out.open(logFilePath, std::ios_base::out | std::ios_base::trunc);
 	}
 
+	void SetVerbosity(LogVerbosity verbosity) {
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_verbosity = verbosity;
+	}
+
 	void WriteLine(LogLevel level, const std::string& message) {
 		std::lock_guard<std::mutex> lock(m_mutex);
+		if (m_verbosity == LogVerbosity::Off
+			|| (level == LogLevel::Verbose && m_verbosity != LogVerbosity::Verbose)) {
+			return;
+		}
+
 		if (m_out.is_open()) {
 			std::string prefix;
 			switch (level) {
+				case LogLevel::Verbose: prefix = "[VERBOSE] "; break;
 				case LogLevel::Info: prefix = "[INFO] "; break;
 				case LogLevel::Warning: prefix = "[WARNING] "; break;
 				case LogLevel::Error: prefix = "[ERROR] "; break;
@@ -78,4 +96,5 @@ private:
 
 	std::ofstream m_out;
 	std::mutex m_mutex;
+	LogVerbosity m_verbosity = LogVerbosity::Normal;
 };
