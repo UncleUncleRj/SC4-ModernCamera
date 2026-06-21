@@ -42,6 +42,7 @@ These files can be safely ignored or deleted.
 
 - [SimCity 4 default camera behavior](docs/default-camera.md) records the verified native zoom, pitch, yaw, and rotation behavior.
 - [Region preview save fix](docs/region-preview-save-fix.md) documents the save lifecycle integration, rejected hook approaches, and final normalization design.
+- [SimCity 4 native UI research](docs/native-ui-research.md) records the control recipes, message IDs, scrolling model, ABI hazards, and companion-DAT workflow discovered while building the settings-window prototype.
 
 ## Building
 

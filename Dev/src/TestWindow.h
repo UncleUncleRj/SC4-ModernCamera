@@ -34,7 +34,9 @@ private:
 		cIGZWin* window;
 		cIGZUnknown* interfacePointer;
 		uint32_t id;
+		int32_t baseLeft;
 		int32_t baseTop;
+		int32_t width;
 		int32_t height;
 		bool fixed;
 		std::string name;

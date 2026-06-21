@@ -18,6 +18,11 @@
 #include "cRZBaseString.h"
 #include "cRZRect.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -34,6 +39,7 @@ namespace
 	constexpr uint32_t kScrollUpButtonID = 0x3D0C0711;
 	constexpr uint32_t kScrollDownButtonID = 0x3D0C0712;
 	constexpr uint32_t kScrollBarID = 0x3D0C0713;
+	constexpr uint32_t kCloseXButtonID = 0x3D0C0714;
 
 	constexpr uint32_t kMessageTypeCommand = 3;
 	constexpr uint32_t kCommandButtonClicked = 0x287259F6;
@@ -246,7 +252,7 @@ void TestWindow::AddControl(cIGZWin* window, cIGZUnknown* interfacePointer, uint
 	window->SetArea(left, top, right, bottom);
 	window->SetNotificationTarget(rootWindow);
 	rootWindow->ChildAdd(window);
-	controls.push_back({ window, interfacePointer, id, top, bottom - top, fixed, name });
+	controls.push_back({ window, interfacePointer, id, left, top, right - left, bottom - top, fixed, name });
 }
 
 bool TestWindow::BuildControls()
@@ -257,13 +263,14 @@ bool TestWindow::BuildControls()
 	struct ScriptControl { uint32_t id; const char* name; bool fixed; };
 	const ScriptControl scriptControls[] = {
 		{ kCloseButtonID, "close", true },
+		{ kCloseXButtonID, "closeX", true },
 		{ kScrollUpButtonID, "scrollUp", true },
 		{ kScrollDownButtonID, "scrollDown", true },
 		{ kScrollBarID, "verticalScrollbar", true },
-		{ 0x3D0C0720, "title", false }, { 0x3D0C0721, "description", false },
+		{ 0x3D0C0720, "title", true }, { 0x3D0C0721, "description", true },
 		{ 0x3D0C0722, "buttonHeading", false },
 		{ 0x3D0C0730, "standardButton", false }, { 0x3D0C0731, "toggleButton", false },
-		{ 0x3D0C0734, "checkBox", false },
+		{ 0x3D0C0734, "checkBox", false }, { 0x3D0C0738, "checkBoxLabel", false },
 		{ 0x3D0C0740, "inputHeading", false },
 		{ 0x3D0C0750, "horizontalSlider", false }, { 0x3D0C0751, "horizontalScrollbar", false },
 		{ 0x3D0C0752, "spinner", false }, { 0x3D0C0753, "editableText", false },
@@ -280,8 +287,22 @@ bool TestWindow::BuildControls()
 		cIGZWin* child = rootWindow->GetChildWindowFromIDRecursive(spec.id);
 		if (child)
 		{
-			child->SetNotificationTarget(rootWindow);
-			controls.push_back({ child, nullptr, spec.id, child->GetT(), child->GetH(), spec.fixed, spec.name });
+			if (spec.id == kScrollUpButtonID || spec.id == kScrollDownButtonID)
+			{
+				child->HideWindow();
+			}
+			const int32_t left = child->GetL();
+			const int32_t top = child->GetT();
+			controls.push_back({
+				child,
+				nullptr,
+				spec.id,
+				left,
+				top,
+				child->GetR() - left,
+				child->GetB() - top,
+				spec.fixed,
+				spec.name });
 		}
 		else
 		{
@@ -478,8 +499,18 @@ void TestWindow::ApplyScrollPosition()
 		}
 
 		const int32_t top = control.baseTop - scrollOffset;
-		control.window->GZWinMoveTo(control.window->GetL(), top);
-		const bool visible = top + control.height >= 42 && top <= 570;
+		const int32_t deltaX = control.baseLeft - control.window->GetL();
+		const int32_t deltaY = top - control.window->GetT();
+		if (deltaX != 0 || deltaY != 0)
+		{
+			// Despite its name, SC4's GZWinMoveTo applies a relative delta.
+			// Computing the delta from the current position makes scrolling
+			// deterministic and avoids the SDK's broken SetArea overloads.
+			control.window->GZWinMoveTo(deltaX, deltaY);
+		}
+		// SC4 does not clip child windows to the dialog bounds. Only show
+		// controls that fit completely inside the content viewport.
+		const bool visible = top >= 108 && top + control.height <= 530;
 		if (visible)
 		{
 			control.window->ShowWindow();
@@ -606,7 +637,7 @@ bool TestWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 	}
 	if (msg.dwData1 == kCommandButtonClicked)
 	{
-		if (msg.dwData2 == kCloseButtonID)
+		if (msg.dwData2 == kCloseButtonID || msg.dwData2 == kCloseXButtonID)
 		{
 			rootWindow->HideWindow();
 			return true;
@@ -624,9 +655,37 @@ bool TestWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 	}
 	else if (msg.dwData2 == kScrollBarID)
 	{
-		scrollOffset = std::clamp(static_cast<int32_t>(msg.dwData3), 0, 600);
-		ApplyScrollPosition();
-		SaveTestState();
+		cIGZWin* scrollbar = rootWindow->GetChildWindowFromID(kScrollBarID);
+		POINT cursor{};
+		HWND activeWindow = GetActiveWindow();
+		if (scrollbar && activeWindow && GetCursorPos(&cursor) && ScreenToClient(activeWindow, &cursor))
+		{
+			const int32_t localY = cursor.y - rootWindow->GetT();
+			const int32_t top = scrollbar->GetT();
+			const int32_t bottom = scrollbar->GetB();
+			constexpr int32_t arrowZone = 24;
+
+			if (localY <= top + arrowZone)
+			{
+				ScrollBy(-40);
+			}
+			else if (localY >= bottom - arrowZone)
+			{
+				ScrollBy(40);
+			}
+			else
+			{
+				const int32_t trackTop = top + arrowZone;
+				const int32_t trackHeight = std::max(1, bottom - top - (arrowZone * 2));
+				const float ratio = std::clamp(
+					static_cast<float>(localY - trackTop) / static_cast<float>(trackHeight),
+					0.0f,
+					1.0f);
+				scrollOffset = static_cast<int32_t>(ratio * 600.0f);
+				ApplyScrollPosition();
+				SaveTestState();
+			}
+		}
 		return true;
 	}
 
@@ -635,9 +694,5 @@ bool TestWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 
 bool TestWindow::DoWinMsg(cIGZWin* pWin, uint32_t messageID, uint32_t data1, uint32_t data2, uint32_t data3)
 {
-	cGZMessage message(messageID);
-	message.dwData1 = data1;
-	message.dwData2 = data2;
-	message.dwData3 = data3;
-	return DoWinProcMessage(pWin, message);
+	return false;
 }
