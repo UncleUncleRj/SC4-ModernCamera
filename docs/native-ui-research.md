@@ -8,7 +8,7 @@ The test window is a native SimCity 4 UI window. It does not use ImGui and does 
 
 - `Dev/ui/SC4-3DMouseCam-TestUI.txt` contains the readable legacy UI script.
 - `tools/build_sc4_ui_dat.py` packages that script into an uncompressed DBPF file.
-- `Dev/ui/SC4-3DMouseCam-TestUI.dat` is the generated companion resource.
+- `Dev/ui/SC4-3DMouseCam.dat` is the generated companion resource.
 - The Visual Studio post-build step copies the DAT beside the plugin DLL.
 - `Dev/src/SC4WindowManager.cpp` owns plugin windows and notification dialogs; its control-laboratory window registers controls, handles notifications, scrolls content, logs interactions, and writes `test.json`.
 - `docs/changelog.md` is baked into the first-install greeting window by the DAT builder. The greeting version is read from `Dev/src/PluginVersion.h`, not from the changelog text.
@@ -32,9 +32,11 @@ The manager currently owns:
 
 - the baked first-install/version/changelog greeting window;
 - the baked Controls help popup opened from the greeting window;
+- the baked floating camera-settings menu button;
+- the baked first-pass camera settings window;
 - the native control-laboratory window.
 
-The production settings and diagnostics windows should be added as additional managed window objects. Each window keeps its own control IDs, layout state, and notification handling, while the manager coordinates:
+The Diagnostics window should be added as an additional managed window object. Each window keeps its own control IDs, layout state, and notification handling, while the manager coordinates:
 
 - showing windows and bringing existing instances to the front;
 - closing every plugin window during city shutdown;
@@ -70,7 +72,7 @@ The DBPF writer currently emits:
 - UTF-8 legacy UI scripts as uncompressed resources;
 - one 20-byte index entry per resource.
 
-The packager currently emits three resources in the same type/group:
+The packager currently emits these UI script resources in the same type/group:
 
 | Instance | Purpose |
 | --- | --- |
@@ -78,8 +80,148 @@ The packager currently emits three resources in the same type/group:
 | `0x3D0C0703` | Generic basic-window template |
 | `0x3D0C0705` | First-install greeting/changelog window |
 | `0x3D0C0707` | Controls help popup |
+| `0x3D0C0901` | Floating camera-settings menu button |
+| `0x3D0C0903` | Camera settings window |
 
-The packager also substitutes the verified ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-3DMouseCam v{PluginVersion::String} installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`. Keeping these transformations in the build step allows readable source files to remain easy to edit while preserving the exact native bitmap and text configuration that SC4 expects.
+The same DAT also carries the custom menu icon image resource `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900`. The packager also substitutes the verified ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-3DMouseCam v{PluginVersion::String} installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`. Keeping these transformations in the build step allows readable source files to remain easy to edit while preserving the exact native bitmap and text configuration that SC4 expects.
+
+## Custom UI image and FSH research
+
+Native UI scripts reference image resources with two IDs:
+
+```text
+image={group,instance}
+```
+
+The resource type is not written in the UI script. Existing UI assets and local plugin code indicate that UI/button images are DBPF resources with:
+
+```text
+Type:  0x856DDBAC
+Group: value from the first `image={...}` field
+IID:   value from the second `image={...}` field
+```
+
+The game also uses FSH textures under type `0x7AB50E44` for other texture families. A Reader export from `Girl Shantae & Elspeth.dat` provided a verified decoded FSH sample:
+
+```text
+TGI:          0x7AB50E44 / 0x0986135E / 0x26AA0002
+Raw file:     file00000002.fsh
+Decoded file: file_dec00000003.fsh
+PNG export:   converted.png
+```
+
+The raw file is the compressed DBPF record. It begins:
+
+```text
+34 87 01 00 10 FB 0C 00 60 E4 ...
+```
+
+Measured fields:
+
+```text
+0x00018734 = 100,148 compressed record bytes
+0x10FB     = DBPF/RefPack/QFS compression marker
+0x0C0060   = 786,528 decompressed bytes
+```
+
+The decoded file is the true FSH/SHPI payload and begins directly with `SHPI`:
+
+```text
+53 48 50 49 60 00 0C 00 03 00 00 00 47 32 36 34 ...
+```
+
+Decoded FSH header:
+
+| Offset | Size | Value | Meaning |
+| --- | ---: | --- | --- |
+| `0x00` | 4 | `SHPI` | FSH magic |
+| `0x04` | 4 | `0x000C0060` | total decoded FSH size, 786,528 |
+| `0x08` | 4 | `3` | image count |
+| `0x0C` | 4 | `G264` | directory/group tag |
+
+Directory entries begin at `0x10`. Each entry is 8 bytes:
+
+| Field | Size | Meaning |
+| --- | ---: | --- |
+| Name | 4 | image name/tag |
+| Offset | 4 | little-endian offset to the image block |
+
+The sample contains:
+
+| Entry | Name | Offset |
+| ---: | --- | ---: |
+| 0 | `NONE` | `0x00000030` |
+| 1 | `NONE` | `0x00040040` |
+| 2 | `NONE` | `0x00080050` |
+
+After the directory is an 8-byte metadata/padding field. In the sample it is ASCII `20241122`.
+
+Each image block begins with a 16-byte image header. The first sample block begins:
+
+```text
+61 00 00 00 00 02 00 02 00 00 00 00 00 00 00 00
+```
+
+Parsed:
+
+| Offset | Size | Value | Meaning |
+| --- | ---: | --- | --- |
+| `+0x00` | 1 | `0x61` | image format |
+| `+0x01` | 3 | `0` | size/flags field in decoded file |
+| `+0x04` | 2 | `512` | width |
+| `+0x06` | 2 | `512` | height |
+| `+0x08` | 2 | `0` | x offset/unknown |
+| `+0x0A` | 2 | `0` | y offset/unknown |
+| `+0x0C` | 4 | `0` | reserved/unknown |
+| `+0x10` | variable | image bytes | payload |
+
+The sample's exported `converted.png` is 512 by 512 RGBA. Decoding the first image payload as DXT3 matched Reader's exported PNG closely (`MSE ~= 1.6`), while DXT5 was much worse. Therefore, for this sample:
+
+```text
+FSH image format 0x61 = DXT3
+```
+
+DXT3 data is 16 bytes per 4-by-4 pixel block. For 512 by 512:
+
+```text
+(512 / 4) * (512 / 4) * 16 = 262,144 payload bytes
+```
+
+That exactly matches each sample block's payload size.
+
+For the plugin's proposed 44-by-44, four-state menu button strip (`3dm-menu-icon.png`, 176 by 44 RGBA), a DXT3 payload would be:
+
+```text
+(176 / 4) * (44 / 4) * 16 = 7,744 bytes
+```
+
+A minimal uncompressed one-image FSH/SHPI payload for that strip is expected to be about:
+
+```text
+16 bytes  SHPI header
+ 8 bytes  one directory entry
+ 8 bytes  metadata/padding
+16 bytes  image block header
+7744 bytes DXT3 payload
+---------
+7792 bytes total
+```
+
+The plugin's menu icon is now packaged by `tools/build_sc4_ui_dat.py` from `Dev/ui/3dm-menu-icon.png`. The generated DAT contains the icon as an uncompressed SHPI/FSH payload with this TGI:
+
+```text
+Type:  0x856DDBAC
+Group: 0x3D0C0700
+IID:   0x3D0C0900
+```
+
+The corresponding UI script reference is:
+
+```text
+image={3d0c0700,3d0c0900}
+```
+
+The generated `Dev/ui/SC4-3DMouseCam.dat` should contain the UI script resources plus `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900` with an `SHPI` payload. The FSH structure and DXT3 decoding are verified from Reader output, and the packager emits the expected resource shape. In-game loading of this custom UI image is still the next thing to verify.
 
 ## UI script coordinates
 

@@ -65,12 +65,19 @@ private:
 class BakedManagedWindow : public cIGZWinProc
 {
 public:
+	enum class Placement : uint8_t
+	{
+		Center,
+		TopRightButton,
+	};
+
 	BakedManagedWindow(
 		const char* logName,
 		uint32_t resourceInstanceID,
 		uint32_t rootCLSID,
 		uint32_t closeXButtonID,
-		uint32_t okButtonID);
+		uint32_t okButtonID,
+		Placement placement = Placement::Center);
 	~BakedManagedWindow();
 
 	bool QueryInterface(uint32_t riid, void** ppvObj) override;
@@ -86,6 +93,8 @@ public:
 
 protected:
 	virtual bool OnButtonClick(uint32_t controlID);
+	virtual void OnClosed();
+	cIGZWin* GetRootWindow() const;
 
 private:
 	const char* logName;
@@ -93,9 +102,38 @@ private:
 	uint32_t rootCLSID;
 	uint32_t closeXButtonID;
 	uint32_t okButtonID;
+	Placement placement;
 	uint32_t refCount;
 	cIGZWin* parentWindow;
 	cIGZWin* rootWindow;
+};
+
+class SettingsWindow final : public BakedManagedWindow
+{
+public:
+	SettingsWindow();
+	void SetWindowManager(class SC4WindowManager* manager);
+
+protected:
+	bool OnButtonClick(uint32_t controlID) override;
+	void OnClosed() override;
+
+private:
+	SC4WindowManager* manager;
+};
+
+class MenuButtonWindow final : public BakedManagedWindow
+{
+public:
+	MenuButtonWindow();
+	void SetWindowManager(class SC4WindowManager* manager);
+	void SetSettingsOpen(bool open);
+
+protected:
+	bool OnButtonClick(uint32_t controlID) override;
+
+private:
+	SC4WindowManager* manager;
 };
 
 class GreetingWindow final : public BakedManagedWindow
@@ -198,6 +236,9 @@ public:
 	bool ShowControlLaboratory();
 	bool ShowGreetingWindow();
 	bool ShowControlsWindow();
+	bool ShowSettingsWindow();
+	bool ToggleSettingsWindow();
+	void OnSettingsWindowClosed();
 	void CloseAllWindows();
 	bool HasVisibleWindow() const;
 	bool HandleMouseWheel(
@@ -213,6 +254,8 @@ private:
 	ControlLaboratoryWindow controlLaboratory;
 	GreetingWindow greetingWindow;
 	ControlsWindow controlsWindow;
+	SettingsWindow settingsWindow;
+	MenuButtonWindow menuButtonWindow;
 	std::vector<BasicWindowEntry> basicWindows;
 	SC4WindowHandle nextWindowHandle = 100;
 	PluginSettings* pendingVersionNoticeSettings = nullptr;

@@ -36,4 +36,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="ui\3dm-menu-icon.png">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="ui\SC4-3DMouseCam.dat">
+      <Filter>Resource Files</Filter>
+    </None>
+  </ItemGroup>
 </Project>

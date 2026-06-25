@@ -81,7 +81,8 @@
     </Manifest>
     <PostBuildEvent>
       <Command>xcopy "$(TargetPath)" "$(PLUGINS_FOLDER)" /Y /I
-xcopy "$(ProjectDir)ui\SC4-3DMouseCam-TestUI.dat" "$(PLUGINS_FOLDER)" /Y /I</Command>
+xcopy "$(ProjectDir)ui\SC4-3DMouseCam.dat" "$(PLUGINS_FOLDER)" /Y /I
+if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat"</Command>
       <Message>Copying DLL and native UI DAT to SC4 Plugins folder...</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -109,7 +110,8 @@ xcopy "$(ProjectDir)ui\SC4-3DMouseCam-TestUI.dat" "$(PLUGINS_FOLDER)" /Y /I</Com
     </Manifest>
     <PostBuildEvent>
       <Command>xcopy "$(TargetPath)" "$(PLUGINS_FOLDER)" /Y /I
-xcopy "$(ProjectDir)ui\SC4-3DMouseCam-TestUI.dat" "$(PLUGINS_FOLDER)" /Y /I</Command>
+xcopy "$(ProjectDir)ui\SC4-3DMouseCam.dat" "$(PLUGINS_FOLDER)" /Y /I
+if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat"</Command>
       <Message>Copying DLL and native UI DAT to SC4 Plugins folder...</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -131,8 +133,9 @@ xcopy "$(ProjectDir)ui\SC4-3DMouseCam-TestUI.dat" "$(PLUGINS_FOLDER)" /Y /I</Com
     <ClInclude Include="src\SC4WindowManager.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="ui\3dm-menu-icon.png" />
     <None Include="ui\SC4-3DMouseCam-BasicUI.txt" />
-    <None Include="ui\SC4-3DMouseCam-TestUI.dat" />
+    <None Include="ui\SC4-3DMouseCam.dat" />
     <None Include="ui\SC4-3DMouseCam-TestUI.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

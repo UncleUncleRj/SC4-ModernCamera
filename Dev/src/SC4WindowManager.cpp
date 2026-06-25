@@ -43,6 +43,10 @@ namespace
 	constexpr uint32_t kGreetingWindowCLSID = 0x3D0C0706;
 	constexpr uint32_t kControlsWindowResourceInstance = 0x3D0C0707;
 	constexpr uint32_t kControlsWindowCLSID = 0x3D0C0708;
+	constexpr uint32_t kMenuButtonResourceInstance = 0x3D0C0901;
+	constexpr uint32_t kMenuButtonCLSID = 0x3D0C0902;
+	constexpr uint32_t kSettingsWindowResourceInstance = 0x3D0C0903;
+	constexpr uint32_t kSettingsWindowCLSID = 0x3D0C0904;
 	constexpr uint32_t kBasicCloseXButtonID = 0x3D0C0810;
 	constexpr uint32_t kBasicTitleID = 0x3D0C0820;
 	constexpr uint32_t kBasicTextID = 0x3D0C0821;
@@ -52,6 +56,9 @@ namespace
 	constexpr uint32_t kGreetingViewControlsButtonID = 0x3D0C0844;
 	constexpr uint32_t kControlsCloseXButtonID = 0x3D0C0850;
 	constexpr uint32_t kControlsOKButtonID = 0x3D0C0853;
+	constexpr uint32_t kMenuButtonID = 0x3D0C0910;
+	constexpr uint32_t kSettingsCloseXButtonID = 0x3D0C0920;
+	constexpr uint32_t kSettingsReadChangelogButtonID = 0x3D0C0952;
 	constexpr SC4WindowHandle kControlLaboratoryHandle = 1;
 
 	constexpr uint32_t kCloseButtonID = 0x3D0C0710;
@@ -361,12 +368,14 @@ BakedManagedWindow::BakedManagedWindow(
 	uint32_t resourceInstanceID,
 	uint32_t rootCLSID,
 	uint32_t closeXButtonID,
-	uint32_t okButtonID)
+	uint32_t okButtonID,
+	Placement placement)
 	: logName(logName),
 	resourceInstanceID(resourceInstanceID),
 	rootCLSID(rootCLSID),
 	closeXButtonID(closeXButtonID),
 	okButtonID(okButtonID),
+	placement(placement),
 	refCount(0),
 	parentWindow(nullptr),
 	rootWindow(nullptr)
@@ -458,8 +467,13 @@ bool BakedManagedWindow::Create()
 	}
 
 	parentWindow->ChildAdd(rootWindow);
-	const int32_t windowX = std::max(0, (parentWindow->GetW() - rootWindow->GetW()) / 2);
-	const int32_t windowY = std::max(0, (parentWindow->GetH() - rootWindow->GetH()) / 2);
+	int32_t windowX = std::max(0, (parentWindow->GetW() - rootWindow->GetW()) / 2);
+	int32_t windowY = std::max(0, (parentWindow->GetH() - rootWindow->GetH()) / 2);
+	if (placement == Placement::TopRightButton)
+	{
+		windowX = std::max(0, parentWindow->GetW() - 150);
+		windowY = 0;
+	}
 	rootWindow->GZWinMoveTo(windowX, windowY);
 	SetWinProc(rootWindow, this);
 	rootWindow->PullToFront();
@@ -492,6 +506,7 @@ void BakedManagedWindow::Close()
 	if (rootWindow)
 	{
 		rootWindow->HideWindow();
+		OnClosed();
 	}
 }
 
@@ -520,6 +535,99 @@ bool BakedManagedWindow::OnButtonClick(uint32_t controlID)
 	if (controlID == closeXButtonID || controlID == okButtonID)
 	{
 		Close();
+		return true;
+	}
+	return false;
+}
+
+void BakedManagedWindow::OnClosed()
+{
+}
+
+cIGZWin* BakedManagedWindow::GetRootWindow() const
+{
+	return rootWindow;
+}
+
+SettingsWindow::SettingsWindow()
+	: BakedManagedWindow(
+		"Settings UI",
+		kSettingsWindowResourceInstance,
+		kSettingsWindowCLSID,
+		kSettingsCloseXButtonID,
+		0),
+	manager(nullptr)
+{
+}
+
+void SettingsWindow::SetWindowManager(SC4WindowManager* windowManager)
+{
+	manager = windowManager;
+}
+
+bool SettingsWindow::OnButtonClick(uint32_t controlID)
+{
+	if (controlID == kSettingsReadChangelogButtonID)
+	{
+		if (manager)
+		{
+			manager->ShowGreetingWindow();
+		}
+		return true;
+	}
+	return BakedManagedWindow::OnButtonClick(controlID);
+}
+
+void SettingsWindow::OnClosed()
+{
+	if (manager)
+	{
+		manager->OnSettingsWindowClosed();
+	}
+}
+
+MenuButtonWindow::MenuButtonWindow()
+	: BakedManagedWindow(
+		"Menu Button UI",
+		kMenuButtonResourceInstance,
+		kMenuButtonCLSID,
+		0,
+		0,
+		Placement::TopRightButton),
+	manager(nullptr)
+{
+}
+
+void MenuButtonWindow::SetWindowManager(SC4WindowManager* windowManager)
+{
+	manager = windowManager;
+}
+
+void MenuButtonWindow::SetSettingsOpen(bool open)
+{
+	cIGZWin* buttonWindow = GetRootWindow()
+		? GetRootWindow()->GetChildWindowFromIDRecursive(kMenuButtonID)
+		: nullptr;
+	cRZAutoRefCount<cIGZWinBtn> button;
+	if (buttonWindow && buttonWindow->QueryInterface(GZIID_cIGZWinBtn, button.AsPPVoid()))
+	{
+		if (open)
+		{
+			button->ToggleOn();
+		}
+		else
+		{
+			button->ToggleOff();
+		}
+	}
+}
+
+bool MenuButtonWindow::OnButtonClick(uint32_t controlID)
+{
+	if (controlID == kMenuButtonID)
+	{
+		const bool opened = manager && manager->ToggleSettingsWindow();
+		SetSettingsOpen(opened);
 		return true;
 	}
 	return false;
@@ -645,7 +753,7 @@ bool ControlLaboratoryWindow::Create()
 	{
 		Logger::GetInstance().WriteLine(
 			LogLevel::Error,
-			"Test UI: failed to load SC4-3DMouseCam-TestUI.dat from the Plugins folder.");
+			"Test UI: failed to load SC4-3DMouseCam.dat from the Plugins folder.");
 		parentWindow->Release();
 		parentWindow = nullptr;
 		return false;
@@ -1252,6 +1360,14 @@ bool ControlLaboratoryWindow::DoWinMsg(cIGZWin* pWin, uint32_t messageID, uint32
 
 void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 {
+	menuButtonWindow.SetWindowManager(this);
+	if (!menuButtonWindow.Create())
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Window Manager: failed to create the camera settings menu button.");
+	}
+
 	if (settings.NeedsVersionNotice())
 	{
 		if (versionNoticeTimerID != 0)
@@ -1445,11 +1561,40 @@ bool SC4WindowManager::ShowControlsWindow()
 	return controlsWindow.Create();
 }
 
+bool SC4WindowManager::ShowSettingsWindow()
+{
+	settingsWindow.SetWindowManager(this);
+	if (!settingsWindow.Create())
+	{
+		menuButtonWindow.SetSettingsOpen(false);
+		return false;
+	}
+	menuButtonWindow.SetSettingsOpen(true);
+	return true;
+}
+
+bool SC4WindowManager::ToggleSettingsWindow()
+{
+	if (settingsWindow.IsVisible())
+	{
+		settingsWindow.Close();
+		return false;
+	}
+	return ShowSettingsWindow();
+}
+
+void SC4WindowManager::OnSettingsWindowClosed()
+{
+	menuButtonWindow.SetSettingsOpen(false);
+}
+
 void SC4WindowManager::CloseAllWindows()
 {
+	settingsWindow.Destroy();
 	controlsWindow.Destroy();
 	greetingWindow.Destroy();
 	controlLaboratory.Destroy();
+	menuButtonWindow.Destroy();
 	for (BasicWindowEntry& entry : basicWindows)
 	{
 		entry.window->Destroy();
@@ -1468,6 +1613,10 @@ bool SC4WindowManager::HasVisibleWindow() const
 		return true;
 	}
 	if (controlLaboratory.IsVisible())
+	{
+		return true;
+	}
+	if (settingsWindow.IsVisible())
 	{
 		return true;
 	}
