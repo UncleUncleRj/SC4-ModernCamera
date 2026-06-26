@@ -2,7 +2,7 @@
 
 SC4-ModernCamera is a DLL plugin for SimCity 4 Deluxe Edition. It completely changes the SC4 Camera into a more modern City Builder style Mouse-Controlled camera.
 
-This project is currently in BETA. Feel free to play with it, but __WARNING - backup your important cities and regions first!__
+This project is currently in BETA. Feel free to play with it and report share errors/crashes/logs in Discussions forum.
 
 ## Requirements
 
