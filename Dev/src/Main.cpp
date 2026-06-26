@@ -2,7 +2,11 @@
 #include "cIGZGraphicSystem.h"
 #include "cIGZMessage2Standard.h"
 #include "cIGZMessageServer2.h"
+#include "cIGZWin.h"
+#include "cIGZWinMgr.h"
 #include "cIGZWinProcFilterW32.h"
+#include "cISC4App.h"
+#include "cISC4View3DWin.h"
 #include "cRZMessage2COMDirector.h"
 #include "GZServPtrs.h"
 #include "Logger.h"
@@ -19,11 +23,15 @@
 #include <cmath>
 #include <exception>
 #include <filesystem>
+#include <sstream>
 #include <string>
 
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
 static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
+static constexpr uint32_t kGZWin_WinSC4App = 0x6104489A;
+static constexpr uint32_t kGZWin_SC4View3DWin = 0x9A47B417;
+static constexpr uint32_t kGZWin_SC4View3DSurface = 0x6A5E44B6;
 static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kKeyboardPanIdleRedrawDelayMs = 1000;
@@ -69,6 +77,134 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
 VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 void StopHeldWASDMovement(bool scheduleRedraw);
+
+struct NativeWheelHitTest
+{
+    bool resolved = false;
+    bool overView3D = false;
+    bool targetIsView3D = false;
+    bool targetIsView3DSurface = false;
+    bool insideView3DRect = false;
+    std::string targetSource;
+    std::string targetDescription;
+    std::string globalTargetDescription;
+    std::string mainTargetDescription;
+    std::string parentTargetDescription;
+    std::string viewDescription;
+};
+
+std::string FormatWindowID(uint32_t value)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << value;
+    return stream.str();
+}
+
+std::string DescribeGZWindow(cIGZWin* window)
+{
+    if (!window) {
+        return "none";
+    }
+
+    std::ostringstream stream;
+    stream << "ID:" << FormatWindowID(window->GetID())
+        << " Instance:" << FormatWindowID(window->GetInstanceID())
+        << " Area:[" << window->GetL() << "," << window->GetT()
+        << "," << window->GetR() << "," << window->GetB() << "]"
+        << " Visible:" << (window->IsVisible() ? "true" : "false")
+        << " Enabled:" << (window->IsEnabled() ? "true" : "false");
+    return stream.str();
+}
+
+bool IsUsefulHitTestTarget(cIGZWin* candidate, cIGZWin* mainWindow, cIGZWin* parentWindow)
+{
+    return candidate && candidate != mainWindow && candidate != parentWindow;
+}
+
+NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
+{
+    NativeWheelHitTest result;
+
+    cISC4AppPtr app;
+    if (!app) {
+        result.targetDescription = "no cISC4App";
+        return result;
+    }
+
+    cIGZWin* mainWindow = app->GetMainWindow();
+    if (!mainWindow) {
+        result.targetDescription = "no main window";
+        return result;
+    }
+
+    cIGZWin* parentWindow = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+    if (!parentWindow) {
+        result.targetDescription = "no WinSC4App";
+        return result;
+    }
+
+    cISC4View3DWin* view3D = nullptr;
+    if (!parentWindow->GetChildAs(
+        kGZWin_SC4View3DWin,
+        kGZIID_cISC4View3DWin,
+        reinterpret_cast<void**>(&view3D))) {
+        result.targetDescription = "no SC4View3DWin";
+        return result;
+    }
+
+    cIGZWin* viewWindow = view3D->AsIGZWin();
+    cIGZWin* globalTarget = nullptr;
+    cIGZWinMgrPtr winMgr;
+    if (winMgr) {
+        globalTarget = winMgr->GetWindowFromPoint(parentX, parentY);
+    }
+
+    cIGZWin* mainTarget = mainWindow->GetWindowFromPoint(parentX, parentY);
+    cIGZWin* parentTarget = parentWindow->GetWindowFromPoint(parentX, parentY);
+    cIGZWin* targetWindow = nullptr;
+
+    if (IsUsefulHitTestTarget(globalTarget, mainWindow, parentWindow)) {
+        targetWindow = globalTarget;
+        result.targetSource = "global";
+    }
+    else if (IsUsefulHitTestTarget(mainTarget, mainWindow, parentWindow)) {
+        targetWindow = mainTarget;
+        result.targetSource = "main";
+    }
+    else if (parentTarget) {
+        targetWindow = parentTarget;
+        result.targetSource = "parent";
+    }
+    else if (globalTarget) {
+        targetWindow = globalTarget;
+        result.targetSource = "global-fallback";
+    }
+    else if (mainTarget) {
+        targetWindow = mainTarget;
+        result.targetSource = "main-fallback";
+    }
+    else {
+        result.targetSource = "none";
+    }
+
+    result.targetIsView3D = targetWindow && viewWindow && targetWindow == viewWindow;
+    result.targetIsView3DSurface = targetWindow && targetWindow->GetID() == kGZWin_SC4View3DSurface;
+    result.insideView3DRect = viewWindow
+        && viewWindow->IsPointInWindowParentCoordinates(parentX, parentY);
+
+    result.resolved = viewWindow != nullptr;
+    result.overView3D = result.targetIsView3D
+        || result.targetIsView3DSurface
+        || (!targetWindow && result.insideView3DRect);
+    result.targetDescription = DescribeGZWindow(targetWindow);
+    result.globalTargetDescription = DescribeGZWindow(globalTarget);
+    result.mainTargetDescription = DescribeGZWindow(mainTarget);
+    result.parentTargetDescription = DescribeGZWindow(parentTarget);
+    result.viewDescription = DescribeGZWindow(viewWindow);
+
+    view3D->Release();
+    return result;
+}
 
 const char* GetRedrawAggressionName()
 {
@@ -838,6 +974,34 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
         short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
         log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
+
+        POINT cursor = MakePointFromLParam(lParam);
+        if (!ScreenToClient(hWnd, &cursor)) {
+            log.WriteLine(LogLevel::Warning, "Mouse wheel hit-test: failed to convert screen coordinates; using camera zoom.");
+        }
+        else {
+            NativeWheelHitTest hitTest = HitTestNativeWheelTarget(cursor.x, cursor.y);
+            log.WriteLine(
+                LogLevel::Info,
+                std::string("Mouse wheel hit-test: X:") + std::to_string(cursor.x)
+                + " Y:" + std::to_string(cursor.y)
+                + " Resolved:" + (hitTest.resolved ? "true" : "false")
+                + " OverView3D:" + (hitTest.overView3D ? "true" : "false")
+                + " TargetIsView3D:" + (hitTest.targetIsView3D ? "true" : "false")
+                + " TargetIsView3DSurface:" + (hitTest.targetIsView3DSurface ? "true" : "false")
+                + " InsideView3DRect:" + (hitTest.insideView3DRect ? "true" : "false")
+                + " TargetSource:" + hitTest.targetSource
+                + " Target:{" + hitTest.targetDescription + "}"
+                + " GlobalTarget:{" + hitTest.globalTargetDescription + "}"
+                + " MainTarget:{" + hitTest.mainTargetDescription + "}"
+                + " ParentTarget:{" + hitTest.parentTargetDescription + "}"
+                + " View3D:{" + hitTest.viewDescription + "}");
+
+            if (hitTest.resolved && !hitTest.overView3D) {
+                log.WriteLine(LogLevel::Info, "Mouse wheel hit-test: passing wheel through to native SC4 UI.");
+                break;
+            }
+        }
 
         if (!g_CameraController.HasNativeCameraState()) {
             g_CameraController.DumpCameraInfo("immediately before first custom zoom");
