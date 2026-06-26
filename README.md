@@ -51,7 +51,7 @@ These files can be safely ignored or deleted.
 
 ## Building
 
-Open `SC4-ModernCamera.slnx` in Visual Studio and build the `Dev` project for `Win32`.
+Open `SC4-ModernCamera.slnx` in Visual Studio and build the `SC4-ModernCamera` project for `Win32`.
 
 The project is configured as a DLL plugin and includes the required GZCOM source files and headers under `Dev/src` and `Dev/vendor/gzcom`.
 

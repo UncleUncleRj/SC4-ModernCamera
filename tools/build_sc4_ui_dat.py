@@ -4,7 +4,6 @@ from pathlib import Path
 import re
 import struct
 import sys
-import time
 import zlib
 
 
@@ -633,8 +632,7 @@ def build(source: Path, destination: Path) -> None:
     header = bytearray(HEADER_SIZE)
     header[0:4] = b"DBPF"
     struct.pack_into("<II", header, 4, 1, 0)
-    now = int(time.time())
-    struct.pack_into("<II", header, 0x18, now, now)
+    struct.pack_into("<II", header, 0x18, 0, 0)
     struct.pack_into("<IIII", header, 0x20, 7, len(resources), index_offset, 20 * len(resources))
     struct.pack_into("<III", header, 0x30, 0, 0, 0)
     struct.pack_into("<I", header, 0x3C, 0)

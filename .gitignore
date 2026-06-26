@@ -1,5 +1,3 @@
-# Directories
-
 # Prerequisites
 *.d
 
@@ -37,12 +35,29 @@
 .vs/
 *.user
 *.suo
+*.VC.db
+*.VC.opendb
+*.opendb
 Debug/
 Release/
+Win32/
+x64/
 Dev/build/
 Dev/Debug/
 Dev/Release/
+ipch/
+*.idb
 *.pdb
 *.ilk
 *.exp
 *.log
+*.tlog/
+*.lastbuildstate
+*.recipe
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Generated UI resources
+Dev/ui/SC4-ModernCamera.dat

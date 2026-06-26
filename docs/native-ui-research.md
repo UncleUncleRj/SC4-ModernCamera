@@ -8,7 +8,7 @@ The test window is a native SimCity 4 UI window. It does not use ImGui and does 
 
 - `Dev/ui/SC4-ModernCamera-TestUI.txt` contains the readable legacy UI script.
 - `tools/build_sc4_ui_dat.py` packages that script into an uncompressed DBPF file.
-- `Dev/ui/SC4-ModernCamera.dat` is the generated companion resource.
+- `Dev/ui/SC4-ModernCamera.dat` is the ignored generated companion resource.
 - The Visual Studio pre-build step regenerates the DAT, and the post-build step copies it beside the plugin DLL.
 - `Dev/src/SC4WindowManager.cpp` owns plugin windows, notification dialogs, the floating settings button, the production Settings window, the Advanced Settings child window, and the control laboratory.
 - `docs/changelog.md` is baked into the first-install greeting window by the DAT builder. The greeting version is read from `Dev/src/PluginVersion.h`, not from the changelog text.
@@ -227,7 +227,7 @@ The corresponding UI script reference is:
 image={3d0c0700,3d0c0900}
 ```
 
-The generated `Dev/ui/SC4-ModernCamera.dat` should contain the UI script resources plus `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900` with an `SHPI` payload. The FSH structure and DXT3 decoding are verified from Reader output, and the packager emits the expected resource shape. In-game loading of this custom UI image is still the next thing to verify.
+The ignored generated `Dev/ui/SC4-ModernCamera.dat` should contain the UI script resources plus `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900` with an `SHPI` payload. The FSH structure and DXT3 decoding are verified from Reader output, and the packager emits the expected resource shape. In-game loading of this custom UI image is still the next thing to verify.
 
 ## UI script coordinates
 

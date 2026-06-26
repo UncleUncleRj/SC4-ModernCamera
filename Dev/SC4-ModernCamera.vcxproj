@@ -22,7 +22,7 @@
     <VCProjectVersion>18.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{af88e227-d80a-4f87-b08b-b1b909aa4e4d}</ProjectGuid>
-    <RootNamespace>Dev</RootNamespace>
+    <RootNamespace>SC4ModernCamera</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -155,7 +155,6 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <None Include="ui\camicon.png" />
     <None Include="ui\menu-button-stages.png" />
     <None Include="ui\SC4-ModernCamera-BasicUI.txt" />
-    <None Include="ui\SC4-ModernCamera.dat" />
     <None Include="ui\SC4-ModernCamera-TestUI.txt" />
     <None Include="..\docs\changelog.md" />
     <None Include="..\tools\build_sc4_ui_dat.py" />
