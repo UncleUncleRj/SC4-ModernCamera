@@ -101,6 +101,6 @@ If this regresses, inspect `SC4WindowManager::ScheduleDeferredWindowOpen`, `SC4W
 
 ## Changelog Window
 
-The changelog popup is the same baked Greeting window resource used for the first-install/version notice. Its body is generated from `docs/changelog.md`.
+The changelog popup is the same baked Welcome/Greeting window resource used for the first-install/version notice. Its changelog body is generated from `docs/changelog.md`; camera-settings guidance and the `View Controls` affordance live outside that scrollable changelog body.
 
 The body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes` so changelog text can grow without increasing the window size. Changelog text changes require regenerating `Dev/ui/SC4-3DMouseCam.dat` with `tools/build_sc4_ui_dat.py`.

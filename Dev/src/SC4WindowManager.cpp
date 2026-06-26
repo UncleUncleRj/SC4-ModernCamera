@@ -2362,6 +2362,7 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 				+ "Scroll Wheel: Zoom\n"
 				+ "Mouse 3 + Drag: Pan & Tilt\n\n"
 				+ "Changelog:\n"
+				+ "- Polished the welcome/changelog window and UI image handling.\n"
 				+ "- Added persistent JSON settings.\n"
 				+ "- Added version-aware first-install notice.\n"
 				+ "- Added native SC4 window manager foundation.\n"

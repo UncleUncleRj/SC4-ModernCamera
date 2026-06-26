@@ -1,4 +1,7 @@
-Changelog:
+0.7.1:
+- Polished the welcome/changelog window and UI image handling.
+
+0.7.0:
 - Added persistent JSON settings.
 - Added version-aware first-install notice.
 - Added native SC4 window manager foundation.

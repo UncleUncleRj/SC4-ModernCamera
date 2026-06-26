@@ -85,7 +85,7 @@ The packager currently emits these UI script resources in the same type/group:
 | `0x3D0C0903` | Camera settings window |
 | `0x3D0C0905` | Advanced Settings window |
 
-The same DAT also carries the custom menu icon image resource `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900`. The packager also substitutes the verified ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-3DMouseCam v{PluginVersion::String} installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`. Keeping these transformations in the build step allows readable source files to remain easy to edit while preserving the exact native bitmap and text configuration that SC4 expects.
+The same DAT also carries custom UI image resources for the floating menu icon, selected/disabled button states, title-bar camera icon, and welcome arrow art. The packager substitutes the verified ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-3D MouseCam {PluginVersion::String} Installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`. Keeping these transformations in the build step allows readable source files to remain easy to edit while preserving the exact native bitmap and text configuration that SC4 expects.
 
 The settings option buttons use the custom button-stage image resource `0x856DDBAC / 0x3D0C0700 / 0x3D0C0907`, generated from `Dev/ui/menu-button-stages.png`. The image strip order is Disabled, Normal, Selected, Hovered. The selected state uses the green `#25DC80` fill baked into the asset. Runtime calls to `cIGZWin::SetFillColor` and `SetFillColorRGB` caused a debug CRT ESP mismatch when opening the settings window, so selected-state coloring must be baked into button image resources instead of applied through those `cIGZWin` methods.
 
@@ -385,7 +385,7 @@ Safe geometry queries used by the laboratory are `GetL`, `GetT`, `GetR`, and `Ge
 
 ## Lifecycle and input behavior
 
-The first-install/changelog popup is a baked native SC4 window generated from `docs/changelog.md`. It is displayed during the first city load for a newly installed plugin version. Controls are intentionally kept out of the changelog body; the greeting window has a `View Controls` button that opens a smaller baked controls popup. The changelog body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes`, not a plain `GZWinText`, so release notes can grow without increasing the popup size.
+The first-install/changelog popup is a baked native SC4 window generated from `docs/changelog.md`. It is displayed during the first city load for a newly installed plugin version. Controls and camera-settings guidance are intentionally kept out of the changelog body; the greeting window has a `View Controls` button that opens a smaller baked controls popup and a separate top-right note pointing to the floating camera button. The changelog body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes`, not a plain `GZWinText`, so release notes can grow without increasing the popup size.
 
 Creating the managed greeting immediately during city-load notification caused a crash. Deferring it by a short Win32 timer, currently 3 seconds, allowed the city view and UI hierarchy to finish initializing before the plugin created its own window.
 
