@@ -13,8 +13,8 @@ Older disc/retail builds are not supported, and at this time support is not plan
 
 ## Installation
 
-1. Download the `SC4-3DMouseCam.dll` file from the releases page.
-2. Copy it to your SimCity 4 Plugins folder, usually:
+1. Download the release package from the releases page.
+2. Copy `SC4-3DMouseCam.dll` and `SC4-3DMouseCam.dat` to your SimCity 4 Plugins folder, usually:
 
    ```text
    %USERPROFILE%\Documents\SimCity 4\Plugins\
@@ -54,6 +54,8 @@ These files can be safely ignored or deleted.
 Open `SC4-3DMouseCam.slnx` in Visual Studio and build the `Dev` project for `Win32`.
 
 The project is configured as a DLL plugin and includes the required GZCOM source files and headers under `Dev/src` and `Dev/vendor/gzcom`.
+
+Release builds statically link the MSVC runtime so released binaries do not normally require users to install a separate Visual C++ Redistributable.
 
 ## Acknowledgements
 
