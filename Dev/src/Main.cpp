@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <sstream>
@@ -32,6 +33,7 @@ static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 static constexpr uint32_t kGZWin_WinSC4App = 0x6104489A;
 static constexpr uint32_t kGZWin_SC4View3DWin = 0x9A47B417;
 static constexpr uint32_t kGZWin_SC4View3DSurface = 0x6A5E44B6;
+static constexpr size_t kView3DWinMinimizeUIVTableIndex = 55;
 static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kKeyboardPanIdleRedrawDelayMs = 1000;
@@ -44,10 +46,17 @@ static constexpr UINT kExtremePeriodicRedrawDelayMs = 100;
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500;
 static constexpr UINT kNativeCameraBaselineDelayMs = 1000;
 static constexpr UINT kDumpCameraInfoKey = VK_F8;
+static constexpr int32_t kNativeUICornerProbeMaxX = 260;
+static constexpr int32_t kNativeUICornerProbeMaxBottomOffset = 360;
 
 // Global State
 bool g_IsCityLoaded = false;
 bool g_IsModernCamEnabled = true;
+bool g_IsNativeUIHidden = false;
+using MinimizeUIFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool minimize);
+MinimizeUIFunction g_OriginalMinimizeUI = nullptr;
+void** g_View3DWinVTable = nullptr;
+bool g_MinimizeUIHookInstalled = false;
 
 // Cinematic Camera State
 bool g_IsMiddleMouseDown = false;
@@ -77,6 +86,7 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
 VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 void StopHeldWASDMovement(bool scheduleRedraw);
+bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize);
 
 struct NativeWheelHitTest
 {
@@ -376,9 +386,189 @@ POINT MakePointFromLParam(LPARAM lParam)
 
 void LogMouseButtonEvent(const char* name, const POINT& point)
 {
-    Logger::GetInstance().WriteLine(
-        LogLevel::Verbose,
-        std::string("Canvas WinProc Filter: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
+	Logger::GetInstance().WriteLine(
+		LogLevel::Verbose,
+		std::string("Canvas WinProc Filter: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
+}
+
+bool IsNativeUICornerProbeClick(const POINT& point)
+{
+	cISC4AppPtr app;
+	cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
+	cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+	if (!parentWindow) {
+		return false;
+	}
+
+	const int32_t bottomOffset = parentWindow->GetH() - point.y;
+	return point.x >= 0
+		&& point.x < kNativeUICornerProbeMaxX
+		&& bottomOffset >= 0
+		&& bottomOffset < kNativeUICornerProbeMaxBottomOffset;
+}
+
+void SyncMenuButtonToNativeUI(bool nativeUILooksVisible, const char* reason)
+{
+	g_IsNativeUIHidden = !nativeUILooksVisible;
+	g_WindowManager.SetMenuButtonVisible(nativeUILooksVisible);
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		std::string("Menu Button UI: ") + reason
+		+ " NativeUI:" + (nativeUILooksVisible ? "UIVisible" : "UIHidden")
+		+ " CameraButton:" + (nativeUILooksVisible ? "showing" : "hiding"));
+}
+
+cISC4View3DWin* GetView3DWinForNativeUIHook()
+{
+	cISC4AppPtr app;
+	cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
+	cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+	if (!parentWindow) {
+		return nullptr;
+	}
+
+	cISC4View3DWin* view3D = nullptr;
+	if (!parentWindow->GetChildAs(
+		kGZWin_SC4View3DWin,
+		kGZIID_cISC4View3DWin,
+		reinterpret_cast<void**>(&view3D))) {
+		return nullptr;
+	}
+
+	return view3D;
+}
+
+std::string FormatPointerValue(const void* value)
+{
+	std::ostringstream stream;
+	stream << "0x" << std::uppercase << std::hex << reinterpret_cast<uintptr_t>(value);
+	return stream.str();
+}
+
+bool PatchVTableSlot(void** slot, void* replacement, void** originalOut)
+{
+	if (!slot || !replacement) {
+		return false;
+	}
+
+	DWORD oldProtect = 0;
+	if (!VirtualProtect(slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+		return false;
+	}
+
+	if (originalOut) {
+		*originalOut = *slot;
+	}
+	*slot = replacement;
+
+	DWORD ignored = 0;
+	VirtualProtect(slot, sizeof(void*), oldProtect, &ignored);
+	return true;
+}
+
+void InstallMinimizeUIHook()
+{
+	if (g_MinimizeUIHookInstalled) {
+		return;
+	}
+
+	cISC4View3DWin* view3D = GetView3DWinForNativeUIHook();
+	if (!view3D) {
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Native UI MinimizeUI hook: could not find cISC4View3DWin.");
+		return;
+	}
+
+	void** vtable = *reinterpret_cast<void***>(view3D);
+	void** slot = vtable ? &vtable[kView3DWinMinimizeUIVTableIndex] : nullptr;
+	void* original = nullptr;
+
+	if (PatchVTableSlot(slot, reinterpret_cast<void*>(&HookedMinimizeUI), &original)) {
+		g_View3DWinVTable = vtable;
+		g_OriginalMinimizeUI = reinterpret_cast<MinimizeUIFunction>(original);
+		g_MinimizeUIHookInstalled = true;
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("Native UI MinimizeUI hook installed. VTable:")
+			+ FormatPointerValue(vtable)
+			+ " Slot:" + std::to_string(kView3DWinMinimizeUIVTableIndex)
+			+ " Original:" + FormatPointerValue(original));
+	}
+	else {
+		Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: failed to patch vtable slot.");
+	}
+
+	view3D->Release();
+}
+
+void UninstallMinimizeUIHook()
+{
+	if (!g_MinimizeUIHookInstalled) {
+		return;
+	}
+
+	void** slot = g_View3DWinVTable ? &g_View3DWinVTable[kView3DWinMinimizeUIVTableIndex] : nullptr;
+	if (slot && *slot == reinterpret_cast<void*>(&HookedMinimizeUI)) {
+		PatchVTableSlot(slot, reinterpret_cast<void*>(g_OriginalMinimizeUI), nullptr);
+		Logger::GetInstance().WriteLine(LogLevel::Info, "Native UI MinimizeUI hook uninstalled.");
+	}
+	else {
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Native UI MinimizeUI hook: slot changed before uninstall.");
+	}
+
+	g_OriginalMinimizeUI = nullptr;
+	g_View3DWinVTable = nullptr;
+	g_MinimizeUIHookInstalled = false;
+}
+
+bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize)
+{
+	(void)edx;
+
+	MinimizeUIFunction original = g_OriginalMinimizeUI;
+	if (!original) {
+		Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: original function pointer was null.");
+		return false;
+	}
+
+	const bool previousHidden = g_IsNativeUIHidden;
+	const bool result = original(view3D, minimize);
+
+	if (g_IsCityLoaded) {
+		SyncMenuButtonToNativeUI(
+			!minimize,
+			minimize
+				? "native MinimizeUI(true) observed; hiding camera settings button."
+				: "native MinimizeUI(false) observed; showing camera settings button.");
+	}
+	else {
+		g_IsNativeUIHidden = minimize;
+	}
+
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		std::string("Native UI MinimizeUI hook: Minimize:")
+		+ (minimize ? "true" : "false")
+		+ " PreviousTrackedState:" + (previousHidden ? "UIHidden" : "UIVisible")
+		+ " NewTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
+		+ " StateChanged:" + (previousHidden != g_IsNativeUIHidden ? "true" : "false")
+		+ " Result:" + (result ? "true" : "false"));
+
+	return result;
+}
+
+void HandleNativeUICornerClick(const POINT& point)
+{
+	if (!IsNativeUICornerProbeClick(point)) {
+		return;
+	}
+
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		std::string("Native UI trigger zone click observed; waiting for native MinimizeUI(bool) state change. ")
+		+ "ClickX:" + std::to_string(point.x)
+		+ " ClickY:" + std::to_string(point.y)
+		+ " CurrentTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
+		+ " HookInstalled:" + (g_MinimizeUIHookInstalled ? "true" : "false"));
 }
 
 void ResetInputState()
@@ -969,11 +1159,14 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_LBUTTONDOWN: {
-        LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", MakePointFromLParam(lParam));
+        const POINT cursor = MakePointFromLParam(lParam);
+        LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", cursor);
         break;
     }
     case WM_LBUTTONUP: {
-        LogMouseButtonEvent("WM_LBUTTONUP (Left Mouse Up)", MakePointFromLParam(lParam));
+        const POINT cursor = MakePointFromLParam(lParam);
+        LogMouseButtonEvent("WM_LBUTTONUP (Left Mouse Up)", cursor);
+        HandleNativeUICornerClick(cursor);
         break;
     }
     case WM_RBUTTONDOWN: {
@@ -1185,7 +1378,9 @@ public:
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating input handlers...");
             g_WindowManager.OnCityLoaded(g_Settings);
             g_IsCityLoaded = true;
+            g_IsNativeUIHidden = false;
             ResetInputState();
+            InstallMinimizeUIHook();
             RegisterCanvasWinProcFilter();
             InstallKeyboardHook();
             StartNativeCameraBaselineTimer();
@@ -1205,6 +1400,7 @@ public:
             g_CameraController.DumpCameraInfo("pre-city-shutdown");
             g_CameraController.AbandonSavePreviewNormalization();
             g_IsCityLoaded = false;
+            UninstallMinimizeUIHook();
             ResetInputState();
             UninstallKeyboardHook();
             UnregisterCanvasWinProcFilter();

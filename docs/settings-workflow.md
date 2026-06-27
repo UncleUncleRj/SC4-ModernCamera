@@ -4,7 +4,7 @@ This document records the current production behavior of the SC4-ModernCamera se
 
 ## Window Structure
 
-The floating camera button in the upper-right corner opens the main Camera Settings window.
+The floating camera button in the upper-right corner opens the main Camera Settings window. It hides and shows with SC4's native UI by observing the native `cISC4View3DWin::MinimizeUI(bool)` transition.
 
 The main window contains:
 
@@ -82,6 +82,14 @@ Important log patterns:
 - `Settings UI: saved delayed settings after rotation sensitivity change; rotationSensitivity=... zoomSensitivity=...`
 
 When diagnostics logging is set to Off, subsequent normal log lines may be intentionally suppressed.
+
+## Native UI Synchronization
+
+SC4 starts each city with the native UI visible, so the floating camera button is shown during city-load window setup. After that, the button follows SC4's native hide/show UI state through a vtable hook on `cISC4View3DWin::MinimizeUI(bool)`.
+
+The lower-left corner click area is only diagnostic context. It logs that a likely native UI toggle click occurred, but it must not decide visibility from pixels or act as a separate show/hide button. The validated source of truth is the Boolean passed to `MinimizeUI`: `true` means the native UI is being hidden and the camera button should hide; `false` means the native UI is being restored and the camera button should show.
+
+Previous probe-based attempts checked fixed lower-left UI locations and retried with short timers. They could detect the initial hide but could not reliably detect restore, because the restored mini-button hit-tested as the full 3D surface rather than as a native button/control.
 
 ## Child Window Z-Order
 

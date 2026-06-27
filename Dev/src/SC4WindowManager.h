@@ -110,6 +110,7 @@ public:
 	void Close();
 	void BringToFront();
 	void SendToBack();
+	void SetVisible(bool visible);
 	bool IsVisible() const;
 	bool ContainsPoint(int32_t parentX, int32_t parentY) const;
 
@@ -305,6 +306,7 @@ public:
 	bool ShowAdvancedSettingsWindow();
 	bool ShowSettingsWindow();
 	bool ToggleSettingsWindow();
+	void SetMenuButtonVisible(bool visible);
 	void OnSettingsWindowClosed();
 	void RefreshSettingsWindows();
 	void ScheduleSettingsWindowReopen();

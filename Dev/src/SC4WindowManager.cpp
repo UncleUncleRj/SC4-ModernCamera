@@ -721,6 +721,25 @@ void BakedManagedWindow::SendToBack()
 	}
 }
 
+void BakedManagedWindow::SetVisible(bool visible)
+{
+	if (!rootWindow || rootWindow->IsVisible() == visible)
+	{
+		return;
+	}
+
+	if (visible)
+	{
+		rootWindow->ShowWindow();
+		rootWindow->PullToFront();
+	}
+	else
+	{
+		rootWindow->HideWindow();
+	}
+	rootWindow->InvalidateSelfAndParents();
+}
+
 bool BakedManagedWindow::IsVisible() const
 {
 	return rootWindow && rootWindow->IsVisible();
@@ -2335,6 +2354,10 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 			LogLevel::Warning,
 			"Window Manager: failed to create the camera settings menu button.");
 	}
+	else
+	{
+		menuButtonWindow.SetVisible(true);
+	}
 
 	if (settings.NeedsVersionNotice())
 	{
@@ -2644,6 +2667,16 @@ bool SC4WindowManager::ToggleSettingsWindow()
 		return false;
 	}
 	return ShowSettingsWindow();
+}
+
+void SC4WindowManager::SetMenuButtonVisible(bool visible)
+{
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		std::string("Menu Button UI: ")
+		+ (visible ? "showing" : "hiding")
+		+ " camera settings button.");
+	menuButtonWindow.SetVisible(visible);
 }
 
 void SC4WindowManager::OnSettingsWindowClosed()

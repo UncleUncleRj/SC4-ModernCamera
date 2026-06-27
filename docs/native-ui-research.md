@@ -397,6 +397,33 @@ The control laboratory is created only after the UI services and city view are a
 
 Most root windows and controls should be reused by showing/hiding them. Avoid reconstructing the entire hierarchy during ordinary interaction unless a specific native UI behavior requires it. Advanced Settings is the current exception because recreating it has proven more reliable for child-window z-order.
 
+## Native hide/show UI synchronization
+
+The production camera settings button follows SC4's native hide/show UI state through `cISC4View3DWin::MinimizeUI(bool)`.
+
+Validated behavior:
+
+- The city starts with SC4's native UI visible, so the plugin shows the floating camera settings button at city load.
+- `cISC4View3DWin::MinimizeUI(true)` is called when SC4 hides/minimizes the native UI.
+- `cISC4View3DWin::MinimizeUI(false)` is called when SC4 restores the native UI.
+- The plugin vtable-hooks that method while a city is loaded, calls the original function, then hides or shows the floating camera button from the Boolean argument.
+- The hook is installed after post-city-init once `cISC4View3DWin` can be resolved, and uninstalled during city shutdown before the city-scoped UI object is discarded.
+
+The lower-left click area remains intentionally broad for diagnostics and correlation, but it is not the source of truth. It must not directly hide/show the camera button or call `MinimizeUI` itself. It only logs that a likely native UI toggle click happened; the camera button state changes only when the native `MinimizeUI(bool)` hook observes the real state transition.
+
+Failed approaches:
+
+- Exact pixel hit boxes for the visible and restored native UI buttons were too fragile. The pressed and restored states move slightly, and adjacent clicks could leave the camera button out of sync.
+- Fixed-location virtual mouse probes could detect the first minimize but did not reliably detect restore.
+- Timer retries made the behavior feel laggy and still missed restore.
+- Native GZ window hit-testing of the restore button returned the full 3D surface (`0x6A5E44B6`) rather than a button/control ID, so there was no reliable `cIGZWinBtn::IsOn()` state to read.
+
+Implementation notes:
+
+- The current Windows v641 `cISC4View3DWin` vtable slot used for `MinimizeUI(bool)` is `55`, counting the inherited `cIGZUnknown` entries.
+- If the GZCOM header changes, re-count this slot before touching the hook.
+- Keep the hook narrowly scoped and avoid adding more pixel-probe heuristics unless the native method hook stops firing in a new game build.
+
 ## Production settings behavior
 
 The production settings workflow is documented in [settings-workflow.md](settings-workflow.md). The important native UI invariants are:
