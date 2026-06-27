@@ -726,13 +726,17 @@ bool CheckGameVersion()
     const uint16_t gameVersion = SC4VersionDetection::GetGameVersion();
     Logger::GetInstance().WriteLine(LogLevel::Info, "Detected SimCity 4 game version: " + std::to_string(gameVersion));
 
-    if (!SC4VersionDetection::IsDigitalDistributionVersion()) {
+    const bool supportedVersion = SC4VersionDetection::IsDigitalDistributionVersion();
+    if (!supportedVersion) {
         Logger::GetInstance().WriteLine(
             LogLevel::Error,
             "Unsupported Game Version. This plugin currently only supports the Steam/GOG/EA digital distribution build.");
     }
+    else {
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Plugin installed.");
+    }
 
-    return true;
+    return supportedVersion;
 }
 
 bool RegisterNotifications(cIGZMessageTarget2* target)
@@ -1059,6 +1063,13 @@ public:
             Logger::GetInstance().Initialize("SC4-ModernCamera/SC4-ModernCamera.log");
         }
 
+        if (!CheckGameVersion()) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Error,
+                "Plugin startup disabled because this SimCity 4 build is unsupported.");
+            return true;
+        }
+
         Logger::GetInstance().WriteLine(
             LogLevel::Info,
             std::string("Plugin v") + PluginVersion::String + " loaded. Waiting for city to load...");
@@ -1087,10 +1098,6 @@ public:
             LogLevel::Info,
             std::string("Modern Camera Enabled: ") + (g_IsModernCamEnabled ? "true" : "false")
             + (g_IsModernCamEnabled ? "" : " (passive diagnostics mode)"));
-
-        if (!CheckGameVersion()) {
-            return true;
-        }
 
         if (!RegisterNotifications(this)) {
             Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to subscribe to the required notifications.");
