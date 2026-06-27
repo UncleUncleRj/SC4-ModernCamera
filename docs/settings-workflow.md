@@ -1,6 +1,6 @@
 # Settings Window Workflow
 
-This document records the current production behavior of the SC4-ModernCamera settings UI. It is meant as a quick reference for future settings-window, input, redraw, and diagnostics work.
+This document records production behavior for the SC4-ModernCamera settings UI.
 
 ## Window Structure
 
@@ -21,7 +21,7 @@ Diagnostics are intentionally available in both Modern and Classic camera modes.
 
 ## Camera Mode Rules
 
-Modern camera mode is the default for new installs. Switching between Modern and Classic applies immediately while the settings window is still open.
+Modern camera mode is the default when no saved settings file exists. Switching between Modern and Classic applies immediately while the settings window is open.
 
 Classic mode:
 
@@ -31,7 +31,7 @@ Classic mode:
 - leaves Advanced Settings available for diagnostics;
 - visually forces Advanced Settings redraw aggression to Classic.
 
-Classic mode must not erase the user's saved Modern-only preferences. WASD, sensitivity, invert vertical, and redraw aggression should reappear with their previous values when the user switches back to Modern.
+Classic mode must not erase the user's saved Modern-only preferences. WASD, sensitivity, invert vertical, and redraw aggression reappear with their saved values when the user switches back to Modern.
 
 Modern mode:
 
@@ -45,7 +45,7 @@ Redraw Aggression only affects the Modern camera. The buttons are:
 
 - Classic: standard classic-camera behavior; no Modern redraw aggression.
 - Normal: normal Modern redraw behavior.
-- High: previous aggressive behavior; periodic redraw every 1000 ms and idle redraw delay divided by 4, minimum 100 ms.
+- High: periodic redraw every 1000 ms and idle redraw delay divided by 4, minimum 100 ms.
 - Extreme: stress-test behavior; periodic redraw every 100 ms and idle redraw delay divided by 20, minimum 25 ms.
 
 When Classic camera mode is selected, the Advanced Settings redraw group shows Classic as selected and leaves Normal, High, and Extreme disabled. This is visual state only; it does not overwrite the saved Modern redraw preference.
@@ -67,11 +67,11 @@ When WASD Movement is off, or Classic camera is active, the plugin stops consumi
 
 Sensitivity sliders update live but save with a short delay. This prevents a drag from writing many settings files in rapid succession.
 
-The delayed save log line should include the final rotation and zoom sensitivity values. Per-step slider changes can remain verbose because they are noisy by nature.
+The delayed save log line should include the saved rotation and zoom sensitivity values. Per-step slider changes can remain verbose because they are noisy by nature.
 
 ## Option Change Logging
 
-Settings changes should be explicit in the log. Button/toggle/menu changes belong at normal info level. Slider movement can be verbose, with the delayed save emitting the final values at info level.
+Settings changes should be explicit in the log. Button/toggle/menu changes belong at normal info level. Slider movement can be verbose, with the delayed save emitting the saved values at info level.
 
 Important log patterns:
 
@@ -89,11 +89,11 @@ SC4 starts each city with the native UI visible, so the floating camera button i
 
 The lower-left corner click area is only diagnostic context. It logs that a likely native UI toggle click occurred, but it must not decide visibility from pixels or act as a separate show/hide button. The validated source of truth is the Boolean passed to `MinimizeUI`: `true` means the native UI is being hidden and the camera button should hide; `false` means the native UI is being restored and the camera button should show.
 
-Previous probe-based attempts checked fixed lower-left UI locations and retried with short timers. They could detect the initial hide but could not reliably detect restore, because the restored mini-button hit-tested as the full 3D surface rather than as a native button/control.
+Probe-based synchronization is not used. Fixed lower-left UI probes and timer retries could detect hide, but restore was unreliable because the restored mini-button hit-tested as the full 3D surface rather than as a native button/control.
 
 ## Child Window Z-Order
 
-Do not create child windows directly inside a settings button callback. SC4 can finish its command handling by restoring the parent window above the newly opened child.
+Do not create child windows directly inside a settings button callback. SC4 can finish its command handling by restoring the parent window above the child.
 
 The stable flow is:
 
@@ -111,4 +111,4 @@ If this regresses, inspect `SC4WindowManager::ScheduleDeferredWindowOpen`, `SC4W
 
 The changelog popup is the same baked Welcome/Greeting window resource used for the first-install/version notice. Its changelog body is generated from `docs/changelog.md`; camera-settings guidance and the `View Controls` affordance live outside that scrollable changelog body.
 
-The body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes` so changelog text can grow without increasing the window size. Visual Studio regenerates the ignored generated file `Dev/ui/SC4-ModernCamera.dat` from `tools/build_sc4_ui_dat.py` during the project pre-build event; manual DAT edits should be avoided.
+The body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes` so changelog text can grow without increasing the window size. Visual Studio generates the companion DAT from `tools/build_sc4_ui_dat.py` during the project pre-build event; manual DAT edits should be avoided.

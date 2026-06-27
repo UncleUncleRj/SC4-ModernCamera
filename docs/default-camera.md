@@ -2,7 +2,7 @@
 
 This document records the default SimCity 4 camera behavior.
 
-The measurements were collected in Small, medium, and large
+The measurements were collected in small, medium, and large
 blank city tiles on a 1920 x 1080 viewport.
 
 ## Native zoom states
@@ -67,7 +67,7 @@ require a different native orientation table.
 
 The pitch and yaw tables are process-global, not city-local. If a plugin replaces
 every entry with custom free-camera angles, those values remain active when the
-player exits one city and loads another. A newly loaded city can therefore begin
+player exits one city and loads another. A loaded city can therefore begin
 with angles inherited from the previous city.
 
 Code that needs the native defaults must preserve or reconstruct the original
@@ -75,7 +75,7 @@ tables independently of the camera state loaded from a city. Capturing the activ
 camera immediately after city load is not sufficient once the global tables have
 already been modified.
 
-For game version 641, the currently used addresses are documented in
+For game version 641, the addresses are documented in
 `Dev/src/SC4CameraController.cpp` as `kPitchAddress1`, `kPitchAddress2`,
 `kYawAddress0`, `kYawAddress1`, and `kYawAddress2`.
 

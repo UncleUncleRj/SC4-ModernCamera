@@ -2,11 +2,10 @@
 
 ## Problem
 
-SC4's engine has a known problem where city preview tiles in the region view can
-become distorted by various methods. One of the ways a preview tile can become
-distorted is via using this plugin - however there is now a fix. And this fix
-may also be helpful in fixing distortions made by other methods - however,
-that claim is untested.
+SC4's engine can save distorted city preview tiles in the region view when the
+active camera uses non-native pitch or yaw. The plugin normalizes camera state
+during preview generation. Distortions produced by other methods are outside the
+validated scope of this fix.
 
 ## Verified native behavior
 
@@ -24,7 +23,7 @@ The native measurements used by the fix are documented in
 ### Custom save menu
 
 Replacing the save menu could intercept user actions, but would unnecessarily
-conflict with other UI plugins. The final implementation leaves game menus intact.
+conflict with other UI plugins. The implementation leaves game menus intact.
 
 ### `cISC4App::SaveCity` vtable hooks
 
@@ -43,7 +42,7 @@ different internal rendering path.
 
 All renderer snapshot-hook code was removed.
 
-## Final design
+## Design
 
 SimCity 4 publishes a pre-save message through its message server:
 
@@ -56,7 +55,7 @@ When pre-save is received, the controller:
 
 1. Saves the active free-camera angles, view target, rotation base target, and
    process-global pitch/yaw tables.
-2. Replaces the global tables with verified native values.
+2. Replaces the global tables with native values.
 3. Selects native pitch for the current discrete zoom.
 4. Restores native yaw while preserving discrete rotation and view target.
 5. Refreshes the camera and requests a redraw.
@@ -75,6 +74,6 @@ is bypassed while diagnostics and native SC4 input remain operational.
 
 ## Validation
 
-The final path is validated by moving the free camera and using save-and-exit to
-region view. Preview tiles retained native orientation, the game remained stable,
-and no custom menu or binary hook is required.
+The path is validated by moving the free camera and using save-and-exit to
+return to region view. Preview tiles retained native orientation, the game
+remained stable, and no custom menu or binary hook is required.

@@ -1,15 +1,14 @@
 # SimCity 4 Native UI Research
 
-This document records the verified behavior, resource recipes, failures, and working conventions discovered while building the SC4-ModernCamera native control laboratory. It is intended to prevent future work from repeating unsafe experiments and to provide a foundation for the production settings and diagnostics windows.
+This document records native UI behavior, resource recipes, ABI constraints, and window-management conventions for SC4-ModernCamera.
 
-## Current architecture
+## Architecture
 
 The test window is a native SimCity 4 UI window. It does not use ImGui and does not require an additional runtime DLL.
 
 - `Dev/ui/SC4-ModernCamera-TestUI.txt` contains the readable legacy UI script.
 - `tools/build_sc4_ui_dat.py` packages that script into an uncompressed DBPF file.
-- `Dev/ui/SC4-ModernCamera.dat` is the ignored generated companion resource.
-- The Visual Studio pre-build step regenerates the DAT, and the post-build step copies it beside the plugin DLL.
+- The Visual Studio pre-build step generates the companion DAT, and the post-build step copies it beside the plugin DLL.
 - `Dev/src/SC4WindowManager.cpp` owns plugin windows, notification dialogs, the floating settings button, the production Settings window, the Advanced Settings child window, and the control laboratory.
 - `docs/changelog.md` is baked into the first-install greeting window by the DAT builder. The greeting version is read from `Dev/src/PluginVersion.h`, not from the changelog text.
 
@@ -22,13 +21,13 @@ The DBPF resource identifiers are:
 | Instance | `0x3D0C0701` |
 | Root window CLSID/control ID | `0x3D0C0702` |
 
-The window is instantiated through `cIGZUIScriptService::CreateWindowFromScript`. Controls should be authored in the UI script and then retrieved by ID with `GetChildWindowFromIDRecursive`.
+The window is instantiated through `cIGZUIScriptService::CreateWindowFromScript`. Controls are authored in the UI script and retrieved by ID with `GetChildWindowFromIDRecursive`.
 
 ## Window-manager architecture
 
 `SC4WindowManager` is the plugin's single owner and integration point for UI. `Main.cpp` forwards lifecycle and input events to it instead of knowing how individual windows are constructed.
 
-The manager currently owns:
+The manager owns:
 
 - the baked first-install/version/changelog greeting window;
 - the baked Controls help popup opened from the greeting window;
@@ -43,7 +42,7 @@ Each window keeps its own control IDs, layout state, and notification handling, 
 - closing every plugin window during city shutdown;
 - reporting whether any managed window is visible;
 - routing mouse-wheel input to the window beneath the pointer;
-- creating basic SC4 notification dialogs through the verified native wrapper.
+- creating basic SC4 notification dialogs through the native wrapper.
 
 This keeps game lifecycle policy in one place and prevents `Main.cpp` from accumulating window-specific resource IDs or control behavior.
 
@@ -61,19 +60,19 @@ The factory returns an `SC4WindowHandle`; zero (`InvalidSC4WindowHandle`) indica
 
 Basic windows are instantiated from the generic `SC4-ModernCamera-BasicUI.txt` resource packed into the companion DAT. Runtime customization uses captions, `SetSize`, and relative `GZWinMoveTo` anchoring; it does not use either unsafe `SetArea` overload.
 
-Important caveat: runtime customization is not yet as reliable as baked script layout. A dynamically populated basic window appeared as a blank shell or ignored runtime size/caption changes in-game. For user-facing windows that must work on first load, prefer a dedicated baked UI resource and follow the control-laboratory pattern: create from script, add to the SC4 parent, center using `rootWindow->GetW()`/`GetH()`, set the winproc, then show.
+Runtime customization is less reliable than baked script layout. A dynamically populated basic window can appear as a blank shell or ignore runtime size/caption changes in-game. User-facing windows use dedicated baked UI resources and the control-laboratory pattern: create from script, add to the SC4 parent, center using `rootWindow->GetW()`/`GetH()`, set the winproc, then show.
 
 ## Resource and build behavior
 
 The UI DAT is a required runtime resource, unlike the user settings JSON files. Visual Studio regenerates it with `tools/build_sc4_ui_dat.py` during the project pre-build event, then copies it to the Plugins folder during post-build. The DAT builder uses only Python's standard library so the build does not require Pillow or other Python packages. The JSON files are created by the plugin as needed and must not be copied by the build.
 
-The DBPF writer currently emits:
+The DBPF writer emits:
 
 - a 96-byte DBPF header;
 - UTF-8 legacy UI scripts as uncompressed resources;
 - one 20-byte index entry per resource.
 
-The packager currently emits these UI script resources in the same type/group:
+The packager emits these UI script resources in the same type/group:
 
 | Instance | Purpose |
 | --- | --- |
@@ -85,13 +84,13 @@ The packager currently emits these UI script resources in the same type/group:
 | `0x3D0C0903` | Camera settings window |
 | `0x3D0C0905` | Advanced Settings window |
 
-The same DAT also carries custom UI image resources for the floating menu icon, selected/disabled button states, title-bar camera icon, and welcome arrow art. The packager substitutes the verified ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-ModernCamera {PluginVersion::String} Installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`. Keeping these transformations in the build step allows readable source files to remain easy to edit while preserving the exact native bitmap and text configuration that SC4 expects.
+The same DAT also carries custom UI image resources for the floating menu icon, selected/disabled button states, title-bar camera icon, and welcome arrow art. The packager substitutes the ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-ModernCamera {PluginVersion::String} Installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`.
 
-The settings option buttons use the custom button-stage image resource `0x856DDBAC / 0x3D0C0700 / 0x3D0C0907`, generated from `Dev/ui/menu-button-stages.png`. The image strip order is Disabled, Normal, Selected, Hovered. The selected state uses the green `#25DC80` fill baked into the asset. Runtime calls to `cIGZWin::SetFillColor` and `SetFillColorRGB` caused a debug CRT ESP mismatch when opening the settings window, so selected-state coloring must be baked into button image resources instead of applied through those `cIGZWin` methods.
+The settings option buttons use the custom button-stage image resource `0x856DDBAC / 0x3D0C0700 / 0x3D0C0907`, generated from `Dev/ui/menu-button-stages.png`. The image strip order is Disabled, Normal, Selected, Hovered. The selected state uses the green `#25DC80` fill baked into the asset. Calls to `cIGZWin::SetFillColor` and `SetFillColorRGB` require in-game ABI validation before use, so selected-state coloring remains baked into button image resources.
 
 Use `cIGZWinBtn::ToggleOn()` and `ToggleOff()` to select option buttons. Use `cIGZWin::SetFlag(cIGZWin::WinFlag_Enabled, false)` to switch a control to its disabled image and make it unclickable. Apply selection before the enabled flag when a disabled group still needs a logical selected state.
 
-## Custom UI image and FSH research
+## Custom UI Images
 
 Native UI scripts reference image resources with two IDs:
 
@@ -99,7 +98,7 @@ Native UI scripts reference image resources with two IDs:
 image={group,instance}
 ```
 
-The resource type is not written in the UI script. Existing UI assets and local plugin code indicate that UI/button images are DBPF resources with:
+The resource type is not written in the UI script. UI/button images are DBPF resources with:
 
 ```text
 Type:  0x856DDBAC
@@ -107,43 +106,14 @@ Group: value from the first `image={...}` field
 IID:   value from the second `image={...}` field
 ```
 
-The game also uses FSH textures under type `0x7AB50E44` for other texture families. A Reader export from `Girl Shantae & Elspeth.dat` provided a verified decoded FSH sample:
-
-```text
-TGI:          0x7AB50E44 / 0x0986135E / 0x26AA0002
-Raw file:     file00000002.fsh
-Decoded file: file_dec00000003.fsh
-PNG export:   converted.png
-```
-
-The raw file is the compressed DBPF record. It begins:
-
-```text
-34 87 01 00 10 FB 0C 00 60 E4 ...
-```
-
-Measured fields:
-
-```text
-0x00018734 = 100,148 compressed record bytes
-0x10FB     = DBPF/RefPack/QFS compression marker
-0x0C0060   = 786,528 decompressed bytes
-```
-
-The decoded file is the true FSH/SHPI payload and begins directly with `SHPI`:
-
-```text
-53 48 50 49 60 00 0C 00 03 00 00 00 47 32 36 34 ...
-```
-
-Decoded FSH header:
+The builder emits uncompressed SHPI/FSH payloads. The SHPI header is:
 
 | Offset | Size | Value | Meaning |
 | --- | ---: | --- | --- |
 | `0x00` | 4 | `SHPI` | FSH magic |
-| `0x04` | 4 | `0x000C0060` | total decoded FSH size, 786,528 |
-| `0x08` | 4 | `3` | image count |
-| `0x0C` | 4 | `G264` | directory/group tag |
+| `0x04` | 4 | total FSH size | payload size |
+| `0x08` | 4 | image count | number of images |
+| `0x0C` | 4 | directory/group tag | usually `G264` |
 
 Directory entries begin at `0x10`. Each entry is 8 bytes:
 
@@ -152,23 +122,9 @@ Directory entries begin at `0x10`. Each entry is 8 bytes:
 | Name | 4 | image name/tag |
 | Offset | 4 | little-endian offset to the image block |
 
-The sample contains:
+After the directory is an 8-byte metadata/padding field.
 
-| Entry | Name | Offset |
-| ---: | --- | ---: |
-| 0 | `NONE` | `0x00000030` |
-| 1 | `NONE` | `0x00040040` |
-| 2 | `NONE` | `0x00080050` |
-
-After the directory is an 8-byte metadata/padding field. In the sample it is ASCII `20241122`.
-
-Each image block begins with a 16-byte image header. The first sample block begins:
-
-```text
-61 00 00 00 00 02 00 02 00 00 00 00 00 00 00 00
-```
-
-Parsed:
+Each image block begins with a 16-byte image header:
 
 | Offset | Size | Value | Meaning |
 | --- | ---: | --- | --- |
@@ -181,27 +137,25 @@ Parsed:
 | `+0x0C` | 4 | `0` | reserved/unknown |
 | `+0x10` | variable | image bytes | payload |
 
-The sample's exported `converted.png` is 512 by 512 RGBA. Decoding the first image payload as DXT3 matched Reader's exported PNG closely (`MSE ~= 1.6`), while DXT5 was much worse. Therefore, for this sample:
+The builder uses DXT3:
 
 ```text
 FSH image format 0x61 = DXT3
 ```
 
-DXT3 data is 16 bytes per 4-by-4 pixel block. For 512 by 512:
+DXT3 data is 16 bytes per 4-by-4 pixel block:
 
 ```text
-(512 / 4) * (512 / 4) * 16 = 262,144 payload bytes
+(width / 4) * (height / 4) * 16
 ```
 
-That exactly matches each sample block's payload size.
-
-For the plugin's proposed 44-by-44, four-state menu button strip (`moderncamera-menu-icon.png`, 176 by 44 RGBA), a DXT3 payload would be:
+For `Dev/ui/moderncamera-menu-icon.png`, a 176-by-44 four-state strip, the DXT3 payload size is:
 
 ```text
 (176 / 4) * (44 / 4) * 16 = 7,744 bytes
 ```
 
-A minimal uncompressed one-image FSH/SHPI payload for that strip is expected to be about:
+A minimal uncompressed one-image FSH/SHPI payload for that strip is:
 
 ```text
 16 bytes  SHPI header
@@ -213,7 +167,7 @@ A minimal uncompressed one-image FSH/SHPI payload for that strip is expected to 
 7792 bytes total
 ```
 
-The plugin's menu icon is now packaged by `tools/build_sc4_ui_dat.py` from `Dev/ui/moderncamera-menu-icon.png`. The generated DAT contains the icon as an uncompressed SHPI/FSH payload with this TGI:
+`tools/build_sc4_ui_dat.py` packages `Dev/ui/moderncamera-menu-icon.png` as an uncompressed SHPI/FSH payload with this TGI:
 
 ```text
 Type:  0x856DDBAC
@@ -227,7 +181,7 @@ The corresponding UI script reference is:
 image={3d0c0700,3d0c0900}
 ```
 
-The ignored generated `Dev/ui/SC4-ModernCamera.dat` should contain the UI script resources plus `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900` with an `SHPI` payload. The FSH structure and DXT3 decoding are verified from Reader output, and the packager emits the expected resource shape. In-game loading of this custom UI image is still the next thing to verify.
+The generated companion DAT contains the UI script resources plus `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900` with an `SHPI` payload.
 
 ## UI script coordinates
 
@@ -239,13 +193,13 @@ area=(left, top, right, bottom)
 
 They are not `(left, top, width, height)`. Treating the last two values as dimensions produced invalid layouts and, in some cases, parser or runtime crashes.
 
-Child coordinates are relative to the root window. The current root is 570 by 600 pixels.
+Child coordinates are relative to the root window. The control-laboratory root is 570 by 600 pixels.
 
 Caption attributes are literal strings. SC4's UI parser does not HTML/XML-decode text entities in captions; `&amp;` displays as `&amp;`, not `&`. Preserve plain ampersands in authored text. Only avoid or replace characters that would break the quoted attribute itself, such as double quotes and angle brackets.
 
 ## Window layout convention
 
-The test window now has three logical bands:
+The test window has three logical bands:
 
 - Header: title and the native X close control.
 - Content viewport: vertically scrolling controls, from local Y 108 through 530.
@@ -259,7 +213,7 @@ SC4 does not reliably clip child windows to a parent or viewport. A scrolling co
 
 ### Standard button
 
-The normal SC4 button atlas currently used by the laboratory is:
+The laboratory uses this normal SC4 button atlas:
 
 ```text
 image={46a006b0,144161eb}
@@ -285,7 +239,7 @@ It is a normal `GZWinBtn`, not special window chrome. Give it its own unique con
 
 A checkbox is not a wide standard button with `style=radiocheck`. That combination indexes the wrong state atlas and can expose uninitialized or back-buffer pixels, producing scenery-dependent distortion.
 
-The verified pattern is a small bitmap button plus a separate text label:
+The pattern is a small bitmap button plus a separate text label:
 
 ```text
 clsid=GZWinBtn
@@ -306,7 +260,7 @@ The label is a mouse-transparent `GZWinText` beside the 20-by-22-pixel button. T
 
 Both horizontal and vertical native controls instantiate and render successfully from UI script resources. The laboratory's content scrollbar is a fixed control; the rest of the controls move beneath it.
 
-The vertical scrollbar currently uses:
+The vertical scrollbar uses:
 
 ```text
 minmaxvalue=(0,600)
@@ -326,7 +280,7 @@ The root window receives command messages with `dwMessageType == 3`.
 | Option-group selection | `0x88710F1C` | Control ID | Selected option (1, 2, ...) |
 | Slider/scrollbar interaction | `0x887113A3` | Control ID | observed as 0 |
 
-Buttons also emit additional state messages ending in F7, F8, and F9. These are useful diagnostic data but should not be treated as completed clicks.
+Buttons also emit additional state messages ending in F7, F8, and F9. These diagnostic messages should not be treated as completed clicks.
 
 `GZWinOptGrp` also creates anonymous internal option buttons. They emit button-state notifications with control ID `0` (observed as `0x287259F7`) immediately before the owning option-group selection notification. The laboratory records these as `optionGroupInternalButton`.
 
@@ -336,9 +290,9 @@ Every laboratory interaction is written to the normal plugin log and serialized 
 
 ## Scrollbar handling
 
-The SDK does not currently expose a verified concrete scrollbar interface that safely returns its value. The generic command message also reports `dwData3 == 0`.
+The GZCOM headers expose concrete declarations for `cIGZWinScrollbar` and `cIGZWinSlider`. Their methods require in-game validation before production code calls value accessors directly. The generic command message reports `dwData3 == 0`.
 
-The working laboratory implementation therefore maps the cursor position to a logical scroll offset:
+The laboratory maps the cursor position to a logical scroll offset:
 
 - clicking the upper/lower arrow zones moves by 40 pixels;
 - clicking or dragging the track maps its cursor ratio to the 0-600 content range;
@@ -364,7 +318,7 @@ and pass those deltas to `GZWinMoveTo`. Passing absolute coordinates causes cont
 
 SC4 is a 32-bit application, so a wrong calling convention or virtual signature corrupts the stack immediately. Debug builds report this as `_RTC_CheckEsp`; release builds may simply crash.
 
-Verified startup popup wrapper:
+Startup popup wrapper:
 
 ```cpp
 bool (__cdecl*)(cIGZString const& caption, cIGZString const& message)
@@ -372,12 +326,10 @@ bool (__cdecl*)(cIGZString const& caption, cIGZString const& message)
 
 at game address `0x78DD80`. Ignore the Boolean return value. A `__stdcall` declaration caused an ESP mismatch after dismissing the popup.
 
-The following SDK declarations or reverse-engineered paths have proven unsafe in this context and must not be used until their ABI is verified:
+The following SDK declarations or reverse-engineered paths require ABI validation before use:
 
 - `cIGZWinCtrlMgr` programmatic control factories; `CreateLabel` caused a stack-balance failure.
-- `cIGZWin::SetArea(cRZRect)`.
-- `cIGZWin::SetArea(left, top, right, bottom)`.
-- `CenterWindowInRect()`.
+- `cIGZWin::SetArea(cRZRect)`, `cIGZWin::SetArea(left, top, right, bottom)`, and `CenterWindowInRect()`; production use requires targeted in-game validation.
 
 Manual centering is safe when the required movement is expressed as a relative `GZWinMoveTo` delta.
 
@@ -385,17 +337,17 @@ Safe geometry queries used by the laboratory are `GetL`, `GetT`, `GetR`, and `Ge
 
 ## Lifecycle and input behavior
 
-The first-install/changelog popup is a baked native SC4 window generated from `docs/changelog.md`. It is displayed during the first city load for a newly installed plugin version. Controls and camera-settings guidance are intentionally kept out of the changelog body; the greeting window has a `View Controls` button that opens a smaller baked controls popup and a separate top-right note pointing to the floating camera button. The changelog body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes`, not a plain `GZWinText`, so release notes can grow without increasing the popup size.
+The first-install/changelog popup is a baked native SC4 window generated from `docs/changelog.md`. It is displayed during the first city load for each installed plugin version. Controls and camera-settings guidance are intentionally kept out of the changelog body; the greeting window has a `View Controls` button that opens a smaller baked controls popup and a separate top-right note pointing to the floating camera button. The changelog body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes`, not a plain `GZWinText`, so release notes can grow without increasing the window size.
 
-Creating the managed greeting immediately during city-load notification caused a crash. Deferring it by a short Win32 timer, currently 3 seconds, allowed the city view and UI hierarchy to finish initializing before the plugin created its own window.
+Creating the managed greeting during city-load notification can run before the city view and UI hierarchy finish initializing. A 3-second Win32 timer defers greeting creation until the native UI is ready.
 
-Opening a plugin child window directly inside a settings-window button callback can leave the new child behind the settings window after SC4 finishes its own command handling. The stable pattern is to schedule the child open on a short timer, let the button callback return, then send the settings window back and call `PullToFront()` on the child. This is used for the Advanced Settings and Show Changelog buttons.
+Opening a plugin child window directly inside a settings-window button callback can leave the child behind the settings window after SC4 finishes its own command handling. The stable pattern is to schedule the child open on a short timer, let the button callback return, then send the settings window back and call `PullToFront()` on the child. This is used for the Advanced Settings and Show Changelog buttons.
 
-Advanced Settings and Show Changelog have an additional verified z-order guard: when the user explicitly opens the child from Settings, destroy and recreate that child before showing it, then send Settings back and pull the child to the front. Reusing an existing native child can inherit stale z-order after the user changes settings, especially after switching to Classic and reopening a child window. Do not "simplify" this back to ordinary reuse unless a replacement z-order rule has been verified in game.
+Advanced Settings and Show Changelog use an additional z-order guard: when the user explicitly opens the child from Settings, destroy and recreate that child before showing it, then send Settings back and pull the child to the front. Reusing an existing native child can inherit stale z-order after the user changes settings, especially after switching to Classic and reopening a child window. Do not replace this with ordinary reuse unless a replacement z-order rule is validated in game.
 
 The control laboratory is created only after the UI services and city view are available. While it is visible, camera input is suppressed so clicks and drags intended for controls cannot move the city camera.
 
-Most root windows and controls should be reused by showing/hiding them. Avoid reconstructing the entire hierarchy during ordinary interaction unless a specific native UI behavior requires it. Advanced Settings is the current exception because recreating it has proven more reliable for child-window z-order.
+Most root windows and controls should be reused by showing/hiding them. Avoid reconstructing the entire hierarchy during ordinary interaction unless a specific native UI behavior requires it. Advanced Settings is an exception because recreation prevents stale child-window z-order.
 
 ## Native hide/show UI synchronization
 
@@ -411,18 +363,18 @@ Validated behavior:
 
 The lower-left click area remains intentionally broad for diagnostics and correlation, but it is not the source of truth. It must not directly hide/show the camera button or call `MinimizeUI` itself. It only logs that a likely native UI toggle click happened; the camera button state changes only when the native `MinimizeUI(bool)` hook observes the real state transition.
 
-Failed approaches:
+Rejected approaches:
 
 - Exact pixel hit boxes for the visible and restored native UI buttons were too fragile. The pressed and restored states move slightly, and adjacent clicks could leave the camera button out of sync.
 - Fixed-location virtual mouse probes could detect the first minimize but did not reliably detect restore.
-- Timer retries made the behavior feel laggy and still missed restore.
+- Timer retries introduced latency and did not reliably detect restore.
 - Native GZ window hit-testing of the restore button returned the full 3D surface (`0x6A5E44B6`) rather than a button/control ID, so there was no reliable `cIGZWinBtn::IsOn()` state to read.
 
 Implementation notes:
 
-- The current Windows v641 `cISC4View3DWin` vtable slot used for `MinimizeUI(bool)` is `55`, counting the inherited `cIGZUnknown` entries.
+- The Windows v641 `cISC4View3DWin` vtable slot used for `MinimizeUI(bool)` is `55`, counting the inherited `cIGZUnknown` entries.
 - If the GZCOM header changes, re-count this slot before touching the hook.
-- Keep the hook narrowly scoped and avoid adding more pixel-probe heuristics unless the native method hook stops firing in a new game build.
+- Keep the hook narrowly scoped and avoid adding pixel-probe heuristics unless the native method hook stops firing for a supported game executable.
 
 ## Production settings behavior
 
@@ -443,15 +395,7 @@ Runtime files are located in the `SC4-ModernCamera` subfolder beside the plugin 
 - `test.json`: control-laboratory event/state output.
 - `SC4-ModernCamera.log`: plugin log.
 
-These files are generated at runtime and are not build artifacts. Existing root-level files from earlier development builds are migrated into the subfolder before the logger or settings system opens them. The DLL and companion UI DAT remain in the Plugins root.
-
-## Research sources
-
-The repositories and game resources that informed this work include:
-
-- `0xC0000054/sc4-region-census`, especially its native UI DAT and close-button definition;
-- the game's `SimCity_1.dat`, used to find native ordinance checkbox resources;
-- `0xC0000054/sc4-dll-utilities` and the bundled GZCOM headers for service and plugin patterns.
+These files are generated at runtime and are not build artifacts. Legacy root-level files are migrated into the subfolder before the logger or settings system opens them. The DLL and companion UI DAT remain in the Plugins root.
 
 ## Production-window recommendations
 
@@ -467,12 +411,12 @@ For the settings and diagnostics UI:
 8. Keep diagnostics controls available in both Modern and Classic.
 9. Hide partially visible scrolling controls instead of depending on clipping.
 10. Route every scroll input through one offset and layout function.
-11. Log raw notifications for any newly introduced control before assigning semantics.
-12. Do not call an SDK virtual method until its 32-bit ABI has been verified against the game.
+11. Log raw notifications for controls before assigning semantics.
+12. Do not call an SDK virtual method until its 32-bit ABI has been validated against the game.
 
 ## Open questions
 
-- The concrete slider, spinner, text-edit, option-group, and scrollbar interfaces still need ABI-safe method declarations before values can be queried directly.
-- Direct ABI-safe access to a native scrollbar's numeric value has not yet been confirmed; wheel input currently activates its native arrow controls.
+- The concrete slider, spinner, text-edit, option-group, and scrollbar declarations are vendored in `Dev/vendor/gzcom`; production code should only use their virtual methods after a targeted in-game validation pass.
+- Direct ABI-safe access to a native scrollbar's numeric value is unconfirmed; wheel input activates its native arrow controls.
 - Keyboard focus, tab order, and accessibility behavior need a dedicated pass.
-- The control laboratory still writes `test.json`; production Settings and Advanced Settings do not depend on it.
+- The control laboratory writes `test.json`; production Settings and Advanced Settings do not depend on it.

@@ -1,16 +1,13 @@
 # Camera Zoom and Rotation Design
 
-This document defines the intended camera behavior for GitHub issue
-[#4](https://github.com/UncleUncleRj/SC4-ModernCamera/issues/4). It incorporates
-the original camera concept, play testing in SC4, and comparison testing with
-other city-building camera systems.
+This document defines SC4-ModernCamera zoom, pitch, yaw, rotation, and WASD behavior.
 
 ## Core Principle
 
 Zoom distance, pitch, and yaw are independent persistent camera state.
 
 The mouse wheel changes zoom distance only. It must not select, restore, or
-otherwise argue with the player's pitch or yaw. Middle-mouse drag changes pitch
+otherwise interfere with the player's pitch or yaw. Middle-mouse drag changes pitch
 and yaw at any zoom distance, and the selected orientation remains in effect
 until the player changes it again.
 
@@ -74,7 +71,7 @@ This produces all desired view types without a forced zoom/pitch curve:
 
 ## Rotation Pivot and Anchor
 
-At the beginning of an M3 rotation gesture, capture SC4's current valid ground
+At the beginning of an M3 rotation gesture, capture SC4's valid ground
 focus and freeze it until M3 is released. Pitch and yaw rotate the camera around
 that pivot. This is the conventional stable orbit-camera model: the camera
 position traces the arc while the ground anchor does not drift.
@@ -88,16 +85,15 @@ It also suppresses target velocity during the gesture. This should prevent
 inertial focus drift and give SC4 a stable logical point on playable terrain for
 rendering and culling.
 
-The physical camera should remain within the playable-map constraints already
+The physical camera should remain within the playable-map constraints
 enforced by SC4. Rotation near map boundaries requires runtime testing. If an
-orbit would place the camera outside valid bounds, later work may clamp the
+orbit would place the camera outside valid bounds, the implementation may clamp the
 orbit radius or blend toward in-place rotation.
 
 ### Possible dual-anchor extension
 
 SC4 may distinguish the visible lens target from the logical target used for
-culling. If runtime investigation confirms that distinction, a future version
-may use:
+culling. If runtime validation confirms that distinction, the implementation may use:
 
 - A moving visual target derived from the requested pitch/yaw.
 - A frozen or map-clamped logical ground anchor used by SC4's renderer.
@@ -105,7 +101,7 @@ may use:
 For a stationary camera, the visible ground target for yaw would trace a circle
 around the camera's ground projection. Its approximate radius on level terrain
 would be `camera height / tan(downward pitch)`. This is not enabled until the
-roles of the reconstructed camera fields are verified; moving the wrong target
+roles of the reconstructed camera fields are validated; moving the wrong target
 could reintroduce drift, disappearing buildings, or void-rendering artifacts.
 
 ## Rendering and Culling
@@ -119,15 +115,15 @@ stage, renderer refresh, camera position, and an internal logical focus may all
 participate. F8 camera dumps and gesture/zoom logging should be used to compare
 healthy and broken states before assigning unverified meanings to fields.
 
-## Current Implementation Checkpoint
+## Implementation Behavior
 
 - Wheel zoom uses continuous magnification across SC4's native zoom stages.
 - Wheel zoom reapplies the player's current pitch and yaw after native stage
   changes.
 - M3 horizontal drag changes yaw.
 - M3 vertical drag changes pitch.
-- M3 down freezes the current rotation pivot; M3 up releases it.
-- M3 captures the current orthographic scale. During rotation, custom
+- M3 down freezes the rotation pivot; M3 up releases it.
+- M3 captures the orthographic scale. During rotation, custom
   magnification counters SC4's square-to-diamond bounds-fit so the visible zoom
   does not bounce merely to keep every map corner inside the viewport.
 - Optional WASD movement consumes game W/A/S/D input only while Modern camera mode
@@ -140,8 +136,8 @@ healthy and broken states before assigning unverified meanings to fields.
   The wider window delays that handoff and maps it into the safer interior of
   the adjacent bucket instead.
 - Gesture anchor capture/release and every zoom update are logged.
-- The experimental automatic pitch curve, vertical-M3 dolly zoom, and Shift
-  free-look mode have been removed.
+- Automatic pitch curves, vertical-M3 dolly zoom, and Shift free-look mode are
+  outside this design.
 
 ## Acceptance Criteria
 
@@ -157,11 +153,11 @@ healthy and broken states before assigning unverified meanings to fields.
   artifacts.
 - No camera orientation can invert or enter an invalid singular state.
 
-## Stabilization Summary
+## Runtime Characteristics
 
 Runtime testing confirmed that SC4 expands its orthographic scale by roughly
 the square-to-diamond fit factor while rotating. Compensating that scale removed
 the prominent camera bounce at top-down, angled, and close views. A widened
 native-yaw hysteresis window also substantially reduced disappearing building
 sides at quarter-turn handoffs. Small rendering artifacts remain possible at
-non-native camera angles and are intentionally deferred for later refinement.
+non-native camera angles.

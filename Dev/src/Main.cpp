@@ -5,8 +5,10 @@
 #include "cIGZWin.h"
 #include "cIGZWinMgr.h"
 #include "cIGZWinProcFilterW32.h"
+#include "cIGZWinTextEdit.h"
 #include "cISC4App.h"
 #include "cISC4View3DWin.h"
+#include "cRZAutoRefCount.h"
 #include "cRZMessage2COMDirector.h"
 #include "GZServPtrs.h"
 #include "Logger.h"
@@ -698,6 +700,12 @@ bool IsCommandShortcutModifierDown()
         || IsVirtualKeyDown(VK_RWIN);
 }
 
+bool IsTextEditWindow(cIGZWin* window)
+{
+    cRZAutoRefCount<cIGZWinTextEdit> textEdit;
+    return window && window->QueryInterface(GZIID_cIGZWinTextEdit, textEdit.AsPPVoid());
+}
+
 bool IsCameraKeyboardFocus()
 {
     cIGZWinMgrPtr winMgr;
@@ -708,6 +716,15 @@ bool IsCameraKeyboardFocus()
     cIGZWin* focusedWindow = winMgr->GZGetFocus();
     if (!focusedWindow) {
         return true;
+    }
+
+    if (IsTextEditWindow(focusedWindow)) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Verbose,
+            "WASD keyboard pass-through: focused window is a text edit. Focus:{"
+            + DescribeGZWindow(focusedWindow)
+            + "}");
+        return false;
     }
 
     const uint32_t focusedID = focusedWindow->GetID();

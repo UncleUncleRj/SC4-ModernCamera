@@ -122,17 +122,17 @@ class cIGZWin : public cIGZUnknown
 		virtual int32_t GetR() const = 0;
 		virtual int32_t GetB() const = 0;
 
-		virtual int32_t* GetArea() const = 0;
 		virtual bool GetArea(cRZRect& rect) const = 0;
-		virtual int32_t* GetAreaAbsolute() const = 0;
+		virtual int32_t* GetArea() const = 0;
 		virtual bool GetAreaAbsolute(cRZRect& rect) const = 0;
+		virtual int32_t* GetAreaAbsolute() const = 0;
 
 		virtual bool SetW(int32_t value) = 0;
 		virtual bool SetH(int32_t value) = 0;
 		virtual bool SetSize(int32_t unknown1, int32_t unknown2) = 0;
 
-		virtual bool SetArea(int32_t left, int32_t top, int32_t right, int32_t bottom) = 0;
 		virtual bool SetArea(const cRZRect& rect) = 0;
+		virtual bool SetArea(int32_t left, int32_t top, int32_t right, int32_t bottom) = 0;
 
 		virtual bool GZWinMoveTo(int32_t x, int32_t y) = 0;
 
@@ -198,12 +198,12 @@ class cIGZWin : public cIGZUnknown
 		virtual bool PrivateBuffer(bool unknown1) = 0;
 		virtual intptr_t GetPrivateBuffer() = 0;// cIGZBuffer*
 
-		virtual void GetFillColor(uint8_t& red, uint8_t& green, uint8_t& blue) = 0;
-		virtual void SetFillColor(uint8_t red, uint8_t green, uint8_t blue) = 0;
-		virtual uint32_t GetFillColor() = 0;
-		virtual void SetFillColor(uint32_t fillColor) = 0;
 		virtual bool GetFillColor(cRZColor& fillColor) = 0;
+		virtual uint32_t GetFillColor() = 0;
+		virtual void GetFillColor(uint8_t& red, uint8_t& green, uint8_t& blue) = 0;
 		virtual bool SetFillColor(cRZColor const& color) = 0;
+		virtual void SetFillColor(uint32_t fillColor) = 0;
+		virtual void SetFillColor(uint8_t red, uint8_t green, uint8_t blue) = 0;
 		virtual bool MakeFillColor(uint8_t red, uint8_t green, uint8_t blue) = 0;
 
 		virtual void SetFadeEffectPeriod(int32_t unknown1, int32_t unknown2) = 0;
@@ -222,8 +222,8 @@ class cIGZWin : public cIGZUnknown
 		virtual bool RemoveMessageFilter(cIGZWinMessageFilter* unknown1) = 0;
 
 		virtual bool SetSize(cRZPoint const& size) = 0;
+		virtual void CenterWindowInRect(cRZRect const& rect) = 0;
 		virtual void CenterWindowInRect(cRZRect* rect) = 0;
-		virtual void CenterWindowInRect() = 0;
 
 		virtual bool IsPointInWindowWindowCoordinates(int32_t x, int32_t y) = 0;
 		virtual bool IsPointInWindowParentCoordinates(int32_t x, int32_t y) = 0;

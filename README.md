@@ -7,7 +7,7 @@ SC4-ModernCamera is a DLL plugin for SimCity 4 Deluxe Edition. It completely cha
 - Windows version of SimCity 4 Deluxe Edition (Rush Hour)
 - Game version `641`, used by the Steam, GOG, and EA App digital releases
 
-Older disc/retail builds are not supported, and at this time support is not planned.
+Disc and retail builds are not supported.
 
 ## Installation
 
@@ -20,10 +20,10 @@ Older disc/retail builds are not supported, and at this time support is not plan
 
 3. Start the game and load a city.
 
-## Current Controls
+## Controls
 
-- **WASD**: Moves the camera (optional - can be disabled in-game)
 - - Hold SHIFT to move faster
+- **WASD**: Moves the camera. This can be disabled in-game.
 - **M3 + horizontal drag**: Rotates the camera.
 - **M3 + vertical drag**: Adjusts the camera pitch.
 - - In-game Option to Invert Vertical controls
@@ -45,10 +45,10 @@ These files can be safely ignored or deleted.
 
 ## Technical Documentation
 
-- [SimCity 4 default camera behavior](docs/default-camera.md) records the verified native zoom, pitch, yaw, and rotation behavior.
-- [Region preview save fix](docs/region-preview-save-fix.md) documents the save lifecycle integration, rejected hook approaches, and final normalization design.
-- [Settings window workflow](docs/settings-workflow.md) documents the current in-game settings behavior, Classic/Modern mode rules, WASD capture, redraw options, logging, and child-window z-order workflow.
-- [SimCity 4 native UI research](docs/native-ui-research.md) records the control recipes, message IDs, scrolling model, ABI hazards, and companion-DAT workflow discovered while building the settings-window prototype.
+- [SimCity 4 default camera behavior](docs/default-camera.md) records native zoom, pitch, yaw, and rotation behavior.
+- [Region preview save fix](docs/region-preview-save-fix.md) documents the save lifecycle integration, rejected hook approaches, and normalization design.
+- [Settings window workflow](docs/settings-workflow.md) documents in-game settings behavior, Classic/Modern mode rules, WASD capture, redraw options, logging, and child-window z-order workflow.
+- [SimCity 4 native UI research](docs/native-ui-research.md) records control recipes, message IDs, scrolling behavior, ABI constraints, and companion-DAT workflow.
 
 ## Building
 
@@ -65,7 +65,7 @@ This project builds on work from all around the SimCity 4 DLL modding community.
 - [gzcom-dll](https://github.com/nsgomez/gzcom-dll) provides the SimCity 4 GZCOM plugin SDK classes used by this DLL.
 - [3D Camera DLL for SimCity 4](https://github.com/memo33/sc4-3d-camera-dll) demonstrated the camera pitch/yaw memory tables and cheat-code driven camera overrides that made this project possible.
 - [sc4-render-services](https://github.com/caspervg/sc4-render-services), especially the camera-view-input sample, informed the reconstructed camera-control layout and cleaner camera update flow used here.
-- [sc4-dll-utilities](https://github.com/0xC0000054/sc4-dll-utilities) and [SC4Fix](https://github.com/nsgomez/sc4fix) informed the game-version detection fallback pattern.
+- [sc4-dll-utilities](https://github.com/0xC0000054/sc4-dll-utilities) and [SC4Fix](https://github.com/nsgomez/sc4fix) document the game-version detection fallback pattern used by this plugin.
 
 ## License
 
