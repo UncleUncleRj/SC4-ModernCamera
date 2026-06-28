@@ -8,6 +8,7 @@
 #include "cIGZWinTextEdit.h"
 #include "cISC4App.h"
 #include "cISC4View3DWin.h"
+#include "cISC4ViewInputControl.h"
 #include "cRZAutoRefCount.h"
 #include "cRZMessage2COMDirector.h"
 #include "GZServPtrs.h"
@@ -59,6 +60,12 @@ using MinimizeUIFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool minimi
 MinimizeUIFunction g_OriginalMinimizeUI = nullptr;
 void** g_View3DWinVTable = nullptr;
 bool g_MinimizeUIHookInstalled = false;
+
+enum class View3DToolClearReason : uint8_t
+{
+    ModernCameraEnabled,
+    WASDMovementEnabled,
+};
 
 // Cinematic Camera State
 bool g_IsMiddleMouseDown = false;
@@ -126,6 +133,97 @@ std::string DescribeGZWindow(cIGZWin* window)
         << " Visible:" << (window->IsVisible() ? "true" : "false")
         << " Enabled:" << (window->IsEnabled() ? "true" : "false");
     return stream.str();
+}
+
+cISC4View3DWin* GetView3DWinForInputReset(const char* context)
+{
+    cISC4AppPtr app;
+    if (!app) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            std::string(context) + ": failed to get cISC4App while clearing native tool state.");
+        return nullptr;
+    }
+
+    cIGZWin* mainWindow = app->GetMainWindow();
+    if (!mainWindow) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            std::string(context) + ": failed to get main window while clearing native tool state.");
+        return nullptr;
+    }
+
+    cIGZWin* parentWindow = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+    if (!parentWindow) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            std::string(context) + ": failed to get WinSC4App while clearing native tool state.");
+        return nullptr;
+    }
+
+    cISC4View3DWin* view3D = nullptr;
+    if (!parentWindow->GetChildAs(
+        kGZWin_SC4View3DWin,
+        kGZIID_cISC4View3DWin,
+        reinterpret_cast<void**>(&view3D)) || !view3D) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            std::string(context) + ": failed to get cISC4View3DWin while clearing native tool state.");
+        return nullptr;
+    }
+
+    return view3D;
+}
+
+const char* GetView3DToolClearReasonName(View3DToolClearReason reason)
+{
+    switch (reason) {
+    case View3DToolClearReason::ModernCameraEnabled:
+        return "Modern camera enabled";
+    case View3DToolClearReason::WASDMovementEnabled:
+        return "WASD movement enabled";
+    default:
+        return "input mode changed";
+    }
+}
+
+void ClearNativeView3DToolState(View3DToolClearReason reason)
+{
+    if (!g_IsCityLoaded) {
+        return;
+    }
+
+    const char* reasonName = GetView3DToolClearReasonName(reason);
+    cISC4View3DWin* view3D = GetView3DWinForInputReset(reasonName);
+    if (!view3D) {
+        return;
+    }
+
+    cISC4ViewInputControl* currentControl = view3D->GetCurrentViewInputControl();
+    if (currentControl) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string(reasonName)
+            + ": clearing current native view tool ID:"
+            + FormatWindowID(currentControl->GetID()));
+    }
+    else {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Verbose,
+            std::string(reasonName) + ": no current native view tool to clear.");
+    }
+
+    const bool removedControl = view3D->RemoveCurrentViewInputControl(true);
+    const bool killedKeyboardScrolling = view3D->KillKeyboardScrolling();
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        std::string(reasonName)
+        + ": native view input reset. RemoveCurrentViewInputControl="
+        + (removedControl ? "true" : "false")
+        + " KillKeyboardScrolling="
+        + (killedKeyboardScrolling ? "true" : "false"));
+
+    view3D->Release();
 }
 
 bool IsUsefulHitTestTarget(cIGZWin* candidate, cIGZWin* mainWindow, cIGZWin* parentWindow)
@@ -633,6 +731,7 @@ void ApplyModernCameraEnabled(bool enabled)
         ResetInputState();
     }
     else {
+        ClearNativeView3DToolState(View3DToolClearReason::ModernCameraEnabled);
         TriggerCityRedraw();
         StartPeriodicRedrawTimer();
     }
@@ -656,6 +755,9 @@ void ApplyInputSettingsChange()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: input settings changed; clearing held input state.");
     StopHeldWASDMovement(true);
+    if (g_IsModernCamEnabled && g_Settings.wasdMovement) {
+        ClearNativeView3DToolState(View3DToolClearReason::WASDMovementEnabled);
+    }
 }
 
 void ApplyDebugLoggingChange()

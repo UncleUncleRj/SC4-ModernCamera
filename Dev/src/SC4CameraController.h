@@ -143,6 +143,7 @@ private:
 	static bool Refresh(SC4CameraControlLayout& cameraControl);
 	static float SanitizePitch(float pitch);
 	static float SanitizeYaw(float yaw);
+	static void RestoreNativeAngleTables();
 	static void ApplyPitchOverride(float pitch);
 	static void ApplyYawOverride(float yaw);
 	static void OverwriteMemoryFloat(uintptr_t address, float value);

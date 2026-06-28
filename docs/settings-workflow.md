@@ -37,6 +37,7 @@ Modern mode:
 
 - re-enables the Modern-only controls;
 - restores the actual saved redraw aggression selection in Advanced Settings;
+- clears the current native view tool so Modern camera input does not inherit a zoning, network, or other tool cursor selected while Classic controls were active;
 - resumes Modern camera input and redraw behavior immediately.
 
 ## Redraw Aggression
@@ -62,6 +63,8 @@ WASD movement is a Modern camera feature. When Modern camera and WASD Movement a
 - movement remains active during M3 camera maneuvering and zoom.
 
 When WASD Movement is off, or Classic camera is active, the plugin stops consuming those keys and returns them to the game.
+
+When WASD Movement is re-enabled while Modern camera is active, the plugin clears the current native view tool before consuming WASD again. This prevents a tool selected through SC4's native W/A/S/D shortcuts from staying active while Modern camera movement starts.
 
 ## Slider Saves
 

@@ -307,6 +307,7 @@ SC4CameraController::SC4CameraController()
 
 void SC4CameraController::Reset()
 {
+	RestoreNativeAngleTables();
 	currentPitch = kDefaultPitch;
 	currentYaw = kDefaultYaw;
 	anglesInitialized = false;
@@ -1076,6 +1077,18 @@ void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraCo
 	cameraControl.viewTargetPosition = rotationViewTarget;
 	cameraControl.baseTargetForRotation = rotationBaseTarget;
 	cameraControl.viewTargetVelocity = {};
+}
+
+void SC4CameraController::RestoreNativeAngleTables()
+{
+	for (size_t i = 0; i < kZoomCount; i++) {
+		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
+		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
+		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
+		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
+	}
+	OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+	Logger::GetInstance().WriteLine(LogLevel::Info, "Camera Reset: restored native global pitch/yaw tables.");
 }
 
 void SC4CameraController::ApplyPitchOverride(float pitch)
