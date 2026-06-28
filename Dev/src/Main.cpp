@@ -36,12 +36,12 @@ static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 static constexpr uint32_t kGZWin_WinSC4App = 0x6104489A;
 static constexpr uint32_t kGZWin_SC4View3DWin = 0x9A47B417;
 static constexpr uint32_t kGZWin_SC4View3DSurface = 0x6A5E44B6;
+static constexpr size_t kView3DWinSetScrollingVTableIndex = 33;
 static constexpr size_t kView3DWinMinimizeUIVTableIndex = 55;
 static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
-static constexpr UINT kKeyboardPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kKeyboardPanTickMs = 33;
-static constexpr float kKeyboardPanStepsPerTick = 0.25f;
+static constexpr float kKeyboardPanNativeSpeed = 0.25f;
 static constexpr float kKeyboardPanBoostMultiplier = 3.0f;
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
 static constexpr UINT kHighPeriodicRedrawDelayMs = 1000;
@@ -51,15 +51,21 @@ static constexpr UINT kNativeCameraBaselineDelayMs = 1000;
 static constexpr UINT kDumpCameraInfoKey = VK_F8;
 static constexpr int32_t kNativeUICornerProbeMaxX = 260;
 static constexpr int32_t kNativeUICornerProbeMaxBottomOffset = 360;
+static constexpr uint32_t kModernCameraWindowIDMin = 0x3D0C0700;
+static constexpr uint32_t kModernCameraWindowIDMax = 0x3D0C09FF;
 
 // Global State
 bool g_IsCityLoaded = false;
 bool g_IsModernCamEnabled = true;
 bool g_IsNativeUIHidden = false;
 using MinimizeUIFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool minimize);
+using SetScrollingFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool scrolling, float x, float z);
 MinimizeUIFunction g_OriginalMinimizeUI = nullptr;
+SetScrollingFunction g_OriginalSetScrolling = nullptr;
 void** g_View3DWinVTable = nullptr;
+void** g_View3DWinSetScrollingVTable = nullptr;
 bool g_MinimizeUIHookInstalled = false;
+bool g_SetScrollingHookInstalled = false;
 
 enum class View3DToolClearReason : uint8_t
 {
@@ -74,7 +80,7 @@ bool g_WASDKeyWDown = false;
 bool g_WASDKeyADown = false;
 bool g_WASDKeySDown = false;
 bool g_WASDKeyDDown = false;
-bool g_WASDPanMovedSinceKeyDown = false;
+bool g_IsApplyingWASDScrolling = false;
 POINT g_LastMousePos = { 0, 0 };
 HWND g_CapturedMouseWindow = NULL;
 HHOOK g_KeyboardHook = NULL;
@@ -96,6 +102,7 @@ VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEve
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 void StopHeldWASDMovement(bool scheduleRedraw);
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize);
+bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z);
 
 struct NativeWheelHitTest
 {
@@ -135,13 +142,13 @@ std::string DescribeGZWindow(cIGZWin* window)
     return stream.str();
 }
 
-cISC4View3DWin* GetView3DWinForInputReset(const char* context)
+cISC4View3DWin* GetView3DWinForInput(const char* context)
 {
     cISC4AppPtr app;
     if (!app) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            std::string(context) + ": failed to get cISC4App while clearing native tool state.");
+            std::string(context) + ": failed to get cISC4App while handling native view input.");
         return nullptr;
     }
 
@@ -149,7 +156,7 @@ cISC4View3DWin* GetView3DWinForInputReset(const char* context)
     if (!mainWindow) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            std::string(context) + ": failed to get main window while clearing native tool state.");
+            std::string(context) + ": failed to get main window while handling native view input.");
         return nullptr;
     }
 
@@ -157,7 +164,7 @@ cISC4View3DWin* GetView3DWinForInputReset(const char* context)
     if (!parentWindow) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            std::string(context) + ": failed to get WinSC4App while clearing native tool state.");
+            std::string(context) + ": failed to get WinSC4App while handling native view input.");
         return nullptr;
     }
 
@@ -168,7 +175,7 @@ cISC4View3DWin* GetView3DWinForInputReset(const char* context)
         reinterpret_cast<void**>(&view3D)) || !view3D) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            std::string(context) + ": failed to get cISC4View3DWin while clearing native tool state.");
+            std::string(context) + ": failed to get cISC4View3DWin while handling native view input.");
         return nullptr;
     }
 
@@ -194,7 +201,7 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
     }
 
     const char* reasonName = GetView3DToolClearReasonName(reason);
-    cISC4View3DWin* view3D = GetView3DWinForInputReset(reasonName);
+    cISC4View3DWin* view3D = GetView3DWinForInput(reasonName);
     if (!view3D) {
         return;
     }
@@ -214,14 +221,23 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
     }
 
     const bool removedControl = view3D->RemoveCurrentViewInputControl(true);
+    const bool removedAllControls = view3D->RemoveAllViewInputControls(true);
+    const bool stoppedScrolling = view3D->ScrollStop();
     const bool killedKeyboardScrolling = view3D->KillKeyboardScrolling();
+    cISC4ViewInputControl* remainingControl = view3D->GetCurrentViewInputControl();
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
         std::string(reasonName)
         + ": native view input reset. RemoveCurrentViewInputControl="
         + (removedControl ? "true" : "false")
+        + " RemoveAllViewInputControls="
+        + (removedAllControls ? "true" : "false")
+        + " ScrollStop="
+        + (stoppedScrolling ? "true" : "false")
         + " KillKeyboardScrolling="
-        + (killedKeyboardScrolling ? "true" : "false"));
+        + (killedKeyboardScrolling ? "true" : "false")
+        + " RemainingToolID:"
+        + (remainingControl ? FormatWindowID(remainingControl->GetID()) : "none"));
 
     view3D->Release();
 }
@@ -372,8 +388,18 @@ void ClearHeldWASDKeys()
     g_WASDKeyADown = false;
     g_WASDKeySDown = false;
     g_WASDKeyDDown = false;
-    g_WASDPanMovedSinceKeyDown = false;
-    KillKeyboardPanTimer();
+}
+
+void StartKeyboardPanTimer()
+{
+    if (g_KeyboardPanTimerID != 0) {
+        return;
+    }
+
+    g_KeyboardPanTimerID = SetTimer(NULL, 0, kKeyboardPanTickMs, KeyboardPanTimerProc);
+    if (g_KeyboardPanTimerID == 0) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the WASD movement timer.");
+    }
 }
 
 void StartPeriodicRedrawTimer()
@@ -600,6 +626,40 @@ void InstallMinimizeUIHook()
 	view3D->Release();
 }
 
+void InstallSetScrollingHook()
+{
+	if (g_SetScrollingHookInstalled) {
+		return;
+	}
+
+	cISC4View3DWin* view3D = GetView3DWinForNativeUIHook();
+	if (!view3D) {
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "View3D SetScrolling hook: could not find cISC4View3DWin.");
+		return;
+	}
+
+	void** vtable = *reinterpret_cast<void***>(view3D);
+	void** slot = vtable ? &vtable[kView3DWinSetScrollingVTableIndex] : nullptr;
+	void* original = nullptr;
+
+	if (PatchVTableSlot(slot, reinterpret_cast<void*>(&HookedSetScrolling), &original)) {
+		g_View3DWinSetScrollingVTable = vtable;
+		g_OriginalSetScrolling = reinterpret_cast<SetScrollingFunction>(original);
+		g_SetScrollingHookInstalled = true;
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("View3D SetScrolling hook installed. VTable:")
+			+ FormatPointerValue(vtable)
+			+ " Slot:" + std::to_string(kView3DWinSetScrollingVTableIndex)
+			+ " Original:" + FormatPointerValue(original));
+	}
+	else {
+		Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: failed to patch vtable slot.");
+	}
+
+	view3D->Release();
+}
+
 void UninstallMinimizeUIHook()
 {
 	if (!g_MinimizeUIHookInstalled) {
@@ -618,6 +678,26 @@ void UninstallMinimizeUIHook()
 	g_OriginalMinimizeUI = nullptr;
 	g_View3DWinVTable = nullptr;
 	g_MinimizeUIHookInstalled = false;
+}
+
+void UninstallSetScrollingHook()
+{
+	if (!g_SetScrollingHookInstalled) {
+		return;
+	}
+
+	void** slot = g_View3DWinSetScrollingVTable ? &g_View3DWinSetScrollingVTable[kView3DWinSetScrollingVTableIndex] : nullptr;
+	if (slot && *slot == reinterpret_cast<void*>(&HookedSetScrolling)) {
+		PatchVTableSlot(slot, reinterpret_cast<void*>(g_OriginalSetScrolling), nullptr);
+		Logger::GetInstance().WriteLine(LogLevel::Info, "View3D SetScrolling hook uninstalled.");
+	}
+	else {
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "View3D SetScrolling hook: slot changed before uninstall.");
+	}
+
+	g_OriginalSetScrolling = nullptr;
+	g_View3DWinSetScrollingVTable = nullptr;
+	g_SetScrollingHookInstalled = false;
 }
 
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize)
@@ -656,6 +736,29 @@ bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimiz
 	return result;
 }
 
+bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z)
+{
+	(void)edx;
+
+	SetScrollingFunction original = g_OriginalSetScrolling;
+	if (!original) {
+		Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: original function pointer was null.");
+		return false;
+	}
+
+	const bool result = original(view3D, scrolling, x, z);
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		std::string("View3D SetScrolling observed. Source:")
+		+ (g_IsApplyingWASDScrolling ? "ModernCameraWASD" : "NativeOrOther")
+		+ " Scrolling:" + (scrolling ? "true" : "false")
+		+ " X:" + std::to_string(x)
+		+ " Z:" + std::to_string(z)
+		+ " Result:" + (result ? "true" : "false"));
+
+	return result;
+}
+
 void HandleNativeUICornerClick(const POINT& point)
 {
 	if (!IsNativeUICornerProbeClick(point)) {
@@ -674,7 +777,7 @@ void HandleNativeUICornerClick(const POINT& point)
 void ResetInputState()
 {
     KillRedrawTimers();
-    ClearHeldWASDKeys();
+    StopHeldWASDMovement(true);
     KillCameraDumpConfirmationTimer();
     KillNativeCameraBaselineTimer();
     g_CameraController.ClearCameraDumpConfirmation();
@@ -693,7 +796,7 @@ void ResetCameraToNativeView()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: reset camera requested.");
     KillRedrawTimers();
-    ClearHeldWASDKeys();
+    StopHeldWASDMovement(true);
     KillCameraDumpConfirmationTimer();
     KillNativeCameraBaselineTimer();
 
@@ -725,7 +828,7 @@ void ApplyModernCameraEnabled(bool enabled)
         LogLevel::Info,
         std::string("Settings UI: Modern Camera Enabled changed to ") + (enabled ? "true" : "false"));
     g_IsModernCamEnabled = enabled;
-    ClearHeldWASDKeys();
+    StopHeldWASDMovement(true);
 
     if (!enabled) {
         ResetInputState();
@@ -808,6 +911,11 @@ bool IsTextEditWindow(cIGZWin* window)
     return window && window->QueryInterface(GZIID_cIGZWinTextEdit, textEdit.AsPPVoid());
 }
 
+bool IsModernCameraWindowID(uint32_t id)
+{
+    return id >= kModernCameraWindowIDMin && id <= kModernCameraWindowIDMax;
+}
+
 bool IsCameraKeyboardFocus()
 {
     cIGZWinMgrPtr winMgr;
@@ -831,6 +939,23 @@ bool IsCameraKeyboardFocus()
 
     const uint32_t focusedID = focusedWindow->GetID();
     if (focusedID == kGZWin_SC4View3DWin || focusedID == kGZWin_SC4View3DSurface) {
+        return true;
+    }
+    if (IsModernCameraWindowID(focusedID)) {
+        if (g_WindowManager.HasVisibleWindow()) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Verbose,
+                "WASD keyboard pass-through: focused window is an open Modern Camera UI control. Focus:{"
+                + DescribeGZWindow(focusedWindow)
+                + "}");
+            return false;
+        }
+
+        Logger::GetInstance().WriteLine(
+            LogLevel::Verbose,
+            "WASD keyboard capture: focused window is a stale Modern Camera UI control. Focus:{"
+            + DescribeGZWindow(focusedWindow)
+            + "}");
         return true;
     }
 
@@ -873,23 +998,13 @@ bool IsCameraKeyboardFocus()
     return cameraFocus;
 }
 
-bool IsWASDVirtualKey(WPARAM key, float& rightSteps, float& forwardSteps)
+bool IsWASDVirtualKey(WPARAM key)
 {
-    rightSteps = 0.0f;
-    forwardSteps = 0.0f;
-
     switch (key) {
     case 'W':
-        forwardSteps = 1.0f;
-        return true;
     case 'S':
-        forwardSteps = -1.0f;
-        return true;
     case 'A':
-        rightSteps = -1.0f;
-        return true;
     case 'D':
-        rightSteps = 1.0f;
         return true;
     default:
         return false;
@@ -930,79 +1045,69 @@ bool ShouldCaptureWASDKeys()
         && !IsRightClickScrollingActive();
 }
 
-void StopHeldWASDMovement(bool scheduleRedraw)
+bool ApplyWASDMovement(const char* source, LogLevel successLogLevel)
 {
-    const bool moved = g_WASDPanMovedSinceKeyDown;
-    ClearHeldWASDKeys();
-    if (scheduleRedraw && moved) {
-        StartIdleTimer(kKeyboardPanIdleRedrawDelayMs);
-    }
-}
-
-bool PanCameraFromWASD(float rightSteps, float forwardSteps, const char* source)
-{
-    Logger& log = Logger::GetInstance();
-    if (!g_CameraController.HasNativeCameraState()) {
-        g_CameraController.DumpCameraInfo(source);
-    }
-    if (g_CameraController.PanByKeyboard(rightSteps, forwardSteps)) {
-        log.WriteLine(
-            LogLevel::Info,
-            "WASD camera pan handled by "
-            + std::string(source ? source : "unknown source")
-            + ": rightSteps=" + std::to_string(rightSteps)
-            + " forwardSteps=" + std::to_string(forwardSteps));
-        return true;
-    }
-
-    log.WriteLine(
-        LogLevel::Warning,
-        "WASD camera pan failed in "
-        + std::string(source ? source : "unknown source")
-        + "; key input was still consumed.");
-    return false;
-}
-
-bool PanCameraFromHeldWASD()
-{
-    if (!ShouldCaptureWASDKeys()) {
-        StopHeldWASDMovement(true);
+    cISC4View3DWin* view3D = GetView3DWinForInput(source ? source : "WASD movement");
+    if (!view3D) {
         return false;
     }
 
-    float rightSteps = (g_WASDKeyDDown ? 1.0f : 0.0f) - (g_WASDKeyADown ? 1.0f : 0.0f);
-    float forwardSteps = (g_WASDKeyWDown ? 1.0f : 0.0f) - (g_WASDKeySDown ? 1.0f : 0.0f);
+    const float rightSteps = (g_WASDKeyDDown ? 1.0f : 0.0f) - (g_WASDKeyADown ? 1.0f : 0.0f);
+    const float forwardSteps = (g_WASDKeyWDown ? 1.0f : 0.0f) - (g_WASDKeySDown ? 1.0f : 0.0f);
     if (rightSteps == 0.0f && forwardSteps == 0.0f) {
-        StopHeldWASDMovement(true);
+        const bool stopped = view3D->ScrollStop();
+        Logger::GetInstance().WriteLine(
+            successLogLevel,
+            "WASD movement stopped. Source:"
+            + std::string(source ? source : "unknown")
+            + " Result:" + (stopped ? "true" : "false"));
+        view3D->Release();
+        return stopped;
+    }
+
+    const float inputLength = std::sqrt((rightSteps * rightSteps) + (forwardSteps * forwardSteps));
+    if (inputLength <= 0.0001f) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            "WASD movement had an invalid input vector. Source:"
+            + std::string(source ? source : "unknown")
+            + " RightSteps:" + std::to_string(rightSteps)
+            + " ForwardSteps:" + std::to_string(forwardSteps));
+        view3D->Release();
         return false;
     }
 
-    const float length = std::sqrt((rightSteps * rightSteps) + (forwardSteps * forwardSteps));
-    if (length > 0.0f) {
-        const float speedMultiplier = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)
-            ? kKeyboardPanBoostMultiplier
-            : 1.0f;
-        const float stepsPerTick = kKeyboardPanStepsPerTick * speedMultiplier;
-        rightSteps = (rightSteps / length) * stepsPerTick;
-        forwardSteps = (forwardSteps / length) * stepsPerTick;
-    }
+    const float directionAngle = std::atan2(-forwardSteps, rightSteps);
+    const float speedMultiplier = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)
+        ? kKeyboardPanBoostMultiplier
+        : 1.0f;
+    const float scrollSpeed = kKeyboardPanNativeSpeed * speedMultiplier;
 
-    if (PanCameraFromWASD(rightSteps, forwardSteps, "held WASD movement tick")) {
-        g_WASDPanMovedSinceKeyDown = true;
-        return true;
-    }
-    return false;
+    g_IsApplyingWASDScrolling = true;
+    const bool nativeScrollResult = view3D->SetScrolling(true, directionAngle, scrollSpeed);
+    g_IsApplyingWASDScrolling = false;
+
+    Logger::GetInstance().WriteLine(
+        successLogLevel,
+        "WASD native movement updated. Source:"
+        + std::string(source ? source : "unknown")
+        + " RightSteps:" + std::to_string(rightSteps)
+        + " ForwardSteps:" + std::to_string(forwardSteps)
+        + " DirectionAngle:" + std::to_string(directionAngle)
+        + " ScrollSpeed:" + std::to_string(scrollSpeed)
+        + " Result:" + (nativeScrollResult ? "true" : "false"));
+
+    view3D->Release();
+    return nativeScrollResult;
 }
 
-void StartKeyboardPanTimer()
+void StopHeldWASDMovement(bool)
 {
-    if (g_KeyboardPanTimerID != 0) {
-        return;
-    }
-
-    g_KeyboardPanTimerID = SetTimer(NULL, 0, kKeyboardPanTickMs, KeyboardPanTimerProc);
-    if (g_KeyboardPanTimerID == 0) {
-        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the WASD movement timer.");
+    const bool hadHeldKey = HasHeldWASDKey();
+    ClearHeldWASDKeys();
+    KillKeyboardPanTimer();
+    if (hadHeldKey) {
+        ApplyWASDMovement("WASD capture stopped", LogLevel::Info);
     }
 }
 
@@ -1013,18 +1118,15 @@ void HandleWASDKeyState(WPARAM key, bool pressed)
         return;
     }
 
-    const bool wasAnyKeyHeld = HasHeldWASDKey();
-    *keyState = pressed;
-
-    if (pressed) {
-        if (!wasAnyKeyHeld) {
-            g_WASDPanMovedSinceKeyDown = false;
-            PanCameraFromHeldWASD();
+    if (*keyState != pressed) {
+        *keyState = pressed;
+        ApplyWASDMovement("WASD key capture", LogLevel::Info);
+        if (HasHeldWASDKey()) {
+            StartKeyboardPanTimer();
         }
-        StartKeyboardPanTimer();
-    }
-    else if (!HasHeldWASDKey()) {
-        StopHeldWASDMovement(true);
+        else {
+            KillKeyboardPanTimer();
+        }
     }
 }
 
@@ -1077,11 +1179,9 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
         const bool isKeyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool isKeyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
 
-        float rightSteps = 0.0f;
-        float forwardSteps = 0.0f;
         if (keyboard
             && (isKeyDown || isKeyUp)
-            && IsWASDVirtualKey(keyboard->vkCode, rightSteps, forwardSteps)) {
+            && IsWASDVirtualKey(keyboard->vkCode)) {
             DWORD foregroundProcessID = 0;
             GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcessID);
             if (foregroundProcessID == GetCurrentProcessId()) {
@@ -1094,6 +1194,9 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                     return 1;
                 }
                 StopHeldWASDMovement(true);
+            }
+            else if (isKeyUp && HasHeldWASDKey()) {
+                HandleWASDKeyState(keyboard->vkCode, false);
             }
         }
     }
@@ -1161,12 +1264,12 @@ VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DW
 
 VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     if (idEvent == g_KeyboardPanTimerID && g_KeyboardPanTimerID != 0) {
-        if (!HasHeldWASDKey()) {
+        if (!HasHeldWASDKey() || !ShouldCaptureWASDKeys()) {
             StopHeldWASDMovement(true);
             return;
         }
 
-        PanCameraFromHeldWASD();
+        ApplyWASDMovement("held WASD movement tick", LogLevel::Verbose);
     }
 }
 
@@ -1239,9 +1342,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         || uMsg == WM_SYSKEYUP;
     const bool isWASDCharMessage = uMsg == WM_CHAR || uMsg == WM_SYSCHAR;
 
-    float rightSteps = 0.0f;
-    float forwardSteps = 0.0f;
-    if (isWASDKeyMessage && IsWASDVirtualKey(wParam, rightSteps, forwardSteps)) {
+    if (isWASDKeyMessage && IsWASDVirtualKey(wParam)) {
         if (ShouldCaptureWASDKeys()) {
             HandleWASDKeyState(wParam, uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN);
             handled = true;
@@ -1500,6 +1601,7 @@ public:
             g_IsNativeUIHidden = false;
             ResetInputState();
             InstallMinimizeUIHook();
+            InstallSetScrollingHook();
             RegisterCanvasWinProcFilter();
             InstallKeyboardHook();
             StartNativeCameraBaselineTimer();
@@ -1519,6 +1621,7 @@ public:
             g_CameraController.DumpCameraInfo("pre-city-shutdown");
             g_CameraController.AbandonSavePreviewNormalization();
             g_IsCityLoaded = false;
+            UninstallSetScrollingHook();
             UninstallMinimizeUIHook();
             ResetInputState();
             UninstallKeyboardHook();
