@@ -760,10 +760,9 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 		? "keyboard SetScrolling"
 		: (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
 	float adjustedX = x;
-	float adjustedZ = z;
 	bool blockedByBounds = false;
 	if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
-		g_CameraController.AdjustScrollForCityBounds(x, adjustedZ, adjustedX, blockedByBounds, source);
+		g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
 		if (blockedByBounds) {
 			const bool stopped = original(view3D, false, 0.0f, 0.0f);
 			Logger::GetInstance().WriteLine(
@@ -772,13 +771,12 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 				+ source
 				+ " X:" + std::to_string(x)
 				+ " Z:" + std::to_string(z)
-				+ " AdjustedZ:" + std::to_string(adjustedZ)
 				+ " StopResult:" + (stopped ? "true" : "false"));
 			return stopped;
 		}
 	}
 
-	const bool result = original(view3D, scrolling, adjustedX, adjustedZ);
+	const bool result = original(view3D, scrolling, adjustedX, z);
 	Logger::GetInstance().WriteLine(
 		LogLevel::Verbose,
 		std::string("View3D SetScrolling observed. Source:")
@@ -787,7 +785,6 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 		+ " X:" + std::to_string(x)
 		+ " AdjustedX:" + std::to_string(adjustedX)
 		+ " Z:" + std::to_string(z)
-		+ " AdjustedZ:" + std::to_string(adjustedZ)
 		+ " Result:" + (result ? "true" : "false"));
 
 	return result;
@@ -1140,18 +1137,6 @@ bool ApplyKeyboardMovement(const char* source, LogLevel successLogLevel)
             + " Result:" + (stopped ? "true" : "false"));
         view3D->Release();
         return stopped;
-    }
-
-    const float inputLength = std::sqrt((rightSteps * rightSteps) + (forwardSteps * forwardSteps));
-    if (inputLength <= 0.0001f) {
-        Logger::GetInstance().WriteLine(
-            LogLevel::Warning,
-            "Keyboard movement had an invalid input vector. Source:"
-            + std::string(source ? source : "unknown")
-            + " RightSteps:" + std::to_string(rightSteps)
-            + " ForwardSteps:" + std::to_string(forwardSteps));
-        view3D->Release();
-        return false;
     }
 
     const float directionAngle = std::atan2(-forwardSteps, rightSteps);

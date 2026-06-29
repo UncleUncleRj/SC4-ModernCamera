@@ -139,7 +139,7 @@ namespace
 		return std::clamp(value, 0.0f, extent);
 	}
 
-	bool ClampKeyboardPanDeltaToCityBounds(
+	bool ClampPanDeltaToCityBounds(
 		const SC4CameraControlLayout& cameraControl,
 		float& deltaX,
 		float& deltaZ)
@@ -617,101 +617,6 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 	});
 }
 
-bool SC4CameraController::PanByKeyboard(float rightSteps, float forwardSteps)
-{
-	if (rightSteps == 0.0f && forwardSteps == 0.0f) {
-		return true;
-	}
-
-	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
-		if (!cameraControl) {
-			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for keyboard pan.");
-			return false;
-		}
-
-		EnsureNativeCameraStateCaptured(*cameraControl);
-		SyncAngles(*cameraControl);
-
-		const float rightLength = GetHorizontalLength(
-			cameraControl->cachedViewXformB.fX,
-			cameraControl->cachedViewXformB.fZ);
-		const float forwardLength = GetHorizontalLength(
-			cameraControl->groundRayDirection.fX,
-			cameraControl->groundRayDirection.fZ);
-		if (rightLength <= 0.0001f || forwardLength <= 0.0001f) {
-			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Keyboard Pan: camera basis was invalid.");
-			return false;
-		}
-
-		const float rightX = cameraControl->cachedViewXformB.fX / rightLength;
-		const float rightZ = cameraControl->cachedViewXformB.fZ / rightLength;
-		const float forwardX = cameraControl->groundRayDirection.fX / forwardLength;
-		const float forwardZ = cameraControl->groundRayDirection.fZ / forwardLength;
-
-		const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
-		float stepSize = cameraControl->zoomStepWorld[zoomIndex];
-		if (!std::isfinite(stepSize) || stepSize <= 0.0f) {
-			stepSize = (std::max)(8.0f, cameraControl->orthoScale * 0.02f);
-		}
-
-		const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * stepSize;
-		const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * stepSize;
-		float deltaX = requestedDeltaX;
-		float deltaZ = requestedDeltaZ;
-		const bool clampedToCityBounds = ClampKeyboardPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
-
-		if (!std::isfinite(deltaX) || !std::isfinite(deltaZ)) {
-			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Keyboard Pan: computed delta was invalid.");
-			return false;
-		}
-
-		if (deltaX == 0.0f && deltaZ == 0.0f) {
-			Logger::GetInstance().WriteLine(
-				LogLevel::Info,
-				"Camera Keyboard Pan: clamped at city bounds. RightSteps:" + std::to_string(rightSteps)
-				+ " ForwardSteps:" + std::to_string(forwardSteps)
-				+ " StepSize:" + std::to_string(stepSize)
-				+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
-				+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ));
-			return true;
-		}
-
-		cameraControl->cameraPlaneOrigin.fX += deltaX;
-		cameraControl->cameraPlaneOrigin.fZ += deltaZ;
-		cameraControl->baseTargetForRotation.fX += deltaX;
-		cameraControl->baseTargetForRotation.fZ += deltaZ;
-		cameraControl->cameraPosition.fX += deltaX;
-		cameraControl->cameraPosition.fZ += deltaZ;
-		cameraControl->viewTargetPosition.fX += deltaX;
-		cameraControl->viewTargetPosition.fZ += deltaZ;
-		cameraControl->viewTargetVelocity.fX = 0.0f;
-		cameraControl->viewTargetVelocity.fY = 0.0f;
-		cameraControl->viewTargetVelocity.fZ = 0.0f;
-		cameraControl->cameraOffset.fX += deltaX;
-		cameraControl->cameraOffset.fZ += deltaZ;
-
-		ApplyPitchOverride(currentPitch);
-		ApplyYawOverride(currentYaw);
-		cameraControl->pitch = currentPitch;
-		cameraControl->yaw = currentYaw;
-
-		const bool result = Refresh(*cameraControl);
-		Logger::GetInstance().WriteLine(
-			LogLevel::Info,
-			"Camera Keyboard Pan: RightSteps:" + std::to_string(rightSteps)
-			+ " ForwardSteps:" + std::to_string(forwardSteps)
-			+ " StepSize:" + std::to_string(stepSize)
-			+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
-			+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
-			+ " DeltaX:" + std::to_string(deltaX)
-			+ " DeltaZ:" + std::to_string(deltaZ)
-			+ " Clamped:" + std::to_string(clampedToCityBounds ? 1 : 0)
-			+ " Result:" + std::to_string(result ? 1 : 0));
-		return result;
-	});
-}
-
 bool SC4CameraController::AdjustScrollForCityBounds(
 	float directionAngle,
 	float speed,
@@ -769,7 +674,7 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 		const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * probeDistance;
 		float deltaX = requestedDeltaX;
 		float deltaZ = requestedDeltaZ;
-		const bool clampedToCityBounds = ClampKeyboardPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
+		const bool clampedToCityBounds = ClampPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
 		if (!clampedToCityBounds) {
 			return true;
 		}
