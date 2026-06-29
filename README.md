@@ -28,7 +28,7 @@ Disc and retail builds are not supported.
 - **M3 + vertical drag**: Adjusts the camera pitch.
 - - In-game Option to Invert Vertical controls
 - **Mouse wheel**: New smooth zoom experience.
-- **F8**: Dumps the current camera and renderer state to `Plugins\SC4-ModernCamera\SC4-ModernCamera.log` for debugging.
+- **Ctrl+Alt+F8**: Dumps the current camera and renderer state to `Plugins\SC4-ModernCamera\SC4-ModernCamera.log` for debugging.
 
 Camera options are available in-game through the floating camera settings button in the upper-right corner of the screen.
 

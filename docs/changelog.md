@@ -1,3 +1,10 @@
+1.0.3:
+- WASD and Arrow keys are now linked in Modern Camera mode.
+- New setting available:
+   - **Panning speed** - affects WASD/Arrow key movement speed in modern camera mode.
+- Performance improvements
+- Bug fixes
+
 1.0.2:
 - COMPATIBILITY PATCH: Added full support for the SimCity 4 Extra Cheats plugin.
 - BUGFIX: Native SimCity 4 keyboard bindings now function correctly alongside the plugin.

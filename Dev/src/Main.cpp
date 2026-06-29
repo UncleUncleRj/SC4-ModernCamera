@@ -47,7 +47,6 @@ static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
 static constexpr UINT kHighPeriodicRedrawDelayMs = 1000;
 static constexpr UINT kExtremePeriodicRedrawDelayMs = 100;
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500;
-static constexpr UINT kNativeCameraBaselineDelayMs = 1000;
 static constexpr UINT kNativeToolClearEscDelayMs = 50;
 static constexpr UINT kDumpCameraInfoKey = VK_F8;
 static constexpr int32_t kNativeUICornerProbeMaxX = 260;
@@ -97,14 +96,12 @@ UINT_PTR g_IdleTimerID = 0;
 UINT_PTR g_PeriodicRedrawTimerID = 0;
 UINT_PTR g_KeyboardPanTimerID = 0;
 UINT_PTR g_CameraDumpConfirmationTimerID = 0;
-UINT_PTR g_NativeCameraBaselineTimerID = 0;
 UINT_PTR g_NativeToolClearEscTimerID = 0;
 
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
-VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK NativeToolClearEscTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 void StopHeldKeyboardMovement(bool scheduleRedraw);
@@ -533,29 +530,12 @@ void StartCameraDumpConfirmationTimer()
     g_CameraDumpConfirmationTimerID = SetTimer(NULL, 0, kCameraDumpConfirmationDelayMs, ClearCameraDumpConfirmationTimerProc);
 }
 
-void KillNativeCameraBaselineTimer()
-{
-    if (g_NativeCameraBaselineTimerID != 0) {
-        KillTimer(NULL, g_NativeCameraBaselineTimerID);
-        g_NativeCameraBaselineTimerID = 0;
-    }
-}
-
 VOID CALLBACK NativeToolClearEscTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
 {
     if (idEvent == g_NativeToolClearEscTimerID && g_NativeToolClearEscTimerID != 0) {
         KillNativeToolClearEscTimer();
         FocusView3DForNativeInput("Native view input clear Esc");
         SendVirtualKeyTap(VK_ESCAPE, "Esc");
-    }
-}
-
-void StartNativeCameraBaselineTimer()
-{
-    KillNativeCameraBaselineTimer();
-    g_NativeCameraBaselineTimerID = SetTimer(NULL, 0, kNativeCameraBaselineDelayMs, NativeCameraBaselineTimerProc);
-    if (g_NativeCameraBaselineTimerID == 0) {
-        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start native camera baseline timer.");
     }
 }
 
@@ -869,7 +849,6 @@ void ResetInputState()
     KillRedrawTimers();
     StopHeldKeyboardMovement(true);
     KillCameraDumpConfirmationTimer();
-    KillNativeCameraBaselineTimer();
     KillNativeToolClearEscTimer();
     g_CameraController.ClearCameraDumpConfirmation();
 
@@ -889,7 +868,6 @@ void ResetCameraToNativeView()
     KillRedrawTimers();
     StopHeldKeyboardMovement(true);
     KillCameraDumpConfirmationTimer();
-    KillNativeCameraBaselineTimer();
     KillNativeToolClearEscTimer();
 
     if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
@@ -991,6 +969,13 @@ bool IsVirtualKeyDown(int key)
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+bool IsManualCameraDumpHotkey(WPARAM key)
+{
+    return key == kDumpCameraInfoKey
+        && IsVirtualKeyDown(VK_CONTROL)
+        && IsVirtualKeyDown(VK_MENU);
+}
+
 bool IsCommandShortcutModifierDown()
 {
     return IsVirtualKeyDown(VK_CONTROL)
@@ -1087,10 +1072,10 @@ bool IsCameraKeyboardFocus()
 
         Logger::GetInstance().WriteLine(
             LogLevel::Verbose,
-            "WASD keyboard pass-through: focused window is a stale Modern Camera UI control. Focus:{"
+            "WASD keyboard focus recovery: focused window is a stale Modern Camera UI control. Focus:{"
             + DescribeGZWindow(focusedWindow)
             + "}");
-        return false;
+        return FocusView3DForNativeInput("WASD stale Modern Camera UI focus recovery");
     }
 
     cISC4AppPtr app;
@@ -1450,15 +1435,6 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
     }
 }
 
-VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    if (idEvent == g_NativeCameraBaselineTimerID && g_NativeCameraBaselineTimerID != 0) {
-        KillNativeCameraBaselineTimer();
-        if (g_IsCityLoaded) {
-            g_CameraController.DumpCameraInfo("post-city-init native baseline (1000ms delayed)");
-        }
-    }
-}
-
 LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
     if (!g_IsCityLoaded) {
@@ -1538,12 +1514,13 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     }
 
     switch (uMsg) {
-    case WM_KEYDOWN: {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: {
         const bool isRepeat = (lParam & (1 << 30)) != 0;
 
-        if (wParam == kDumpCameraInfoKey && !isRepeat) {
-            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: F8 pressed, dumping camera info.");
-            g_CameraController.DumpCameraInfo("F8 hotkey");
+        if (IsManualCameraDumpHotkey(wParam) && !isRepeat) {
+            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: Ctrl+Alt+F8 pressed, dumping camera info.");
+            g_CameraController.DumpCameraInfo("Ctrl+Alt+F8 hotkey");
             if (g_CameraController.ShowCameraDumpConfirmation()) {
                 StartCameraDumpConfirmationTimer();
             }
@@ -1581,9 +1558,6 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
 
         log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
-        if (!g_CameraController.HasNativeCameraState()) {
-            g_CameraController.DumpCameraInfo("immediately before first custom rotation");
-        }
         g_IsMiddleMouseDown = true;
         g_LastMousePos = MakePointFromLParam(lParam);
 		g_CameraController.BeginRotationGesture();
@@ -1664,10 +1638,6 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 log.WriteLine(LogLevel::Info, "Mouse wheel hit-test: passing wheel through to native SC4 UI.");
                 break;
             }
-        }
-
-        if (!g_CameraController.HasNativeCameraState()) {
-            g_CameraController.DumpCameraInfo("immediately before first custom zoom");
         }
 
         bool zoomChanged = false;
@@ -1779,7 +1749,6 @@ public:
             InstallSetScrollingHook();
             RegisterCanvasWinProcFilter();
             InstallKeyboardHook();
-            StartNativeCameraBaselineTimer();
             StartPeriodicRedrawTimer();
         }
         else if (msgType == kSC4MessagePreSave) {
@@ -1793,7 +1762,6 @@ public:
         else if (msgType == kSC4MessagePreCityShutdown) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating input handlers...");
             g_WindowManager.OnCityShutdown();
-            g_CameraController.DumpCameraInfo("pre-city-shutdown");
             g_CameraController.AbandonSavePreviewNormalization();
             g_IsCityLoaded = false;
             UninstallSetScrollingHook();

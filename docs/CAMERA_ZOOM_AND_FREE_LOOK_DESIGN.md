@@ -112,7 +112,7 @@ first defense against that behavior.
 
 Anchor stability cannot be assumed to solve every culling problem. Native zoom
 stage, renderer refresh, camera position, and an internal logical focus may all
-participate. F8 camera dumps and gesture/zoom logging should be used to compare
+participate. Ctrl+Alt+F8 camera dumps and gesture/zoom logging should be used to compare
 healthy and broken states before assigning unverified meanings to fields.
 
 ## Implementation Behavior
