@@ -80,7 +80,11 @@ bool g_WASDKeyWDown = false;
 bool g_WASDKeyADown = false;
 bool g_WASDKeySDown = false;
 bool g_WASDKeyDDown = false;
-bool g_IsApplyingWASDScrolling = false;
+bool g_ArrowKeyUpDown = false;
+bool g_ArrowKeyLeftDown = false;
+bool g_ArrowKeyDownDown = false;
+bool g_ArrowKeyRightDown = false;
+bool g_IsApplyingKeyboardScrolling = false;
 POINT g_LastMousePos = { 0, 0 };
 HWND g_CapturedMouseWindow = NULL;
 HHOOK g_KeyboardHook = NULL;
@@ -100,7 +104,8 @@ VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK NativeCameraBaselineTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
-void StopHeldWASDMovement(bool scheduleRedraw);
+void StopHeldKeyboardMovement(bool scheduleRedraw);
+bool IsRightClickScrollingActive();
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize);
 bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z);
 
@@ -377,17 +382,22 @@ void KillKeyboardPanTimer()
     }
 }
 
-bool HasHeldWASDKey()
+bool HasHeldKeyboardMovementKey()
 {
-    return g_WASDKeyWDown || g_WASDKeyADown || g_WASDKeySDown || g_WASDKeyDDown;
+    return g_WASDKeyWDown || g_WASDKeyADown || g_WASDKeySDown || g_WASDKeyDDown
+        || g_ArrowKeyUpDown || g_ArrowKeyLeftDown || g_ArrowKeyDownDown || g_ArrowKeyRightDown;
 }
 
-void ClearHeldWASDKeys()
+void ClearHeldKeyboardMovementKeys()
 {
     g_WASDKeyWDown = false;
     g_WASDKeyADown = false;
     g_WASDKeySDown = false;
     g_WASDKeyDDown = false;
+    g_ArrowKeyUpDown = false;
+    g_ArrowKeyLeftDown = false;
+    g_ArrowKeyDownDown = false;
+    g_ArrowKeyRightDown = false;
 }
 
 void StartKeyboardPanTimer()
@@ -398,7 +408,7 @@ void StartKeyboardPanTimer()
 
     g_KeyboardPanTimerID = SetTimer(NULL, 0, kKeyboardPanTickMs, KeyboardPanTimerProc);
     if (g_KeyboardPanTimerID == 0) {
-        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the WASD movement timer.");
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the keyboard movement timer.");
     }
 }
 
@@ -746,13 +756,34 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 		return false;
 	}
 
-	const bool result = original(view3D, scrolling, x, z);
+	const char* source = g_IsApplyingKeyboardScrolling
+		? "keyboard SetScrolling"
+		: (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
+	float adjustedX = x;
+	bool blockedByBounds = false;
+	if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
+		g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
+		if (blockedByBounds) {
+			const bool stopped = original(view3D, false, 0.0f, 0.0f);
+			Logger::GetInstance().WriteLine(
+				LogLevel::Verbose,
+				std::string("View3D SetScrolling blocked at city bounds. Source:")
+				+ source
+				+ " X:" + std::to_string(x)
+				+ " Z:" + std::to_string(z)
+				+ " StopResult:" + (stopped ? "true" : "false"));
+			return stopped;
+		}
+	}
+
+	const bool result = original(view3D, scrolling, adjustedX, z);
 	Logger::GetInstance().WriteLine(
-		LogLevel::Info,
+		LogLevel::Verbose,
 		std::string("View3D SetScrolling observed. Source:")
-		+ (g_IsApplyingWASDScrolling ? "ModernCameraWASD" : "NativeOrOther")
+		+ (g_IsApplyingKeyboardScrolling ? "ModernCameraKeyboard" : "NativeOrOther")
 		+ " Scrolling:" + (scrolling ? "true" : "false")
 		+ " X:" + std::to_string(x)
+		+ " AdjustedX:" + std::to_string(adjustedX)
 		+ " Z:" + std::to_string(z)
 		+ " Result:" + (result ? "true" : "false"));
 
@@ -777,7 +808,7 @@ void HandleNativeUICornerClick(const POINT& point)
 void ResetInputState()
 {
     KillRedrawTimers();
-    StopHeldWASDMovement(true);
+    StopHeldKeyboardMovement(true);
     KillCameraDumpConfirmationTimer();
     KillNativeCameraBaselineTimer();
     g_CameraController.ClearCameraDumpConfirmation();
@@ -796,7 +827,7 @@ void ResetCameraToNativeView()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: reset camera requested.");
     KillRedrawTimers();
-    StopHeldWASDMovement(true);
+    StopHeldKeyboardMovement(true);
     KillCameraDumpConfirmationTimer();
     KillNativeCameraBaselineTimer();
 
@@ -828,7 +859,7 @@ void ApplyModernCameraEnabled(bool enabled)
         LogLevel::Info,
         std::string("Settings UI: Modern Camera Enabled changed to ") + (enabled ? "true" : "false"));
     g_IsModernCamEnabled = enabled;
-    StopHeldWASDMovement(true);
+    StopHeldKeyboardMovement(true);
 
     if (!enabled) {
         ResetInputState();
@@ -857,7 +888,7 @@ void ApplyRedrawAggressionChange()
 void ApplyInputSettingsChange()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: input settings changed; clearing held input state.");
-    StopHeldWASDMovement(true);
+    StopHeldKeyboardMovement(true);
     if (g_IsModernCamEnabled && g_Settings.wasdMovement) {
         ClearNativeView3DToolState(View3DToolClearReason::WASDMovementEnabled);
     }
@@ -1011,6 +1042,24 @@ bool IsWASDVirtualKey(WPARAM key)
     }
 }
 
+bool IsArrowVirtualKey(WPARAM key)
+{
+    switch (key) {
+    case VK_UP:
+    case VK_DOWN:
+    case VK_LEFT:
+    case VK_RIGHT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsKeyboardMovementVirtualKey(WPARAM key)
+{
+    return IsWASDVirtualKey(key) || IsArrowVirtualKey(key);
+}
+
 bool IsWASDCharacter(WPARAM character)
 {
     return character == 'W' || character == 'w'
@@ -1019,7 +1068,7 @@ bool IsWASDCharacter(WPARAM character)
         || character == 'D' || character == 'd';
 }
 
-bool* GetWASDKeyState(WPARAM key)
+bool* GetKeyboardMovementKeyState(WPARAM key)
 {
     switch (key) {
     case 'W':
@@ -1030,35 +1079,60 @@ bool* GetWASDKeyState(WPARAM key)
         return &g_WASDKeySDown;
     case 'D':
         return &g_WASDKeyDDown;
+    case VK_UP:
+        return &g_ArrowKeyUpDown;
+    case VK_LEFT:
+        return &g_ArrowKeyLeftDown;
+    case VK_DOWN:
+        return &g_ArrowKeyDownDown;
+    case VK_RIGHT:
+        return &g_ArrowKeyRightDown;
     default:
         return nullptr;
     }
 }
 
-bool ShouldCaptureWASDKeys()
+bool ShouldCaptureKeyboardMovementKey(WPARAM key)
 {
     return g_IsCityLoaded
         && g_IsModernCamEnabled
-        && g_Settings.wasdMovement
+        && (IsArrowVirtualKey(key) || g_Settings.wasdMovement)
         && !IsCommandShortcutModifierDown()
         && IsCameraKeyboardFocus()
         && !IsRightClickScrollingActive();
 }
 
-bool ApplyWASDMovement(const char* source, LogLevel successLogLevel)
+bool ShouldCaptureHeldKeyboardMovement()
 {
-    cISC4View3DWin* view3D = GetView3DWinForInput(source ? source : "WASD movement");
+    return g_IsCityLoaded
+        && g_IsModernCamEnabled
+        && !IsCommandShortcutModifierDown()
+        && IsCameraKeyboardFocus()
+        && !IsRightClickScrollingActive()
+        && (g_ArrowKeyUpDown
+            || g_ArrowKeyLeftDown
+            || g_ArrowKeyDownDown
+            || g_ArrowKeyRightDown
+            || (g_Settings.wasdMovement
+                && (g_WASDKeyWDown || g_WASDKeyADown || g_WASDKeySDown || g_WASDKeyDDown)));
+}
+
+bool ApplyKeyboardMovement(const char* source, LogLevel successLogLevel)
+{
+    cISC4View3DWin* view3D = GetView3DWinForInput(source ? source : "keyboard movement");
     if (!view3D) {
         return false;
     }
 
-    const float rightSteps = (g_WASDKeyDDown ? 1.0f : 0.0f) - (g_WASDKeyADown ? 1.0f : 0.0f);
-    const float forwardSteps = (g_WASDKeyWDown ? 1.0f : 0.0f) - (g_WASDKeySDown ? 1.0f : 0.0f);
+    const float rightSteps = ((g_WASDKeyDDown || g_ArrowKeyRightDown) ? 1.0f : 0.0f)
+        - ((g_WASDKeyADown || g_ArrowKeyLeftDown) ? 1.0f : 0.0f);
+    const float forwardSteps = ((g_WASDKeyWDown || g_ArrowKeyUpDown) ? 1.0f : 0.0f)
+        - ((g_WASDKeySDown || g_ArrowKeyDownDown) ? 1.0f : 0.0f);
     if (rightSteps == 0.0f && forwardSteps == 0.0f) {
         const bool stopped = view3D->ScrollStop();
         Logger::GetInstance().WriteLine(
             successLogLevel,
-            "WASD movement stopped. Source:"
+            "Keyboard movement stopped. Source:"
             + std::string(source ? source : "unknown")
             + " Result:" + (stopped ? "true" : "false"));
         view3D->Release();
@@ -1069,7 +1143,7 @@ bool ApplyWASDMovement(const char* source, LogLevel successLogLevel)
     if (inputLength <= 0.0001f) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            "WASD movement had an invalid input vector. Source:"
+            "Keyboard movement had an invalid input vector. Source:"
             + std::string(source ? source : "unknown")
             + " RightSteps:" + std::to_string(rightSteps)
             + " ForwardSteps:" + std::to_string(forwardSteps));
@@ -1083,13 +1157,13 @@ bool ApplyWASDMovement(const char* source, LogLevel successLogLevel)
         : 1.0f;
     const float scrollSpeed = kKeyboardPanNativeSpeed * speedMultiplier;
 
-    g_IsApplyingWASDScrolling = true;
+    g_IsApplyingKeyboardScrolling = true;
     const bool nativeScrollResult = view3D->SetScrolling(true, directionAngle, scrollSpeed);
-    g_IsApplyingWASDScrolling = false;
+    g_IsApplyingKeyboardScrolling = false;
 
     Logger::GetInstance().WriteLine(
         successLogLevel,
-        "WASD native movement updated. Source:"
+        "Keyboard native movement updated. Source:"
         + std::string(source ? source : "unknown")
         + " RightSteps:" + std::to_string(rightSteps)
         + " ForwardSteps:" + std::to_string(forwardSteps)
@@ -1101,27 +1175,27 @@ bool ApplyWASDMovement(const char* source, LogLevel successLogLevel)
     return nativeScrollResult;
 }
 
-void StopHeldWASDMovement(bool)
+void StopHeldKeyboardMovement(bool)
 {
-    const bool hadHeldKey = HasHeldWASDKey();
-    ClearHeldWASDKeys();
+    const bool hadHeldKey = HasHeldKeyboardMovementKey();
+    ClearHeldKeyboardMovementKeys();
     KillKeyboardPanTimer();
     if (hadHeldKey) {
-        ApplyWASDMovement("WASD capture stopped", LogLevel::Info);
+        ApplyKeyboardMovement("keyboard capture stopped", LogLevel::Info);
     }
 }
 
-void HandleWASDKeyState(WPARAM key, bool pressed)
+void HandleKeyboardMovementKeyState(WPARAM key, bool pressed)
 {
-    bool* keyState = GetWASDKeyState(key);
+    bool* keyState = GetKeyboardMovementKeyState(key);
     if (!keyState) {
         return;
     }
 
     if (*keyState != pressed) {
         *keyState = pressed;
-        ApplyWASDMovement("WASD key capture", LogLevel::Info);
-        if (HasHeldWASDKey()) {
+        ApplyKeyboardMovement("keyboard key capture", LogLevel::Info);
+        if (HasHeldKeyboardMovementKey()) {
             StartKeyboardPanTimer();
         }
         else {
@@ -1144,12 +1218,12 @@ void InstallKeyboardHook()
 
     g_KeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, moduleHandle, 0);
     if (g_KeyboardHook != NULL) {
-        Logger::GetInstance().WriteLine(LogLevel::Info, "Registered low-level WASD keyboard hook.");
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Registered low-level modern camera keyboard hook.");
     }
     else {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            "Failed to register low-level WASD keyboard hook. GetLastError="
+            "Failed to register low-level modern camera keyboard hook. GetLastError="
             + std::to_string(GetLastError()));
     }
 }
@@ -1163,11 +1237,11 @@ void UninstallKeyboardHook()
     if (!UnhookWindowsHookEx(g_KeyboardHook)) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
-            "Failed to unregister low-level WASD keyboard hook. GetLastError="
+            "Failed to unregister low-level modern camera keyboard hook. GetLastError="
             + std::to_string(GetLastError()));
     }
     else {
-        Logger::GetInstance().WriteLine(LogLevel::Info, "Unregistered low-level WASD keyboard hook.");
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Unregistered low-level modern camera keyboard hook.");
     }
     g_KeyboardHook = NULL;
 }
@@ -1181,22 +1255,22 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
 
         if (keyboard
             && (isKeyDown || isKeyUp)
-            && IsWASDVirtualKey(keyboard->vkCode)) {
+            && IsKeyboardMovementVirtualKey(keyboard->vkCode)) {
             DWORD foregroundProcessID = 0;
             GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcessID);
             if (foregroundProcessID == GetCurrentProcessId()) {
-                if (ShouldCaptureWASDKeys()) {
-                    HandleWASDKeyState(keyboard->vkCode, isKeyDown);
+                if (ShouldCaptureKeyboardMovementKey(keyboard->vkCode)) {
+                    HandleKeyboardMovementKeyState(keyboard->vkCode, isKeyDown);
                     return 1;
                 }
-                if (isKeyUp && HasHeldWASDKey()) {
-                    HandleWASDKeyState(keyboard->vkCode, false);
+                if (isKeyUp && HasHeldKeyboardMovementKey()) {
+                    HandleKeyboardMovementKeyState(keyboard->vkCode, false);
                     return 1;
                 }
-                StopHeldWASDMovement(true);
+                StopHeldKeyboardMovement(true);
             }
-            else if (isKeyUp && HasHeldWASDKey()) {
-                HandleWASDKeyState(keyboard->vkCode, false);
+            else if (isKeyUp && HasHeldKeyboardMovementKey()) {
+                HandleKeyboardMovementKeyState(keyboard->vkCode, false);
             }
         }
     }
@@ -1264,12 +1338,12 @@ VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DW
 
 VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     if (idEvent == g_KeyboardPanTimerID && g_KeyboardPanTimerID != 0) {
-        if (!HasHeldWASDKey() || !ShouldCaptureWASDKeys()) {
-            StopHeldWASDMovement(true);
+        if (!HasHeldKeyboardMovementKey() || !ShouldCaptureHeldKeyboardMovement()) {
+            StopHeldKeyboardMovement(true);
             return;
         }
 
-        ApplyWASDMovement("held WASD movement tick", LogLevel::Verbose);
+        ApplyKeyboardMovement("held keyboard movement tick", LogLevel::Verbose);
     }
 }
 
@@ -1336,27 +1410,27 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         g_CameraController.EndSavePreviewNormalization();
     }
 
-    const bool isWASDKeyMessage = uMsg == WM_KEYDOWN
+    const bool isKeyboardMovementKeyMessage = uMsg == WM_KEYDOWN
         || uMsg == WM_SYSKEYDOWN
         || uMsg == WM_KEYUP
         || uMsg == WM_SYSKEYUP;
     const bool isWASDCharMessage = uMsg == WM_CHAR || uMsg == WM_SYSCHAR;
 
-    if (isWASDKeyMessage && IsWASDVirtualKey(wParam)) {
-        if (ShouldCaptureWASDKeys()) {
-            HandleWASDKeyState(wParam, uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN);
+    if (isKeyboardMovementKeyMessage && IsKeyboardMovementVirtualKey(wParam)) {
+        if (ShouldCaptureKeyboardMovementKey(wParam)) {
+            HandleKeyboardMovementKeyState(wParam, uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN);
             handled = true;
             return 0;
         }
-        if ((uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP) && HasHeldWASDKey()) {
-            HandleWASDKeyState(wParam, false);
+        if ((uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP) && HasHeldKeyboardMovementKey()) {
+            HandleKeyboardMovementKeyState(wParam, false);
             handled = true;
             return 0;
         }
-        StopHeldWASDMovement(true);
+        StopHeldKeyboardMovement(true);
     }
     else if (isWASDCharMessage && IsWASDCharacter(wParam)) {
-        if (ShouldCaptureWASDKeys()) {
+        if (ShouldCaptureKeyboardMovementKey(wParam)) {
             handled = true;
             return 0;
         }
@@ -1392,7 +1466,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     case WM_RBUTTONDOWN: {
         LogMouseButtonEvent("WM_RBUTTONDOWN (Right Mouse Down)", MakePointFromLParam(lParam));
         g_IsRightMouseDown = true;
-        StopHeldWASDMovement(true);
+        StopHeldKeyboardMovement(true);
         break;
     }
     case WM_RBUTTONUP: {

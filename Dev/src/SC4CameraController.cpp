@@ -712,6 +712,111 @@ bool SC4CameraController::PanByKeyboard(float rightSteps, float forwardSteps)
 	});
 }
 
+bool SC4CameraController::AdjustScrollForCityBounds(
+	float directionAngle,
+	float speed,
+	float& adjustedDirectionAngle,
+	bool& blocked,
+	const char* source)
+{
+	adjustedDirectionAngle = directionAngle;
+	blocked = false;
+
+	if (!std::isfinite(directionAngle)) {
+		return false;
+	}
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for scroll bounds preflight.");
+			return false;
+		}
+
+		if (!std::isfinite(cameraControl->viewTargetPosition.fX)
+			|| !std::isfinite(cameraControl->viewTargetPosition.fZ)) {
+			return false;
+		}
+
+		EnsureNativeCameraStateCaptured(*cameraControl);
+		SyncAngles(*cameraControl);
+
+		const float rightLength = GetHorizontalLength(
+			cameraControl->cachedViewXformB.fX,
+			cameraControl->cachedViewXformB.fZ);
+		const float forwardLength = GetHorizontalLength(
+			cameraControl->groundRayDirection.fX,
+			cameraControl->groundRayDirection.fZ);
+		if (rightLength <= 0.0001f || forwardLength <= 0.0001f) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Scroll Bounds: camera basis was invalid.");
+			return false;
+		}
+
+		const float rightX = cameraControl->cachedViewXformB.fX / rightLength;
+		const float rightZ = cameraControl->cachedViewXformB.fZ / rightLength;
+		const float forwardX = cameraControl->groundRayDirection.fX / forwardLength;
+		const float forwardZ = cameraControl->groundRayDirection.fZ / forwardLength;
+
+		const float rightSteps = std::cos(directionAngle);
+		const float forwardSteps = -std::sin(directionAngle);
+		const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
+		float probeDistance = cameraControl->zoomStepWorld[zoomIndex] * (std::max)(std::abs(speed), 0.05f);
+		if (!std::isfinite(probeDistance) || probeDistance <= 0.0f) {
+			probeDistance = (std::max)(8.0f, cameraControl->orthoScale * 0.02f);
+		}
+
+		const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * probeDistance;
+		const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * probeDistance;
+		float deltaX = requestedDeltaX;
+		float deltaZ = requestedDeltaZ;
+		const bool clampedToCityBounds = ClampKeyboardPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
+		if (!clampedToCityBounds) {
+			return true;
+		}
+
+		const float requestedDotAdjusted = (requestedDeltaX * deltaX) + (requestedDeltaZ * deltaZ);
+		const float adjustedDistance = GetHorizontalLength(deltaX, deltaZ);
+		if (!std::isfinite(adjustedDistance)
+			|| adjustedDistance <= 0.0001f
+			|| !std::isfinite(requestedDotAdjusted)
+			|| requestedDotAdjusted <= 0.0f) {
+			blocked = true;
+			Logger::GetInstance().WriteLine(
+				LogLevel::Verbose,
+				std::string("Camera Scroll Bounds: blocked outward scroll at city bounds. Source:")
+				+ (source ? source : "unknown")
+				+ " DirectionAngle:" + std::to_string(directionAngle)
+				+ " Speed:" + std::to_string(speed)
+				+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
+				+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
+				+ " AdjustedDeltaX:" + std::to_string(deltaX)
+				+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
+			return true;
+		}
+
+		const float adjustedRight = (deltaX * rightX) + (deltaZ * rightZ);
+		const float adjustedForward = (deltaX * forwardX) + (deltaZ * forwardZ);
+		const float adjustedInputLength = GetHorizontalLength(adjustedRight, adjustedForward);
+		if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= 0.0001f) {
+			blocked = true;
+			return true;
+		}
+
+		adjustedDirectionAngle = std::atan2(-adjustedForward, adjustedRight);
+		Logger::GetInstance().WriteLine(
+			LogLevel::Verbose,
+			std::string("Camera Scroll Bounds: adjusted native scroll along city edge. Source:")
+			+ (source ? source : "unknown")
+			+ " DirectionAngle:" + std::to_string(directionAngle)
+			+ " AdjustedDirectionAngle:" + std::to_string(adjustedDirectionAngle)
+			+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
+			+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
+			+ " AdjustedDeltaX:" + std::to_string(deltaX)
+			+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
+		return true;
+	});
+}
+
 bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 {
 	if (wheelDelta == 0) {

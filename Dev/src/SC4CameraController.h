@@ -124,6 +124,12 @@ public:
 	void EndRotationGesture();
 
 	bool ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw);
+	bool AdjustScrollForCityBounds(
+		float directionAngle,
+		float speed,
+		float& adjustedDirectionAngle,
+		bool& blocked,
+		const char* source);
 	bool PanByKeyboard(float rightSteps, float forwardSteps);
 	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
 	bool ForceFullRedraw();
