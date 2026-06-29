@@ -37,7 +37,8 @@ Modern mode:
 
 - re-enables the Modern-only controls;
 - restores the actual saved redraw aggression selection in Advanced Settings;
-- clears the current native view tool so Modern camera input does not inherit a zoning, network, or other tool cursor selected while Classic controls were active;
+- moves an off-map camera target back near the city center when returning from Classic camera mode;
+- clears the current native view tool, then activates the native query shortcut and Esc clear sequence so Modern camera input does not inherit a zoning, network, or other tool cursor selected while Classic controls were active;
 - resumes Modern camera input and redraw behavior immediately.
 
 ## Redraw Aggression

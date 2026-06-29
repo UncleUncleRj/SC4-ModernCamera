@@ -130,6 +130,14 @@ namespace
 		return std::isfinite(value) && value > 1.0f;
 	}
 
+	bool IsInsideCityExtent(float value, float extent)
+	{
+		return IsUsableCityExtent(extent)
+			&& std::isfinite(value)
+			&& value >= 0.0f
+			&& value <= extent;
+	}
+
 	float ClampToCityExtent(float value, float extent)
 	{
 		if (!IsUsableCityExtent(extent) || !std::isfinite(value)) {
@@ -719,6 +727,89 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 			+ " AdjustedDeltaX:" + std::to_string(deltaX)
 			+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
 		return true;
+	});
+}
+
+bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* source)
+{
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera recenter: camera control unavailable.");
+			return false;
+		}
+
+		if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Camera recenter: unusable city extents. Source:"
+				+ std::string(source ? source : "unknown")
+				+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
+				+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
+			return false;
+		}
+
+		const bool targetInside = IsInsideCityExtent(cameraControl->viewTargetPosition.fX, cameraControl->citySizeX)
+			&& IsInsideCityExtent(cameraControl->viewTargetPosition.fZ, cameraControl->citySizeZ);
+		if (targetInside) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Verbose,
+				"Camera recenter: target already inside city bounds. Source:"
+				+ std::string(source ? source : "unknown")
+				+ " ViewTarget[" + FormatVector(cameraControl->viewTargetPosition) + "]");
+			return true;
+		}
+
+		if (!std::isfinite(cameraControl->viewTargetPosition.fX)
+			|| !std::isfinite(cameraControl->viewTargetPosition.fZ)) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Camera recenter: target was not finite. Source:"
+				+ std::string(source ? source : "unknown")
+				+ " ViewTarget[" + FormatVector(cameraControl->viewTargetPosition) + "]");
+			return false;
+		}
+
+		EnsureNativeCameraStateCaptured(*cameraControl);
+		SyncAngles(*cameraControl);
+
+		const cS3DVector3 oldViewTarget = cameraControl->viewTargetPosition;
+		const cS3DVector3 oldCameraPosition = cameraControl->cameraPosition;
+		const float targetX = cameraControl->citySizeX * 0.5f;
+		const float targetZ = cameraControl->citySizeZ * 0.5f;
+		const float deltaX = targetX - cameraControl->viewTargetPosition.fX;
+		const float deltaZ = targetZ - cameraControl->viewTargetPosition.fZ;
+
+		cameraControl->cameraPlaneOrigin.fX += deltaX;
+		cameraControl->cameraPlaneOrigin.fZ += deltaZ;
+		cameraControl->baseTargetForRotation.fX += deltaX;
+		cameraControl->baseTargetForRotation.fZ += deltaZ;
+		cameraControl->cameraPosition.fX += deltaX;
+		cameraControl->cameraPosition.fZ += deltaZ;
+		cameraControl->viewTargetPosition.fX += deltaX;
+		cameraControl->viewTargetPosition.fZ += deltaZ;
+		cameraControl->viewTargetVelocity = {};
+		cameraControl->cameraOffset.fX += deltaX;
+		cameraControl->cameraOffset.fZ += deltaZ;
+		cameraControl->pitch = currentPitch;
+		cameraControl->yaw = currentYaw;
+
+		const bool result = Refresh(*cameraControl);
+		Logger::GetInstance().WriteLine(
+			result ? LogLevel::Info : LogLevel::Warning,
+			"Camera recenter: moved off-map target near city center. Source:"
+			+ std::string(source ? source : "unknown")
+			+ " OldViewTarget[" + FormatVector(oldViewTarget)
+			+ "] NewViewTarget[" + FormatVector(cameraControl->viewTargetPosition)
+			+ "] OldCameraPosition[" + FormatVector(oldCameraPosition)
+			+ "] NewCameraPosition[" + FormatVector(cameraControl->cameraPosition)
+			+ "] CitySizeX:" + std::to_string(cameraControl->citySizeX)
+			+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ)
+			+ " Result:" + std::to_string(result ? 1 : 0));
+		if (result) {
+			renderer->ForceFullRedraw();
+		}
+		return result;
 	});
 }
 

@@ -130,6 +130,7 @@ public:
 		float& adjustedDirectionAngle,
 		bool& blocked,
 		const char* source);
+	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
 	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
 	bool ForceFullRedraw();
 	bool DumpCameraInfo(const char* reason) const;
