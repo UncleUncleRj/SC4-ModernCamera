@@ -23,6 +23,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -73,6 +74,18 @@ enum class View3DToolClearReason : uint8_t
     WASDMovementEnabled,
 };
 
+enum class KeyOwner : uint8_t
+{
+    None,
+    ModernCameraPan,
+};
+
+struct TrackedKeyState
+{
+    bool down = false;
+    KeyOwner owner = KeyOwner::None;
+};
+
 // Cinematic Camera State
 bool g_IsMiddleMouseDown = false;
 bool g_IsRightMouseDown = false;
@@ -85,6 +98,7 @@ bool g_ArrowKeyLeftDown = false;
 bool g_ArrowKeyDownDown = false;
 bool g_ArrowKeyRightDown = false;
 bool g_IsApplyingKeyboardPan = false;
+std::array<TrackedKeyState, 256> g_KeyStates{};
 POINT g_LastMousePos = { 0, 0 };
 HWND g_CapturedMouseWindow = NULL;
 HHOOK g_KeyboardHook = NULL;
@@ -435,6 +449,116 @@ bool HasHeldKeyboardPanKey()
         || g_ArrowKeyUpDown || g_ArrowKeyLeftDown || g_ArrowKeyDownDown || g_ArrowKeyRightDown;
 }
 
+bool IsTrackableKey(WPARAM key)
+{
+    return key < g_KeyStates.size();
+}
+
+bool IsPhysicalKeyDown(int key)
+{
+    return (GetAsyncKeyState(key) & 0x8000) != 0;
+}
+
+void ObserveKeyTransition(WPARAM key, bool down)
+{
+    if (!IsTrackableKey(key)) {
+        return;
+    }
+
+    g_KeyStates[key].down = down;
+    switch (key) {
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+        g_KeyStates[VK_SHIFT].down = down
+            || IsPhysicalKeyDown(VK_LSHIFT)
+            || IsPhysicalKeyDown(VK_RSHIFT);
+        break;
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+        g_KeyStates[VK_CONTROL].down = down
+            || IsPhysicalKeyDown(VK_LCONTROL)
+            || IsPhysicalKeyDown(VK_RCONTROL);
+        break;
+    case VK_LMENU:
+    case VK_RMENU:
+        g_KeyStates[VK_MENU].down = down
+            || IsPhysicalKeyDown(VK_LMENU)
+            || IsPhysicalKeyDown(VK_RMENU);
+        break;
+    default:
+        break;
+    }
+}
+
+bool IsTrackedKeyDown(int key)
+{
+    return key >= 0
+        && key < static_cast<int>(g_KeyStates.size())
+        && g_KeyStates[static_cast<size_t>(key)].down;
+}
+
+bool IsObservedOrPhysicalKeyDown(int key)
+{
+    return IsTrackedKeyDown(key) || IsPhysicalKeyDown(key);
+}
+
+void RefreshTrackedModifierStates()
+{
+    g_KeyStates[VK_SHIFT].down = IsPhysicalKeyDown(VK_SHIFT)
+        || IsPhysicalKeyDown(VK_LSHIFT)
+        || IsPhysicalKeyDown(VK_RSHIFT);
+    g_KeyStates[VK_CONTROL].down = IsPhysicalKeyDown(VK_CONTROL)
+        || IsPhysicalKeyDown(VK_LCONTROL)
+        || IsPhysicalKeyDown(VK_RCONTROL);
+    g_KeyStates[VK_MENU].down = IsPhysicalKeyDown(VK_MENU)
+        || IsPhysicalKeyDown(VK_LMENU)
+        || IsPhysicalKeyDown(VK_RMENU);
+}
+
+bool ClaimKey(WPARAM key, KeyOwner owner)
+{
+    if (!IsTrackableKey(key)) {
+        return false;
+    }
+
+    TrackedKeyState& state = g_KeyStates[key];
+    if (state.owner != KeyOwner::None && state.owner != owner) {
+        return false;
+    }
+
+    state.owner = owner;
+    return true;
+}
+
+void ReleaseKey(WPARAM key, KeyOwner owner)
+{
+    if (!IsTrackableKey(key)) {
+        return;
+    }
+
+    TrackedKeyState& state = g_KeyStates[key];
+    if (state.owner == owner) {
+        state.owner = KeyOwner::None;
+    }
+}
+
+bool IsKeyOwnedBy(WPARAM key, KeyOwner owner)
+{
+    return IsTrackableKey(key) && g_KeyStates[key].owner == owner;
+}
+
+void ReleaseKeyboardPanKeyClaims()
+{
+    ReleaseKey('W', KeyOwner::ModernCameraPan);
+    ReleaseKey('A', KeyOwner::ModernCameraPan);
+    ReleaseKey('S', KeyOwner::ModernCameraPan);
+    ReleaseKey('D', KeyOwner::ModernCameraPan);
+    ReleaseKey(VK_UP, KeyOwner::ModernCameraPan);
+    ReleaseKey(VK_LEFT, KeyOwner::ModernCameraPan);
+    ReleaseKey(VK_DOWN, KeyOwner::ModernCameraPan);
+    ReleaseKey(VK_RIGHT, KeyOwner::ModernCameraPan);
+}
+
 void ClearHeldKeyboardPanKeys()
 {
     g_WASDKeyWDown = false;
@@ -445,6 +569,20 @@ void ClearHeldKeyboardPanKeys()
     g_ArrowKeyLeftDown = false;
     g_ArrowKeyDownDown = false;
     g_ArrowKeyRightDown = false;
+    ReleaseKeyboardPanKeyClaims();
+}
+
+void ClearTrackedKeyStates(const char* reason)
+{
+    for (TrackedKeyState& state : g_KeyStates) {
+        state.down = false;
+        state.owner = KeyOwner::None;
+    }
+
+    Logger::GetInstance().WriteLine(
+        LogLevel::Verbose,
+        std::string("Keyboard state tracker cleared. Reason:")
+        + (reason ? reason : "unknown"));
 }
 
 void StartKeyboardPanTimer()
@@ -848,6 +986,7 @@ void ResetInputState()
 {
     KillRedrawTimers();
     StopHeldKeyboardPan(true);
+    ClearTrackedKeyStates("input reset");
     KillCameraDumpConfirmationTimer();
     KillNativeToolClearEscTimer();
     g_CameraController.ClearCameraDumpConfirmation();
@@ -867,6 +1006,7 @@ void ResetCameraToNativeView()
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: reset camera requested.");
     KillRedrawTimers();
     StopHeldKeyboardPan(true);
+    ClearTrackedKeyStates("camera reset");
     KillCameraDumpConfirmationTimer();
     KillNativeToolClearEscTimer();
 
@@ -930,6 +1070,7 @@ void ApplyInputSettingsChange()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: input settings changed; clearing held input state.");
     StopHeldKeyboardPan(true);
+    ClearTrackedKeyStates("input settings changed");
     if (g_IsModernCamEnabled && g_Settings.wasdMovement) {
         ClearNativeView3DToolState(View3DToolClearReason::WASDMovementEnabled);
     }
@@ -961,16 +1102,17 @@ void ApplyDebugLoggingChange()
 
 bool IsRightClickScrollingActive()
 {
-    return g_IsRightMouseDown || ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
+    return g_IsRightMouseDown || IsObservedOrPhysicalKeyDown(VK_RBUTTON);
 }
 
 bool IsVirtualKeyDown(int key)
 {
-    return (GetAsyncKeyState(key) & 0x8000) != 0;
+    return IsObservedOrPhysicalKeyDown(key);
 }
 
 bool IsManualCameraDumpHotkey(WPARAM key)
 {
+    RefreshTrackedModifierStates();
     return key == kDumpCameraInfoKey
         && IsVirtualKeyDown(VK_CONTROL)
         && IsVirtualKeyDown(VK_MENU);
@@ -978,6 +1120,7 @@ bool IsManualCameraDumpHotkey(WPARAM key)
 
 bool IsCommandShortcutModifierDown()
 {
+    RefreshTrackedModifierStates();
     return IsVirtualKeyDown(VK_CONTROL)
         || IsVirtualKeyDown(VK_MENU)
         || IsVirtualKeyDown(VK_LWIN)
@@ -1228,7 +1371,8 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
     }
 
     const float directionAngle = std::atan2(-forwardSteps, rightSteps);
-    const float speedMultiplier = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)
+    RefreshTrackedModifierStates();
+    const float speedMultiplier = IsVirtualKeyDown(VK_SHIFT)
         ? kKeyboardPanBoostMultiplier
         : 1.0f;
     const float scrollSpeed = kKeyboardPanNativeSpeed * speedMultiplier * g_Settings.panSensitivity;
@@ -1268,6 +1412,20 @@ void HandleKeyboardPanKeyState(WPARAM key, bool pressed)
         return;
     }
 
+    if (pressed && !ClaimKey(key, KeyOwner::ModernCameraPan)) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Verbose,
+            "Keyboard movement ignored because key is owned by another feature. Key:"
+            + std::to_string(static_cast<uint32_t>(key)));
+        return;
+    }
+    if (!pressed
+        && IsTrackableKey(key)
+        && g_KeyStates[key].owner != KeyOwner::None
+        && !IsKeyOwnedBy(key, KeyOwner::ModernCameraPan)) {
+        return;
+    }
+
     if (*keyState != pressed) {
         *keyState = pressed;
         ApplyKeyboardPan("keyboard key capture", LogLevel::Info);
@@ -1277,6 +1435,78 @@ void HandleKeyboardPanKeyState(WPARAM key, bool pressed)
         else {
             KillKeyboardPanTimer();
         }
+    }
+
+    if (!pressed) {
+        ReleaseKey(key, KeyOwner::ModernCameraPan);
+    }
+}
+
+bool ReconcileKeyboardPanKey(WPARAM key)
+{
+    bool* keyState = GetKeyboardPanKeyState(key);
+    if (!keyState || !*keyState || !IsKeyOwnedBy(key, KeyOwner::ModernCameraPan)) {
+        return false;
+    }
+
+    if (IsPhysicalKeyDown(static_cast<int>(key))) {
+        return false;
+    }
+
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        "Keyboard movement recovered from missed keyup. Key:"
+        + std::to_string(static_cast<uint32_t>(key)));
+    HandleKeyboardPanKeyState(key, false);
+    ObserveKeyTransition(key, false);
+    return true;
+}
+
+bool ReconcileKeyboardPanKeysWithPhysicalState()
+{
+    bool changed = false;
+    changed = ReconcileKeyboardPanKey('W') || changed;
+    changed = ReconcileKeyboardPanKey('A') || changed;
+    changed = ReconcileKeyboardPanKey('S') || changed;
+    changed = ReconcileKeyboardPanKey('D') || changed;
+    changed = ReconcileKeyboardPanKey(VK_UP) || changed;
+    changed = ReconcileKeyboardPanKey(VK_LEFT) || changed;
+    changed = ReconcileKeyboardPanKey(VK_DOWN) || changed;
+    changed = ReconcileKeyboardPanKey(VK_RIGHT) || changed;
+    return changed;
+}
+
+void ObserveCanvasInputTransition(UINT message, WPARAM key)
+{
+    switch (message) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        ObserveKeyTransition(key, true);
+        break;
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        ObserveKeyTransition(key, false);
+        break;
+    case WM_LBUTTONDOWN:
+        ObserveKeyTransition(VK_LBUTTON, true);
+        break;
+    case WM_LBUTTONUP:
+        ObserveKeyTransition(VK_LBUTTON, false);
+        break;
+    case WM_RBUTTONDOWN:
+        ObserveKeyTransition(VK_RBUTTON, true);
+        break;
+    case WM_RBUTTONUP:
+        ObserveKeyTransition(VK_RBUTTON, false);
+        break;
+    case WM_MBUTTONDOWN:
+        ObserveKeyTransition(VK_MBUTTON, true);
+        break;
+    case WM_MBUTTONUP:
+        ObserveKeyTransition(VK_MBUTTON, false);
+        break;
+    default:
+        break;
     }
 }
 
@@ -1329,6 +1559,14 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
         const bool isKeyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool isKeyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
 
+        if (keyboard && (isKeyDown || isKeyUp)) {
+            DWORD foregroundProcessID = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcessID);
+            if (foregroundProcessID == GetCurrentProcessId()) {
+                ObserveKeyTransition(keyboard->vkCode, isKeyDown);
+            }
+        }
+
         if (keyboard
             && (isKeyDown || isKeyUp)
             && IsKeyboardPanVirtualKey(keyboard->vkCode)) {
@@ -1351,6 +1589,7 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                 StopHeldKeyboardPan(true);
             }
             else if (isKeyUp && HasHeldKeyboardPanKey()) {
+                ObserveKeyTransition(keyboard->vkCode, false);
                 HandleKeyboardPanKeyState(keyboard->vkCode, false);
             }
         }
@@ -1419,6 +1658,8 @@ VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DW
 
 VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     if (idEvent == g_KeyboardPanTimerID && g_KeyboardPanTimerID != 0) {
+        ReconcileKeyboardPanKeysWithPhysicalState();
+
         if (!HasHeldKeyboardPanKey() || !ShouldCaptureHeldKeyboardPan()) {
             StopHeldKeyboardPan(true);
             return;
@@ -1437,11 +1678,24 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
 
 LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
+    ObserveCanvasInputTransition(uMsg, wParam);
+
     if (!g_IsCityLoaded) {
         return 0;
     }
 
     Logger& log = Logger::GetInstance();
+
+    if (uMsg == WM_KILLFOCUS) {
+        StopHeldKeyboardPan(true);
+        ClearTrackedKeyStates("canvas focus lost");
+        return 0;
+    }
+    if (uMsg == WM_ACTIVATEAPP && wParam == FALSE) {
+        StopHeldKeyboardPan(true);
+        ClearTrackedKeyStates("application deactivated");
+        return 0;
+    }
 
     const bool isMouseMessage = uMsg == WM_LBUTTONDOWN
         || uMsg == WM_LBUTTONUP
