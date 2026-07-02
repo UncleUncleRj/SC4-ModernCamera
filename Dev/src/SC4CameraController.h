@@ -88,6 +88,7 @@ static_assert(sizeof(SC4CameraControlLayout) == 0x160);
 // SC4CameraControlLayout are deliberately excluded.
 struct SC4NativeCameraState
 {
+	cS3DVector3 cameraPlaneOrigin;
 	cS3DVector3 cameraPosition;
 	cS3DVector3 viewTargetPosition;
 	cS3DVector3 baseTargetForRotation;
@@ -138,6 +139,8 @@ public:
 	bool ClearCameraDumpConfirmation() const;
 	bool HasNativeCameraState() const;
 	const SC4NativeCameraState& GetNativeCameraState() const;
+	bool CaptureNativeCameraState(const char* source);
+	bool RestoreNativeCameraState(const char* source);
 	bool BeginSavePreviewNormalization();
 	void EndSavePreviewNormalization();
 	void AbandonSavePreviewNormalization();

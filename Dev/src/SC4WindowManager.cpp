@@ -1198,10 +1198,6 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			{
 				manager->RefreshSettingsWindows();
 			}
-			if (callbacks && callbacks->OnResetCameraRequested)
-			{
-				callbacks->OnResetCameraRequested();
-			}
 			if (callbacks && callbacks->OnCameraModeChanged)
 			{
 				callbacks->OnCameraModeChanged(false);

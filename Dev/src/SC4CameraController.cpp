@@ -344,6 +344,7 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 	}
 
 	nativeCameraState = {
+		cameraControl.cameraPlaneOrigin,
 		cameraControl.cameraPosition,
 		cameraControl.viewTargetPosition,
 		cameraControl.baseTargetForRotation,
@@ -376,6 +377,125 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 		+ " Yaw:" + std::to_string(nativeCameraState.yaw));
 
 	return true;
+}
+
+bool SC4CameraController::CaptureNativeCameraState(const char* source)
+{
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Native Camera State Capture: camera control unavailable. Source:"
+				+ std::string(source ? source : "unknown"));
+			return false;
+		}
+
+		const bool alreadyCaptured = nativeCameraStateCaptured;
+		const bool captured = EnsureNativeCameraStateCaptured(*cameraControl);
+		if (captured && alreadyCaptured) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Verbose,
+				"Native Camera State Capture: existing snapshot retained. Source:"
+				+ std::string(source ? source : "unknown"));
+		}
+		return captured;
+	});
+}
+
+bool SC4CameraController::RestoreNativeCameraState(const char* source)
+{
+	if (!nativeCameraStateCaptured) {
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Native Camera State Restore: no captured state. Source:"
+			+ std::string(source ? source : "unknown"));
+		return false;
+	}
+
+	const SC4NativeCameraState state = nativeCameraState;
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Native Camera State Restore: camera control unavailable. Source:"
+				+ std::string(source ? source : "unknown"));
+			return false;
+		}
+
+		RestoreNativeAngleTables();
+
+		if (cameraControl->zoom != state.zoom && !renderer->SetZoom(state.zoom)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetZoom failed.");
+			return false;
+		}
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetZoom.");
+			return false;
+		}
+
+		if (cameraControl->rotation != state.rotation && !renderer->SetRotation(state.rotation)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetRotation failed.");
+			return false;
+		}
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetRotation.");
+			return false;
+		}
+
+		cameraControl->cameraPlaneOrigin = state.cameraPlaneOrigin;
+		cameraControl->baseTargetForRotation = state.baseTargetForRotation;
+		cameraControl->cameraPosition = state.cameraPosition;
+		cameraControl->viewTargetPosition = state.viewTargetPosition;
+		cameraControl->viewTargetVelocity = {};
+		cameraControl->cameraOffset = state.cameraOffset;
+		cameraControl->customMagnification = state.customMagnification;
+		cameraControl->prevZoom = state.prevZoom;
+		cameraControl->prevRotation = state.prevRotation;
+		cameraControl->zoom = state.zoom;
+		cameraControl->rotation = state.rotation;
+		cameraControl->postZoom = state.postZoom;
+		cameraControl->postRotation = state.postRotation;
+		cameraControl->yaw = state.yaw;
+		cameraControl->pitch = state.pitch;
+		cameraControl->cameraDistance = state.cameraDistance;
+		cameraControl->nearClip = state.nearClip;
+		cameraControl->farClip = state.farClip;
+		cameraControl->orthoScale = state.orthoScale;
+		cameraControl->invOrthoScale = state.invOrthoScale;
+
+		currentPitch = state.pitch;
+		currentYaw = state.yaw;
+		anglesInitialized = false;
+		rotationGestureActive = false;
+		rotationOrthoScale = 0.0f;
+		rotationViewTarget = {};
+		rotationBaseTarget = {};
+
+		const bool refreshed = Refresh(*cameraControl);
+		if (refreshed) {
+			nativeCameraStateCaptured = false;
+			nativeCameraState = {};
+			renderer->ForceFullRedraw();
+		}
+
+		Logger::GetInstance().WriteLine(
+			refreshed ? LogLevel::Info : LogLevel::Warning,
+			std::string("Native Camera State Restore: ")
+			+ (refreshed ? "restored" : "refresh failed")
+			+ ". Source:" + (source ? source : "unknown")
+			+ " Position[" + FormatVector(state.cameraPosition)
+			+ "] ViewTarget[" + FormatVector(state.viewTargetPosition)
+			+ "] Zoom:" + std::to_string(state.zoom)
+			+ " Rotation:" + std::to_string(state.rotation)
+			+ " Pitch:" + std::to_string(state.pitch)
+			+ " Yaw:" + std::to_string(state.yaw)
+			+ " SnapshotCleared:" + (refreshed ? "true" : "false"));
+		return refreshed;
+	});
 }
 
 bool SC4CameraController::BeginSavePreviewNormalization()
