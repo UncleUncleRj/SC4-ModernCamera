@@ -23,6 +23,7 @@ struct SC4WindowManagerCallbacks
 	std::function<void()> OnResetCameraRequested;
 	std::function<void()> OnInputSettingsChanged;
 	std::function<void()> OnDebugLoggingChanged;
+	std::function<void()> OnSettingsWindowClosed;
 };
 
 using SC4WindowHandle = uint32_t;

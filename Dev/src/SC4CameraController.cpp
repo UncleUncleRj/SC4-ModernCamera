@@ -217,6 +217,15 @@ namespace
 		return quarterTurns;
 	}
 
+	int32_t SnapYawToNearestNativeAngle(float yaw, int32_t& rotation)
+	{
+		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
+		const int32_t quarterTurns = static_cast<int32_t>(std::lround((yaw - kNativeYawAnchor) / kQuarterTurn));
+
+		rotation = WrapRotation(rotation + quarterTurns);
+		return quarterTurns;
+	}
+
 	std::string FormatPointer(const void* value)
 	{
 		std::ostringstream stream;
@@ -296,6 +305,12 @@ SC4CameraController::SC4CameraController()
 	: currentPitch(kDefaultPitch),
 	  currentYaw(kDefaultYaw),
 	  anglesInitialized(false),
+	  classicAngleHoldActive(false),
+	  classicAngleHoldPitch(kDefaultPitch),
+	  classicAngleHoldYaw(kDefaultYaw),
+	  classicAngleHoldRotation(0),
+	  classicAngleHoldSnapYaw(kDefaultYaw),
+	  classicAngleHoldSnapRotation(0),
 	  rotationGestureActive(false),
 	  rotationOrthoScale(0.0f),
 	  rotationViewTarget{},
@@ -319,6 +334,12 @@ void SC4CameraController::Reset()
 	currentPitch = kDefaultPitch;
 	currentYaw = kDefaultYaw;
 	anglesInitialized = false;
+	classicAngleHoldActive = false;
+	classicAngleHoldPitch = kDefaultPitch;
+	classicAngleHoldYaw = kDefaultYaw;
+	classicAngleHoldRotation = 0;
+	classicAngleHoldSnapYaw = kDefaultYaw;
+	classicAngleHoldSnapRotation = 0;
 	rotationGestureActive = false;
 	rotationOrthoScale = 0.0f;
 	rotationViewTarget = {};
@@ -344,6 +365,7 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 	}
 
 	nativeCameraState = {
+		cameraControl.cameraPlaneOrigin,
 		cameraControl.cameraPosition,
 		cameraControl.viewTargetPosition,
 		cameraControl.baseTargetForRotation,
@@ -376,6 +398,125 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 		+ " Yaw:" + std::to_string(nativeCameraState.yaw));
 
 	return true;
+}
+
+bool SC4CameraController::CaptureNativeCameraState(const char* source)
+{
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Native Camera State Capture: camera control unavailable. Source:"
+				+ std::string(source ? source : "unknown"));
+			return false;
+		}
+
+		const bool alreadyCaptured = nativeCameraStateCaptured;
+		const bool captured = EnsureNativeCameraStateCaptured(*cameraControl);
+		if (captured && alreadyCaptured) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Verbose,
+				"Native Camera State Capture: existing snapshot retained. Source:"
+				+ std::string(source ? source : "unknown"));
+		}
+		return captured;
+	});
+}
+
+bool SC4CameraController::RestoreNativeCameraState(const char* source)
+{
+	if (!nativeCameraStateCaptured) {
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Native Camera State Restore: no captured state. Source:"
+			+ std::string(source ? source : "unknown"));
+		return false;
+	}
+
+	const SC4NativeCameraState state = nativeCameraState;
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Native Camera State Restore: camera control unavailable. Source:"
+				+ std::string(source ? source : "unknown"));
+			return false;
+		}
+
+		RestoreNativeAngleTables();
+
+		if (cameraControl->zoom != state.zoom && !renderer->SetZoom(state.zoom)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetZoom failed.");
+			return false;
+		}
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetZoom.");
+			return false;
+		}
+
+		if (cameraControl->rotation != state.rotation && !renderer->SetRotation(state.rotation)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetRotation failed.");
+			return false;
+		}
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetRotation.");
+			return false;
+		}
+
+		cameraControl->cameraPlaneOrigin = state.cameraPlaneOrigin;
+		cameraControl->baseTargetForRotation = state.baseTargetForRotation;
+		cameraControl->cameraPosition = state.cameraPosition;
+		cameraControl->viewTargetPosition = state.viewTargetPosition;
+		cameraControl->viewTargetVelocity = {};
+		cameraControl->cameraOffset = state.cameraOffset;
+		cameraControl->customMagnification = state.customMagnification;
+		cameraControl->prevZoom = state.prevZoom;
+		cameraControl->prevRotation = state.prevRotation;
+		cameraControl->zoom = state.zoom;
+		cameraControl->rotation = state.rotation;
+		cameraControl->postZoom = state.postZoom;
+		cameraControl->postRotation = state.postRotation;
+		cameraControl->yaw = state.yaw;
+		cameraControl->pitch = state.pitch;
+		cameraControl->cameraDistance = state.cameraDistance;
+		cameraControl->nearClip = state.nearClip;
+		cameraControl->farClip = state.farClip;
+		cameraControl->orthoScale = state.orthoScale;
+		cameraControl->invOrthoScale = state.invOrthoScale;
+
+		currentPitch = state.pitch;
+		currentYaw = state.yaw;
+		anglesInitialized = false;
+		rotationGestureActive = false;
+		rotationOrthoScale = 0.0f;
+		rotationViewTarget = {};
+		rotationBaseTarget = {};
+
+		const bool refreshed = Refresh(*cameraControl);
+		if (refreshed) {
+			nativeCameraStateCaptured = false;
+			nativeCameraState = {};
+			renderer->ForceFullRedraw();
+		}
+
+		Logger::GetInstance().WriteLine(
+			refreshed ? LogLevel::Info : LogLevel::Warning,
+			std::string("Native Camera State Restore: ")
+			+ (refreshed ? "restored" : "refresh failed")
+			+ ". Source:" + (source ? source : "unknown")
+			+ " Position[" + FormatVector(state.cameraPosition)
+			+ "] ViewTarget[" + FormatVector(state.viewTargetPosition)
+			+ "] Zoom:" + std::to_string(state.zoom)
+			+ " Rotation:" + std::to_string(state.rotation)
+			+ " Pitch:" + std::to_string(state.pitch)
+			+ " Yaw:" + std::to_string(state.yaw)
+			+ " SnapshotCleared:" + (refreshed ? "true" : "false"));
+		return refreshed;
+	});
 }
 
 bool SC4CameraController::BeginSavePreviewNormalization()
@@ -545,7 +686,9 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 		SyncAngles(*cameraControl);
 		RestoreRotationAnchor(*cameraControl);
 
-		currentPitch = SanitizePitch(currentPitch + pitchDelta);
+		currentPitch = classicAngleHoldActive
+			? currentPitch
+			: SanitizePitch(currentPitch + pitchDelta);
 		currentYaw = SanitizeYaw(currentYaw + yawDelta);
 
 		if (updateYaw) {
@@ -651,6 +794,17 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 			return false;
 		}
 
+		if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
+			blocked = true;
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				std::string("Camera Scroll Bounds: unusable city extents; blocking scroll. Source:")
+				+ (source ? source : "unknown")
+				+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
+				+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
+			return true;
+		}
+
 		EnsureNativeCameraStateCaptured(*cameraControl);
 		SyncAngles(*cameraControl);
 
@@ -727,6 +881,147 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 			+ " AdjustedDeltaX:" + std::to_string(deltaX)
 			+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
 		return true;
+	});
+}
+
+bool SC4CameraController::BeginClassicAngleHold(const char* source)
+{
+	if (classicAngleHoldActive) {
+		return true;
+	}
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: camera control unavailable.");
+			return false;
+		}
+
+		EnsureNativeCameraStateCaptured(*cameraControl);
+		SyncAngles(*cameraControl);
+
+		classicAngleHoldPitch = currentPitch;
+		classicAngleHoldYaw = currentYaw;
+		classicAngleHoldRotation = cameraControl->rotation;
+
+		const int32_t nativeZoom = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
+		int32_t targetRotation = cameraControl->rotation;
+		const int32_t snappedQuarterTurns = SnapYawToNearestNativeAngle(currentYaw, targetRotation);
+		const float targetPitch = kNativePitchByZoom[nativeZoom];
+		const float targetYaw = kNativeYawAnchor;
+		const cS3DVector3 viewTarget = cameraControl->viewTargetPosition;
+		const cS3DVector3 baseTarget = cameraControl->baseTargetForRotation;
+
+		if (targetRotation != cameraControl->rotation && !renderer->SetRotation(targetRotation)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: renderer SetRotation failed.");
+			return false;
+		}
+
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: camera control unavailable after SetRotation.");
+			return false;
+		}
+
+		ApplyPitchOverride(targetPitch);
+		ApplyYawOverride(targetYaw);
+		cameraControl->pitch = targetPitch;
+		cameraControl->yaw = targetYaw;
+		cameraControl->viewTargetPosition = viewTarget;
+		cameraControl->baseTargetForRotation = baseTarget;
+		cameraControl->viewTargetVelocity = {};
+
+		const bool refreshed = Refresh(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
+		if (refreshed) {
+			currentPitch = targetPitch;
+			currentYaw = targetYaw;
+			classicAngleHoldSnapYaw = targetYaw;
+			classicAngleHoldSnapRotation = targetRotation;
+			classicAngleHoldActive = true;
+			renderer->ForceFullRedraw();
+		}
+
+		Logger::GetInstance().WriteLine(
+			refreshed ? LogLevel::Info : LogLevel::Warning,
+			std::string("Classic Angle Hold: ")
+			+ (refreshed ? "started" : "refresh failed")
+			+ ". Source:" + (source ? source : "unknown")
+			+ " SavedPitch:" + std::to_string(classicAngleHoldPitch)
+			+ " SavedYaw:" + std::to_string(classicAngleHoldYaw)
+			+ " NativePitch:" + std::to_string(targetPitch)
+			+ " NativeYaw:" + std::to_string(targetYaw)
+			+ " SavedRotation:" + std::to_string(classicAngleHoldRotation)
+			+ " NativeRotation:" + std::to_string(targetRotation)
+			+ " QuarterTurns:" + std::to_string(snappedQuarterTurns));
+		return refreshed;
+	});
+}
+
+bool SC4CameraController::EndClassicAngleHold(const char* source)
+{
+	if (!classicAngleHoldActive) {
+		return true;
+	}
+
+	const float targetPitch = classicAngleHoldPitch;
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: camera control unavailable.");
+			return false;
+		}
+
+		const cS3DVector3 viewTarget = cameraControl->viewTargetPosition;
+		const cS3DVector3 baseTarget = cameraControl->baseTargetForRotation;
+		const int32_t oldRotation = cameraControl->rotation;
+		const float heldYaw = SanitizeYaw(cameraControl->yaw);
+		const float yawDelta = SanitizeYaw(heldYaw - classicAngleHoldSnapYaw);
+		const int32_t rotationDelta = cameraControl->rotation - classicAngleHoldSnapRotation;
+		const float targetYaw = SanitizeYaw(classicAngleHoldYaw + yawDelta);
+		const int32_t targetRotation = WrapRotation(classicAngleHoldRotation + rotationDelta);
+
+		if (targetRotation != cameraControl->rotation && !renderer->SetRotation(targetRotation)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: renderer SetRotation failed.");
+			return false;
+		}
+
+		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: camera control unavailable after SetRotation.");
+			return false;
+		}
+
+		ApplyPitchOverride(targetPitch);
+		ApplyYawOverride(targetYaw);
+		cameraControl->pitch = targetPitch;
+		cameraControl->yaw = targetYaw;
+		cameraControl->viewTargetPosition = viewTarget;
+		cameraControl->baseTargetForRotation = baseTarget;
+		cameraControl->viewTargetVelocity = {};
+
+		const bool refreshed = Refresh(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
+		if (refreshed) {
+			currentPitch = targetPitch;
+			currentYaw = targetYaw;
+			classicAngleHoldActive = false;
+			renderer->ForceFullRedraw();
+		}
+
+		Logger::GetInstance().WriteLine(
+			refreshed ? LogLevel::Info : LogLevel::Warning,
+			std::string("Classic Angle Hold Restore: ")
+			+ (refreshed ? "restored" : "refresh failed")
+			+ ". Source:" + (source ? source : "unknown")
+			+ " RestoredPitch:" + std::to_string(targetPitch)
+			+ " RestoredYaw:" + std::to_string(targetYaw)
+			+ " YawDelta:" + std::to_string(yawDelta)
+			+ " OldRotation:" + std::to_string(oldRotation)
+			+ " RestoredRotation:" + std::to_string(targetRotation)
+			+ " RotationDelta:" + std::to_string(rotationDelta));
+		return refreshed;
 	});
 }
 

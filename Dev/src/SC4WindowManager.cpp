@@ -1159,6 +1159,12 @@ bool SettingsWindow::OnCommandMessage(cGZMessage& msg)
 
 bool SettingsWindow::OnButtonClick(uint32_t controlID)
 {
+	if (controlID == kSettingsCloseXButtonID || controlID == kSettingsCloseButtonID)
+	{
+		Close();
+		return true;
+	}
+
 	if (settings)
 	{
 		const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
@@ -1197,10 +1203,6 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			if (manager)
 			{
 				manager->RefreshSettingsWindows();
-			}
-			if (callbacks && callbacks->OnResetCameraRequested)
-			{
-				callbacks->OnResetCameraRequested();
 			}
 			if (callbacks && callbacks->OnCameraModeChanged)
 			{
@@ -1263,90 +1265,6 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			LogOptionChanged("Settings UI", "Invert Vertical", ToOnOffString(settings->invertVertical), "Off");
 			settings->invertVertical = false;
 			ApplySettingsChange("invert vertical change");
-			return true;
-		case kSettingsRedrawOffButtonID:
-			if (!modernCameraActive)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored Redraw Aggression Classic while Classic camera is selected.");
-				return true;
-			}
-			LogOptionChanged(
-				"Settings UI",
-				"Redraw Aggression",
-				ToRedrawAggressionString(settings->redrawAggression),
-				"Classic");
-			settings->redrawAggression = RedrawAggression::Classic;
-			ApplySettingsChange("redraw aggression change");
-			if (callbacks && callbacks->OnRedrawAggressionChanged)
-			{
-				callbacks->OnRedrawAggressionChanged();
-			}
-			if (callbacks && callbacks->OnDebugLoggingChanged)
-			{
-				callbacks->OnDebugLoggingChanged();
-			}
-			return true;
-		case kSettingsRedrawNormalButtonID:
-			if (!modernCameraActive)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored Redraw Aggression Normal while Classic camera is selected.");
-				return true;
-			}
-			LogOptionChanged(
-				"Settings UI",
-				"Redraw Aggression",
-				ToRedrawAggressionString(settings->redrawAggression),
-				"Normal");
-			settings->redrawAggression = RedrawAggression::Normal;
-			ApplySettingsChange("redraw aggression change");
-			if (callbacks && callbacks->OnRedrawAggressionChanged)
-			{
-				callbacks->OnRedrawAggressionChanged();
-			}
-			return true;
-		case kSettingsRedrawHighButtonID:
-			if (!modernCameraActive)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored Redraw Aggression High while Classic camera is selected.");
-				return true;
-			}
-			LogOptionChanged(
-				"Settings UI",
-				"Redraw Aggression",
-				ToRedrawAggressionString(settings->redrawAggression),
-				"High");
-			settings->redrawAggression = RedrawAggression::High;
-			ApplySettingsChange("redraw aggression change");
-			if (callbacks && callbacks->OnRedrawAggressionChanged)
-			{
-				callbacks->OnRedrawAggressionChanged();
-			}
-			return true;
-		case kSettingsRedrawAggressiveButtonID:
-			if (!modernCameraActive)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored Redraw Aggression Extreme while Classic camera is selected.");
-				return true;
-			}
-			LogOptionChanged(
-				"Settings UI",
-				"Redraw Aggression",
-				ToRedrawAggressionString(settings->redrawAggression),
-				"Extreme");
-			settings->redrawAggression = RedrawAggression::Extreme;
-			ApplySettingsChange("redraw aggression change");
-			if (callbacks && callbacks->OnRedrawAggressionChanged)
-			{
-				callbacks->OnRedrawAggressionChanged();
-			}
 			return true;
 		case kSettingsRestoreDefaultsButtonID:
 		{
@@ -1416,6 +1334,10 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			if (callbacks && callbacks->OnRedrawAggressionChanged)
 			{
 				callbacks->OnRedrawAggressionChanged();
+			}
+			if (callbacks && callbacks->OnDebugLoggingChanged)
+			{
+				callbacks->OnDebugLoggingChanged();
 			}
 			return true;
 		}
@@ -2473,7 +2395,8 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 				+ "Shift + WASD: Pan Faster\n"
 				+ "WASD Movement can be disabled in settings.\n"
 				+ "Scroll Wheel: Zoom\n"
-				+ "Mouse 3 + Drag: Pan & Tilt\n\n"
+				+ "Mouse 3 + Drag: Pan & Tilt\n"
+				+ "Alt: Hold Classic Angle\n\n"
 				+ "Changelog:\n"
 				+ "- Polished the welcome/changelog window and UI image handling.\n"
 				+ "- Added persistent JSON settings.\n"
@@ -2772,6 +2695,10 @@ void SC4WindowManager::SetMenuButtonVisible(bool visible)
 void SC4WindowManager::OnSettingsWindowClosed()
 {
 	menuButtonWindow.SetSettingsOpen(false);
+	if (callbacks.OnSettingsWindowClosed)
+	{
+		callbacks.OnSettingsWindowClosed();
+	}
 }
 
 void SC4WindowManager::RefreshSettingsWindows()

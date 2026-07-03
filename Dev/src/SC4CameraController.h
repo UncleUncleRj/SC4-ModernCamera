@@ -88,6 +88,7 @@ static_assert(sizeof(SC4CameraControlLayout) == 0x160);
 // SC4CameraControlLayout are deliberately excluded.
 struct SC4NativeCameraState
 {
+	cS3DVector3 cameraPlaneOrigin;
 	cS3DVector3 cameraPosition;
 	cS3DVector3 viewTargetPosition;
 	cS3DVector3 baseTargetForRotation;
@@ -130,6 +131,8 @@ public:
 		float& adjustedDirectionAngle,
 		bool& blocked,
 		const char* source);
+	bool BeginClassicAngleHold(const char* source);
+	bool EndClassicAngleHold(const char* source);
 	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
 	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
 	bool ForceFullRedraw();
@@ -138,6 +141,8 @@ public:
 	bool ClearCameraDumpConfirmation() const;
 	bool HasNativeCameraState() const;
 	const SC4NativeCameraState& GetNativeCameraState() const;
+	bool CaptureNativeCameraState(const char* source);
+	bool RestoreNativeCameraState(const char* source);
 	bool BeginSavePreviewNormalization();
 	void EndSavePreviewNormalization();
 	void AbandonSavePreviewNormalization();
@@ -160,6 +165,12 @@ private:
 	float currentPitch;
 	float currentYaw;
 	bool anglesInitialized;
+	bool classicAngleHoldActive;
+	float classicAngleHoldPitch;
+	float classicAngleHoldYaw;
+	int32_t classicAngleHoldRotation;
+	float classicAngleHoldSnapYaw;
+	int32_t classicAngleHoldSnapRotation;
 	bool rotationGestureActive;
 	float rotationOrthoScale;
 	cS3DVector3 rotationViewTarget;
