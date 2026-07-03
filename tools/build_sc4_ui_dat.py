@@ -382,6 +382,7 @@ def build_controls_script() -> bytes:
         "Mouse Controls:\n"
         "Mouse Wheel: Smooth zoom\n"
         "Middle Mouse Button + Drag: Pan & Tilt\n"
+        "Alt: Hold Classic angle\n"
         "Camera Button: Opens camera settings"
     )
     script = f"""# Generated for SC4-ModernCamera's controls help window

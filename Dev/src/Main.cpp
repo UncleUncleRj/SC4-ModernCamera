@@ -83,6 +83,7 @@ enum class KeyOwner : uint8_t
     None,
     ModernCameraPan,
     ModernCameraRotation,
+    ModernCameraClassicAngle,
 };
 
 struct TrackedKeyState
@@ -246,6 +247,7 @@ bool g_IsApplyingKeyboardPan = false;
 KeyStateManager g_KeyStateManager;
 static constexpr std::array<WPARAM, 4> kWASDKeyboardPanKeys = { 'W', 'A', 'S', 'D' };
 static constexpr std::array<WPARAM, 4> kArrowKeyboardPanKeys = { VK_UP, VK_LEFT, VK_DOWN, VK_RIGHT };
+static constexpr std::array<WPARAM, 3> kClassicAngleKeys = { VK_MENU, VK_LMENU, VK_RMENU };
 static constexpr std::array<WPARAM, 8> kKeyboardPanKeys = {
     'W',
     'A',
@@ -289,6 +291,7 @@ void UninstallSetScrollingHook();
 void RegisterCanvasWinProcFilterForModernCamera();
 void UnregisterCanvasWinProcFilterForModernCamera();
 void StopHeldKeyboardPan();
+void StopClassicAngleHold(const char* source);
 bool IsRightClickScrollingActive();
 bool FocusView3DForNativeInput(const char* context);
 void RestoreWorldFocusAfterSettingsClosed();
@@ -324,6 +327,8 @@ const char* GetKeyOwnerName(KeyOwner owner)
         return "ModernCameraPan";
     case KeyOwner::ModernCameraRotation:
         return "ModernCameraRotation";
+    case KeyOwner::ModernCameraClassicAngle:
+        return "ModernCameraClassicAngle";
     default:
         return "None";
     }
@@ -338,6 +343,10 @@ std::string FormatVirtualKey(WPARAM key)
         return "Shift(" + std::to_string(static_cast<uint32_t>(key)) + ")";
     case VK_MENU:
         return "Alt(" + std::to_string(static_cast<uint32_t>(key)) + ")";
+    case VK_LMENU:
+        return "LeftAlt(" + std::to_string(static_cast<uint32_t>(key)) + ")";
+    case VK_RMENU:
+        return "RightAlt(" + std::to_string(static_cast<uint32_t>(key)) + ")";
     case VK_LBUTTON:
         return "LButton(" + std::to_string(static_cast<uint32_t>(key)) + ")";
     case VK_RBUTTON:
@@ -885,14 +894,51 @@ bool IsMiddleMouseRotationActive()
     return IsKeyOwnedBy(VK_MBUTTON, KeyOwner::ModernCameraRotation);
 }
 
+bool IsClassicAngleVirtualKey(WPARAM key)
+{
+    return key == VK_MENU || key == VK_LMENU || key == VK_RMENU;
+}
+
+bool HasHeldClassicAngleKey()
+{
+    return g_KeyStateManager.AnyDownOwnedBy(kClassicAngleKeys, KeyOwner::ModernCameraClassicAngle);
+}
+
+bool HasOwnedClassicAngleKey()
+{
+    return g_KeyStateManager.AnyOwnedBy(kClassicAngleKeys, KeyOwner::ModernCameraClassicAngle);
+}
+
+bool ShouldCaptureClassicAngleKeyInFocus(WPARAM key, bool cameraFocus)
+{
+    RefreshTrackedModifierStates();
+    return g_IsCityLoaded
+        && g_IsModernCamEnabled
+        && IsClassicAngleVirtualKey(key)
+        && cameraFocus
+        && !IsObservedOrPhysicalKeyDown(VK_CONTROL)
+        && !IsObservedOrPhysicalKeyDown(VK_LWIN)
+        && !IsObservedOrPhysicalKeyDown(VK_RWIN);
+}
+
 void ReleaseKeyboardPanKeyClaims()
 {
     g_KeyStateManager.ReleaseAll(kKeyboardPanKeys, KeyOwner::ModernCameraPan);
 }
 
+void ReleaseClassicAngleKeyClaims()
+{
+    g_KeyStateManager.ReleaseAll(kClassicAngleKeys, KeyOwner::ModernCameraClassicAngle);
+}
+
 void ClearHeldKeyboardPanKeys()
 {
     ReleaseKeyboardPanKeyClaims();
+}
+
+void ClearClassicAngleKeys()
+{
+    ReleaseClassicAngleKeyClaims();
 }
 
 void ClearMiddleMouseRotationClaim()
@@ -1379,6 +1425,7 @@ void ResetInputState(bool resetCamera = true)
 {
     KillRedrawTimers();
     StopHeldKeyboardPan();
+    StopClassicAngleHold("input reset");
     StopMiddleMouseRotation("input reset", false);
     ClearTrackedKeyStates("input reset");
     KillCameraDumpConfirmationTimer();
@@ -1396,6 +1443,7 @@ void ResetCameraToNativeView()
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: reset camera requested.");
     KillRedrawTimers();
     StopHeldKeyboardPan();
+    StopClassicAngleHold("camera reset");
     StopMiddleMouseRotation("camera reset", false);
     ClearTrackedKeyStates("camera reset");
     KillCameraDumpConfirmationTimer();
@@ -1423,6 +1471,7 @@ void ApplyModernCameraEnabled(bool enabled)
         std::string("Settings UI: Modern Camera Enabled changed to ") + (enabled ? "true" : "false"));
     g_IsModernCamEnabled = enabled;
     StopHeldKeyboardPan();
+    StopClassicAngleHold("camera mode changed");
 
     if (!enabled) {
         UninstallKeyboardHook();
@@ -1851,6 +1900,15 @@ void StopHeldKeyboardPan()
     }
 }
 
+void StopClassicAngleHold(const char* source)
+{
+    const bool hadHeldKey = HasOwnedClassicAngleKey();
+    ClearClassicAngleKeys();
+    if (hadHeldKey) {
+        g_CameraController.EndClassicAngleHold(source ? source : "classic angle hold stopped");
+    }
+}
+
 void HandleKeyboardPanKeyState(WPARAM key, bool pressed)
 {
     if (!IsKeyboardPanVirtualKey(key)) {
@@ -1897,6 +1955,44 @@ void HandleKeyboardPanKeyState(WPARAM key, bool pressed)
 
     if (!pressed) {
         ReleaseKey(key, KeyOwner::ModernCameraPan);
+    }
+}
+
+void HandleClassicAngleKeyState(WPARAM key, bool pressed)
+{
+    if (!IsClassicAngleVirtualKey(key)) {
+        return;
+    }
+
+    const bool wasActive = HasOwnedClassicAngleKey();
+    if (pressed && !ClaimKey(key, KeyOwner::ModernCameraClassicAngle)) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Verbose,
+            "Classic angle hold ignored because key is owned by another feature. Key:"
+            + FormatVirtualKey(key));
+        return;
+    }
+    if (!pressed
+        && IsTrackableKey(key)
+        && g_KeyStateManager.GetOwner(key) != KeyOwner::None
+        && !IsKeyOwnedBy(key, KeyOwner::ModernCameraClassicAngle)) {
+        return;
+    }
+
+    ObserveKeyTransition(key, pressed);
+    const bool isActive = HasHeldClassicAngleKey();
+
+    if (!wasActive && isActive) {
+        StopHeldKeyboardPan();
+        StopMiddleMouseRotation("classic angle hold started", true);
+        g_CameraController.BeginClassicAngleHold("Alt key pressed");
+    }
+    else if (wasActive && !isActive) {
+        g_CameraController.EndClassicAngleHold("Alt key released");
+    }
+
+    if (!pressed) {
+        ReleaseKey(key, KeyOwner::ModernCameraClassicAngle);
     }
 }
 
@@ -2017,6 +2113,20 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                         StopHeldKeyboardPan();
                     }
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
+                }
+
+                if (IsClassicAngleVirtualKey(keyboard->vkCode)) {
+                    const bool cameraFocus = IsCameraKeyboardFocus();
+                    if (ShouldCaptureClassicAngleKeyInFocus(keyboard->vkCode, cameraFocus)) {
+                        HandleClassicAngleKeyState(keyboard->vkCode, isKeyDown);
+                        return 1;
+                    }
+                    if (isKeyUp && HasOwnedClassicAngleKey()) {
+                        HandleClassicAngleKeyState(keyboard->vkCode, false);
+                        if (cameraFocus) {
+                            return 1;
+                        }
+                    }
                 }
             }
         }
@@ -2149,12 +2259,14 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
     if (uMsg == WM_KILLFOCUS) {
         StopHeldKeyboardPan();
+        StopClassicAngleHold("canvas focus lost");
         StopMiddleMouseRotation("canvas focus lost", false);
         ClearTrackedKeyStates("canvas focus lost");
         return 0;
     }
     if (uMsg == WM_ACTIVATEAPP && wParam == FALSE) {
         StopHeldKeyboardPan();
+        StopClassicAngleHold("application deactivated");
         StopMiddleMouseRotation("application deactivated", false);
         ClearTrackedKeyStates("application deactivated");
         return 0;
@@ -2226,7 +2338,22 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         || uMsg == WM_SYSKEYUP;
     const bool isWASDCharMessage = uMsg == WM_CHAR || uMsg == WM_SYSCHAR;
 
-    if (isKeyboardPanKeyMessage && IsCapturedKeyboardPanVirtualKey(wParam)) {
+    if (isKeyboardPanKeyMessage && IsClassicAngleVirtualKey(wParam)) {
+        const bool cameraFocus = IsCameraKeyboardFocus();
+        if (ShouldCaptureClassicAngleKeyInFocus(wParam, cameraFocus)) {
+            HandleClassicAngleKeyState(wParam, uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN);
+            handled = true;
+            return 0;
+        }
+        if ((uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP) && HasOwnedClassicAngleKey()) {
+            HandleClassicAngleKeyState(wParam, false);
+            if (cameraFocus) {
+                handled = true;
+            }
+            return 0;
+        }
+    }
+    else if (isKeyboardPanKeyMessage && IsCapturedKeyboardPanVirtualKey(wParam)) {
         if (IsCommandShortcutModifierDown()) {
             LogKeyboardShortcutPassThrough(wParam, "canvas WinProc filter");
             if (HasOwnedKeyboardPanKey()) {
@@ -2301,6 +2428,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
 
         log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+        if (HasOwnedClassicAngleKey()) {
+            log.WriteLine(LogLevel::Verbose, "Middle mouse camera rotation ignored while classic angle hold is active.");
+            handled = true;
+            return 0;
+        }
         if (!ClaimKey(VK_MBUTTON, KeyOwner::ModernCameraRotation)) {
             log.WriteLine(LogLevel::Verbose, "Middle mouse camera rotation ignored because MButton is owned by another feature.");
             break;

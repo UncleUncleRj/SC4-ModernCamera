@@ -131,6 +131,8 @@ public:
 		float& adjustedDirectionAngle,
 		bool& blocked,
 		const char* source);
+	bool BeginClassicAngleHold(const char* source);
+	bool EndClassicAngleHold(const char* source);
 	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
 	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
 	bool ForceFullRedraw();
@@ -163,6 +165,10 @@ private:
 	float currentPitch;
 	float currentYaw;
 	bool anglesInitialized;
+	bool classicAngleHoldActive;
+	float classicAngleHoldPitch;
+	float classicAngleHoldYaw;
+	int32_t classicAngleHoldRotation;
 	bool rotationGestureActive;
 	float rotationOrthoScale;
 	cS3DVector3 rotationViewTarget;
