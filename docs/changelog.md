@@ -1,3 +1,8 @@
+1.0.4:
+- Hold ALT to lock the camera to the nearest Classic Mode camera angle.
+- Re-written input manager for better WASD/Arrow key handling - again.
+- Bug fixes
+
 1.0.3:
 - WASD and Arrow keys are now linked in Modern Camera mode.
 - New setting available:
