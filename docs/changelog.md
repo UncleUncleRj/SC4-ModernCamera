@@ -1,5 +1,8 @@
 1.0.4:
 - Hold ALT to lock the camera to the nearest Classic Mode camera angle.
+   - NOTE: ALT lock is still experimental, if you lose your camera,
+           goto the Modern Camera menu and click "RESET CAMERA LOCATION".
+           
 - Re-written input manager for better WASD/Arrow key handling - again.
 - Bug fixes
 
