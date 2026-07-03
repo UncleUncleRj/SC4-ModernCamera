@@ -66,8 +66,8 @@ This produces all desired view types without a forced zoom/pitch curve:
   discrete rotation while Alt is held.
 - Preserves the current view target, zoom stage, and continuous magnification
   when the snap starts and when the saved Modern angle is restored.
-- Allows pan and wheel zoom while held, but blocks M3 rotation until Alt is
-  released.
+- Allows pan, wheel zoom, and M3 horizontal rotation while held. M3 vertical
+  movement is ignored so the Classic downward angle remains fixed.
 
 ### WASD movement
 
@@ -138,7 +138,8 @@ healthy and broken states before assigning unverified meanings to fields.
   magnification counters SC4's square-to-diamond bounds-fit so the visible zoom
   does not bounce merely to keep every map corner inside the viewport.
 - Alt hold saves the current Modern orientation, snaps to the nearest native
-  Classic angle, and restores only the saved orientation when released.
+  Classic angle, keeps pitch locked while held, and applies any held-rotation
+  delta back onto the saved Modern orientation when released.
 - Optional WASD movement consumes game W/A/S/D input only while Modern camera mode
   and WASD Movement are enabled. Movement is smooth while held, stops on key
   release, supports Shift boost, uses the panning speed setting, and respects

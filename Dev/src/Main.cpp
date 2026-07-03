@@ -1984,7 +1984,6 @@ void HandleClassicAngleKeyState(WPARAM key, bool pressed)
 
     if (!wasActive && isActive) {
         StopHeldKeyboardPan();
-        StopMiddleMouseRotation("classic angle hold started", true);
         g_CameraController.BeginClassicAngleHold("Alt key pressed");
     }
     else if (wasActive && !isActive) {
@@ -2428,11 +2427,6 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
 
         log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
-        if (HasOwnedClassicAngleKey()) {
-            log.WriteLine(LogLevel::Verbose, "Middle mouse camera rotation ignored while classic angle hold is active.");
-            handled = true;
-            return 0;
-        }
         if (!ClaimKey(VK_MBUTTON, KeyOwner::ModernCameraRotation)) {
             log.WriteLine(LogLevel::Verbose, "Middle mouse camera rotation ignored because MButton is owned by another feature.");
             break;

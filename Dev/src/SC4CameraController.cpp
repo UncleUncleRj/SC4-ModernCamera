@@ -309,6 +309,8 @@ SC4CameraController::SC4CameraController()
 	  classicAngleHoldPitch(kDefaultPitch),
 	  classicAngleHoldYaw(kDefaultYaw),
 	  classicAngleHoldRotation(0),
+	  classicAngleHoldSnapYaw(kDefaultYaw),
+	  classicAngleHoldSnapRotation(0),
 	  rotationGestureActive(false),
 	  rotationOrthoScale(0.0f),
 	  rotationViewTarget{},
@@ -336,6 +338,8 @@ void SC4CameraController::Reset()
 	classicAngleHoldPitch = kDefaultPitch;
 	classicAngleHoldYaw = kDefaultYaw;
 	classicAngleHoldRotation = 0;
+	classicAngleHoldSnapYaw = kDefaultYaw;
+	classicAngleHoldSnapRotation = 0;
 	rotationGestureActive = false;
 	rotationOrthoScale = 0.0f;
 	rotationViewTarget = {};
@@ -682,7 +686,9 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 		SyncAngles(*cameraControl);
 		RestoreRotationAnchor(*cameraControl);
 
-		currentPitch = SanitizePitch(currentPitch + pitchDelta);
+		currentPitch = classicAngleHoldActive
+			? currentPitch
+			: SanitizePitch(currentPitch + pitchDelta);
 		currentYaw = SanitizeYaw(currentYaw + yawDelta);
 
 		if (updateYaw) {
@@ -926,9 +932,12 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 		cameraControl->viewTargetVelocity = {};
 
 		const bool refreshed = Refresh(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
 		if (refreshed) {
 			currentPitch = targetPitch;
 			currentYaw = targetYaw;
+			classicAngleHoldSnapYaw = targetYaw;
+			classicAngleHoldSnapRotation = targetRotation;
 			classicAngleHoldActive = true;
 			renderer->ForceFullRedraw();
 		}
@@ -956,8 +965,6 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 	}
 
 	const float targetPitch = classicAngleHoldPitch;
-	const float targetYaw = classicAngleHoldYaw;
-	const int32_t targetRotation = classicAngleHoldRotation;
 
 	return WithRenderer([&](cISC43DRender* renderer) {
 		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
@@ -969,6 +976,11 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 		const cS3DVector3 viewTarget = cameraControl->viewTargetPosition;
 		const cS3DVector3 baseTarget = cameraControl->baseTargetForRotation;
 		const int32_t oldRotation = cameraControl->rotation;
+		const float heldYaw = SanitizeYaw(cameraControl->yaw);
+		const float yawDelta = SanitizeYaw(heldYaw - classicAngleHoldSnapYaw);
+		const int32_t rotationDelta = cameraControl->rotation - classicAngleHoldSnapRotation;
+		const float targetYaw = SanitizeYaw(classicAngleHoldYaw + yawDelta);
+		const int32_t targetRotation = WrapRotation(classicAngleHoldRotation + rotationDelta);
 
 		if (targetRotation != cameraControl->rotation && !renderer->SetRotation(targetRotation)) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: renderer SetRotation failed.");
@@ -990,6 +1002,7 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 		cameraControl->viewTargetVelocity = {};
 
 		const bool refreshed = Refresh(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
 		if (refreshed) {
 			currentPitch = targetPitch;
 			currentYaw = targetYaw;
@@ -1004,8 +1017,10 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 			+ ". Source:" + (source ? source : "unknown")
 			+ " RestoredPitch:" + std::to_string(targetPitch)
 			+ " RestoredYaw:" + std::to_string(targetYaw)
+			+ " YawDelta:" + std::to_string(yawDelta)
 			+ " OldRotation:" + std::to_string(oldRotation)
-			+ " RestoredRotation:" + std::to_string(targetRotation));
+			+ " RestoredRotation:" + std::to_string(targetRotation)
+			+ " RotationDelta:" + std::to_string(rotationDelta));
 		return refreshed;
 	});
 }

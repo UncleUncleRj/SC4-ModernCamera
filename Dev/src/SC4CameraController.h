@@ -169,6 +169,8 @@ private:
 	float classicAngleHoldPitch;
 	float classicAngleHoldYaw;
 	int32_t classicAngleHoldRotation;
+	float classicAngleHoldSnapYaw;
+	int32_t classicAngleHoldSnapRotation;
 	bool rotationGestureActive;
 	float rotationOrthoScale;
 	cS3DVector3 rotationViewTarget;
