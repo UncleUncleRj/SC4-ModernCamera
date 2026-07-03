@@ -23,10 +23,10 @@ Disc and retail builds are not supported.
 ## Controls
 
 - **WASD Movement**: Pans the camera in Modern camera mode. This can be disabled in-game.
-- **Shift + WASD**: Pans faster.
+- **Shift + WASD/Arrows**: Pans faster. Only in Modern Mode.
 - **M3 + horizontal drag**: Rotates the camera.
 - **M3 + vertical drag**: Adjusts the camera pitch.
-- **Alt hold**: Temporarily snaps to the nearest Classic camera angle in Modern camera mode.
+- **ALT**: While in Modern Cam, snaps to the nearest Classic Cam angle (remains moveable).
 - **Invert Vertical**: In-game option for vertical M3 pitch controls.
 - **Mouse wheel**: New smooth zoom experience.
 - **Ctrl+Alt+F8**: Dumps the current camera and renderer state to `Plugins\SC4-ModernCamera\SC4-ModernCamera.log` for debugging.
