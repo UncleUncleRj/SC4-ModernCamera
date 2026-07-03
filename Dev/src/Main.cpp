@@ -1,3 +1,4 @@
+#include "cIGZCanvas.h"
 #include "cIGZCanvasW32.h"
 #include "cIGZGraphicSystem.h"
 #include "cIGZMessage2Standard.h"
@@ -74,6 +75,7 @@ enum class View3DToolClearReason : uint8_t
 {
     ModernCameraEnabled,
     WASDMovementChanged,
+    ClassicCameraEnabled,
 };
 
 enum class KeyOwner : uint8_t
@@ -256,6 +258,7 @@ static constexpr std::array<WPARAM, 8> kKeyboardPanKeys = {
 };
 POINT g_LastMousePos = { 0, 0 };
 HWND g_CapturedMouseWindow = NULL;
+HWND g_CanvasWindow = NULL;
 HHOOK g_KeyboardHook = NULL;
 SC4CameraController g_CameraController;
 PluginSettings g_Settings;
@@ -285,9 +288,10 @@ void InstallSetScrollingHook();
 void UninstallSetScrollingHook();
 void RegisterCanvasWinProcFilterForModernCamera();
 void UnregisterCanvasWinProcFilterForModernCamera();
-void StopHeldKeyboardPan(bool scheduleRedraw);
+void StopHeldKeyboardPan();
 bool IsRightClickScrollingActive();
 bool FocusView3DForNativeInput(const char* context);
+void RestoreWorldFocusAfterSettingsClosed();
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize);
 bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z);
 
@@ -366,6 +370,84 @@ std::string FormatVirtualKey(WPARAM key)
     return "VK(" + std::to_string(static_cast<uint32_t>(key)) + ")";
 }
 
+HWND ResolveCanvasWindowHandle()
+{
+    if (g_CanvasWindow && IsWindow(g_CanvasWindow)) {
+        return g_CanvasWindow;
+    }
+
+    cIGZGraphicSystemPtr pGraphicSystem;
+    if (!pGraphicSystem) {
+        return NULL;
+    }
+
+    cIGZCanvasW32* canvasW32 = nullptr;
+    if (!pGraphicSystem->GetCanvas(GZIID_cIGZCanvasW32, reinterpret_cast<void**>(&canvasW32)) || !canvasW32) {
+        return NULL;
+    }
+
+    HWND resolved = NULL;
+    cIGZCanvas* canvas = canvasW32->AsIGZCanvas();
+    const intptr_t identifier = canvas ? canvas->GetSystemCanvasIdentifier() : 0;
+    if (identifier != 0) {
+        HWND direct = reinterpret_cast<HWND>(identifier);
+        if (IsWindow(direct)) {
+            resolved = direct;
+        }
+        else {
+            HWND* indirect = reinterpret_cast<HWND*>(identifier);
+            if (indirect && IsWindow(*indirect)) {
+                resolved = *indirect;
+            }
+        }
+    }
+
+    canvasW32->Release();
+    if (resolved) {
+        g_CanvasWindow = resolved;
+    }
+    return resolved;
+}
+
+bool FocusCanvasWindowForNativeInput(const char* context)
+{
+    HWND canvasWindow = ResolveCanvasWindowHandle();
+    if (!canvasWindow) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            std::string(context ? context : "native input")
+            + ": failed to resolve canvas HWND for native input focus.");
+        return false;
+    }
+
+    HWND previousFocus = GetFocus();
+    HWND previousActive = GetActiveWindow();
+    HWND rootWindow = GetAncestor(canvasWindow, GA_ROOT);
+    if (!rootWindow) {
+        rootWindow = canvasWindow;
+    }
+
+    HWND activeResult = SetActiveWindow(rootWindow);
+    SetForegroundWindow(rootWindow);
+    HWND focusResult = SetFocus(canvasWindow);
+    const bool active = GetActiveWindow() == rootWindow || activeResult == rootWindow;
+    const bool focused = GetFocus() == canvasWindow || focusResult == canvasWindow;
+
+    Logger::GetInstance().WriteLine(
+        focused ? LogLevel::Verbose : LogLevel::Warning,
+        std::string(context ? context : "native input")
+        + ": canvas HWND activation Active="
+        + (active ? "true" : "false")
+        + " Focus="
+        + (focused ? "true" : "false")
+        + " RootHWND:" + std::to_string(reinterpret_cast<intptr_t>(rootWindow))
+        + " CanvasHWND:" + std::to_string(reinterpret_cast<intptr_t>(canvasWindow))
+        + " PreviousActive:" + std::to_string(reinterpret_cast<intptr_t>(previousActive))
+        + " PreviousFocus:" + std::to_string(reinterpret_cast<intptr_t>(previousFocus)));
+
+    return focused;
+}
+
 std::string DescribeGZWindow(cIGZWin* window)
 {
     if (!window) {
@@ -429,6 +511,8 @@ const char* GetView3DToolClearReasonName(View3DToolClearReason reason)
         return "Modern camera enabled";
     case View3DToolClearReason::WASDMovementChanged:
         return "WASD movement changed";
+    case View3DToolClearReason::ClassicCameraEnabled:
+        return "Classic camera enabled";
     default:
         return "input mode changed";
     }
@@ -464,6 +548,7 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
         ? view3D->RemoveCurrentViewInputControl(true)
         : false;
     const bool stoppedScrolling = view3D->ScrollStop();
+    const bool killedKeyboardScrolling = view3D->KillKeyboardScrolling();
     cISC4ViewInputControl* remainingControl = view3D->GetCurrentViewInputControl();
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
@@ -473,38 +558,10 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
         + " RemoveAllViewInputControls=skipped"
         + " ScrollStop="
         + (stoppedScrolling ? "true" : "false")
-        + " KillKeyboardScrolling=skipped"
+        + " KillKeyboardScrolling="
+        + (killedKeyboardScrolling ? "true" : "false")
         + " RemainingToolID:"
         + (remainingControl ? FormatWindowID(remainingControl->GetID()) : "none"));
-
-    view3D->Release();
-}
-
-void ReleaseNativeKeyboardScrolling(const char* context)
-{
-    if (!g_IsCityLoaded) {
-        return;
-    }
-
-    const char* reasonName = context ? context : "native keyboard scrolling release";
-    cISC4View3DWin* view3D = GetView3DWinForInput(reasonName);
-    if (!view3D) {
-        return;
-    }
-
-    const bool stoppedScrolling = view3D->ScrollStop();
-    const bool setScrollingStopped = view3D->SetScrolling(false, 0.0f, 0.0f);
-    const bool killedKeyboardScrolling = view3D->KillKeyboardScrolling();
-
-    Logger::GetInstance().WriteLine(
-        LogLevel::Info,
-        std::string(reasonName)
-        + ": native keyboard scrolling released. ScrollStop="
-        + (stoppedScrolling ? "true" : "false")
-        + " SetScrollingFalse="
-        + (setScrollingStopped ? "true" : "false")
-        + " KillKeyboardScrolling="
-        + (killedKeyboardScrolling ? "true" : "false"));
 
     view3D->Release();
 }
@@ -1273,12 +1330,14 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 	float adjustedX = x;
 	bool blockedByBounds = false;
 	if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
-		g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
-		if (blockedByBounds) {
+		const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
+		if (!boundsChecked || blockedByBounds) {
 			const bool stopped = original(view3D, false, 0.0f, 0.0f);
 			Logger::GetInstance().WriteLine(
-				LogLevel::Verbose,
-				std::string("View3D SetScrolling blocked at city bounds. Source:")
+				boundsChecked ? LogLevel::Verbose : LogLevel::Warning,
+				std::string(boundsChecked
+					? "View3D SetScrolling blocked at city bounds. Source:"
+					: "View3D SetScrolling bounds preflight failed; stopping scroll. Source:")
 				+ source
 				+ " X:" + std::to_string(x)
 				+ " Z:" + std::to_string(z)
@@ -1319,7 +1378,7 @@ void HandleNativeUICornerClick(const POINT& point)
 void ResetInputState(bool resetCamera = true)
 {
     KillRedrawTimers();
-    StopHeldKeyboardPan(true);
+    StopHeldKeyboardPan();
     StopMiddleMouseRotation("input reset", false);
     ClearTrackedKeyStates("input reset");
     KillCameraDumpConfirmationTimer();
@@ -1336,7 +1395,7 @@ void ResetCameraToNativeView()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: reset camera requested.");
     KillRedrawTimers();
-    StopHeldKeyboardPan(true);
+    StopHeldKeyboardPan();
     StopMiddleMouseRotation("camera reset", false);
     ClearTrackedKeyStates("camera reset");
     KillCameraDumpConfirmationTimer();
@@ -1363,13 +1422,12 @@ void ApplyModernCameraEnabled(bool enabled)
         LogLevel::Info,
         std::string("Settings UI: Modern Camera Enabled changed to ") + (enabled ? "true" : "false"));
     g_IsModernCamEnabled = enabled;
-    StopHeldKeyboardPan(true);
+    StopHeldKeyboardPan();
 
     if (!enabled) {
         UninstallKeyboardHook();
         UninstallSetScrollingHook();
         UnregisterCanvasWinProcFilterForModernCamera();
-        ReleaseNativeKeyboardScrolling("Classic camera enabled");
         const bool restoredNativeCamera = g_CameraController.RestoreNativeCameraState("classic camera enabled");
         if (restoredNativeCamera) {
             ResetInputState(false);
@@ -1377,7 +1435,7 @@ void ApplyModernCameraEnabled(bool enabled)
         else {
             ResetCameraToNativeView();
         }
-        FocusView3DForNativeInput("Classic camera enabled focus handoff");
+        ClearNativeView3DToolState(View3DToolClearReason::ClassicCameraEnabled);
         ClearNativeToolWithQueryThenEsc();
         ScheduleView3DFocusRestore(false, "Classic camera enabled focus restore");
         Logger::GetInstance().WriteLine(
@@ -1415,7 +1473,7 @@ void ApplyRedrawAggressionChange()
 void ApplyInputSettingsChange()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: input settings changed; clearing held input state.");
-    StopHeldKeyboardPan(true);
+    StopHeldKeyboardPan();
     ClearTrackedKeyStates("input settings changed");
     if (g_IsModernCamEnabled) {
         ClearNativeView3DToolState(View3DToolClearReason::WASDMovementChanged);
@@ -1447,6 +1505,13 @@ void ApplyDebugLoggingChange()
         std::string("Settings UI: debug logging setting changed to ") + name + ".");
     Logger::GetInstance().SetVerbosity(verbosity);
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: debug logging is active.");
+}
+
+void RestoreWorldFocusAfterSettingsClosed()
+{
+    Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: closed; restoring city focus.");
+    FocusView3DForNativeInput("Settings window closed focus handoff");
+    ScheduleView3DFocusRestore(false, "Settings window closed focus restore");
 }
 
 bool IsRightClickScrollingActive()
@@ -1542,13 +1607,19 @@ bool FocusView3DForNativeInput(const char* context)
     cIGZWin* viewWindow = view3D->AsIGZWin();
     cIGZWinMgrPtr winMgr;
     const bool focused = winMgr && viewWindow && winMgr->GZSetFocus(viewWindow);
+    const bool currentMouseSet = winMgr && viewWindow && winMgr->SetCurrentMouseWin(viewWindow);
+    const bool canvasFocused = FocusCanvasWindowForNativeInput(context);
     Logger::GetInstance().WriteLine(
-        focused ? LogLevel::Verbose : LogLevel::Warning,
+        (focused && currentMouseSet && canvasFocused) ? LogLevel::Verbose : LogLevel::Warning,
         std::string(context ? context : "native input")
-        + ": 3D view keyboard focus "
-        + (focused ? "set." : "failed."));
+        + ": 3D view activation Focus="
+        + (focused ? "true" : "false")
+        + " CurrentMouse="
+        + (currentMouseSet ? "true" : "false")
+        + " CanvasFocus="
+        + (canvasFocused ? "true" : "false"));
     view3D->Release();
-    return focused;
+    return focused && currentMouseSet && canvasFocused;
 }
 
 bool IsCameraKeyboardFocus()
@@ -1770,7 +1841,7 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
     return nativeScrollResult;
 }
 
-void StopHeldKeyboardPan(bool)
+void StopHeldKeyboardPan()
 {
     const bool hadHeldKey = HasOwnedKeyboardPanKey();
     ClearHeldKeyboardPanKeys();
@@ -1930,7 +2001,7 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                         focusedWindow,
                         "low-level keyboard hook");
                     if (IsKeyboardPanVirtualKey(keyboard->vkCode) && HasOwnedKeyboardPanKey()) {
-                        StopHeldKeyboardPan(true);
+                        StopHeldKeyboardPan();
                     }
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
@@ -1943,7 +2014,7 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                         focusedWindow,
                         "low-level keyboard hook");
                     if (HasOwnedKeyboardPanKey()) {
-                        StopHeldKeyboardPan(true);
+                        StopHeldKeyboardPan();
                     }
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
@@ -1959,7 +2030,7 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                 if (IsCommandShortcutModifierDown()) {
                     LogKeyboardShortcutPassThrough(keyboard->vkCode, "low-level keyboard hook");
                     if (HasOwnedKeyboardPanKey()) {
-                        StopHeldKeyboardPan(true);
+                        StopHeldKeyboardPan();
                     }
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
@@ -1976,7 +2047,7 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                     }
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
-                StopHeldKeyboardPan(true);
+                StopHeldKeyboardPan();
             }
             else if (isKeyUp && HasOwnedKeyboardPanKey()) {
                 ObserveKeyTransition(keyboard->vkCode, false);
@@ -2049,7 +2120,7 @@ VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DW
 VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     if (idEvent == g_KeyboardPanTimerID && g_KeyboardPanTimerID != 0) {
         if (!HasHeldKeyboardPanKey() || !ShouldCaptureHeldKeyboardPan()) {
-            StopHeldKeyboardPan(true);
+            StopHeldKeyboardPan();
             return;
         }
 
@@ -2066,6 +2137,10 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
 
 LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
+    if (hWnd && IsWindow(hWnd)) {
+        g_CanvasWindow = hWnd;
+    }
+
     if (!g_IsCityLoaded) {
         return 0;
     }
@@ -2073,13 +2148,13 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     Logger& log = Logger::GetInstance();
 
     if (uMsg == WM_KILLFOCUS) {
-        StopHeldKeyboardPan(true);
+        StopHeldKeyboardPan();
         StopMiddleMouseRotation("canvas focus lost", false);
         ClearTrackedKeyStates("canvas focus lost");
         return 0;
     }
     if (uMsg == WM_ACTIVATEAPP && wParam == FALSE) {
-        StopHeldKeyboardPan(true);
+        StopHeldKeyboardPan();
         StopMiddleMouseRotation("application deactivated", false);
         ClearTrackedKeyStates("application deactivated");
         return 0;
@@ -2102,7 +2177,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         IsTextEditFocused(&focusedWindow);
         LogEscapePassThrough(uMsg, focusedWindow, "canvas WinProc filter");
         if (HasOwnedKeyboardPanKey()) {
-            StopHeldKeyboardPan(true);
+            StopHeldKeyboardPan();
         }
     }
 
@@ -2155,7 +2230,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         if (IsCommandShortcutModifierDown()) {
             LogKeyboardShortcutPassThrough(wParam, "canvas WinProc filter");
             if (HasOwnedKeyboardPanKey()) {
-                StopHeldKeyboardPan(true);
+                StopHeldKeyboardPan();
             }
         }
         else {
@@ -2172,7 +2247,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 }
                 return 0;
             }
-            StopHeldKeyboardPan(true);
+            StopHeldKeyboardPan();
         }
     }
     else if (isWASDCharMessage && IsWASDCharacter(wParam)) {
@@ -2213,7 +2288,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     }
     case WM_RBUTTONDOWN: {
         LogMouseButtonEvent("WM_RBUTTONDOWN (Right Mouse Down)", MakePointFromLParam(lParam));
-        StopHeldKeyboardPan(true);
+        StopHeldKeyboardPan();
         break;
     }
     case WM_RBUTTONUP: {
@@ -2390,6 +2465,7 @@ public:
             ResetCameraToNativeView,
             ApplyInputSettingsChange,
             ApplyDebugLoggingChange,
+            RestoreWorldFocusAfterSettingsClosed,
         });
 
         ApplyDebugLoggingChange();

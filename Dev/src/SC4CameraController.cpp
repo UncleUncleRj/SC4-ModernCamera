@@ -771,6 +771,17 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 			return false;
 		}
 
+		if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
+			blocked = true;
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				std::string("Camera Scroll Bounds: unusable city extents; blocking scroll. Source:")
+				+ (source ? source : "unknown")
+				+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
+				+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
+			return true;
+		}
+
 		EnsureNativeCameraStateCaptured(*cameraControl);
 		SyncAngles(*cameraControl);
 
