@@ -146,6 +146,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClInclude Include="src\PluginSettings.h" />
     <ClInclude Include="src\PluginVersion.h" />
     <ClInclude Include="src\SC4CameraController.h" />
+    <ClInclude Include="src\SC4GameConstants.h" />
     <ClInclude Include="src\SC4VersionDetection.h" />
     <ClInclude Include="src\SC4WindowManager.h" />
   </ItemGroup>

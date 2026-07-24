@@ -69,31 +69,31 @@ namespace
 			return false;
 		}
 	}
+}
 
-	const char* ToString(CameraMode value)
+const char* PluginSettingText::ToString(CameraMode value)
+{
+	return value == CameraMode::Classic ? "Classic" : "Modern";
+}
+
+const char* PluginSettingText::ToString(RedrawAggression value)
+{
+	switch (value)
 	{
-		return value == CameraMode::Classic ? "Classic" : "Modern";
+	case RedrawAggression::Classic: return "Classic";
+	case RedrawAggression::High: return "High";
+	case RedrawAggression::Extreme: return "Extreme";
+	default: return "Normal";
 	}
+}
 
-	const char* ToString(RedrawAggression value)
+const char* PluginSettingText::ToString(DebugLogging value)
+{
+	switch (value)
 	{
-		switch (value)
-		{
-		case RedrawAggression::Classic: return "Classic";
-		case RedrawAggression::High: return "High";
-		case RedrawAggression::Extreme: return "Extreme";
-		default: return "Normal";
-		}
-	}
-
-	const char* ToString(DebugLogging value)
-	{
-		switch (value)
-		{
-		case DebugLogging::Off: return "Off";
-		case DebugLogging::Verbose: return "Verbose";
-		default: return "Normal";
-		}
+	case DebugLogging::Off: return "Off";
+	case DebugLogging::Verbose: return "Verbose";
+	default: return "Normal";
 	}
 }
 
@@ -106,9 +106,9 @@ void PluginSettings::RestoreDefaults()
 {
 	cameraMode = CameraMode::Modern;
 	wasdMovement = true;
-	rotationSensitivity = 1.0f;
-	zoomSensitivity = 1.0f;
-	panSensitivity = 1.0f;
+	rotationSensitivity = kDefaultSensitivity;
+	zoomSensitivity = kDefaultSensitivity;
+	panSensitivity = kDefaultSensitivity;
 	invertVertical = false;
 	redrawAggression = RedrawAggression::Normal;
 	debugLogging = DebugLogging::Normal;
@@ -163,9 +163,9 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		else debugLogging = DebugLogging::Normal;
 	}
 
-	rotationSensitivity = std::clamp(rotationSensitivity, 0.1f, 3.0f);
-	zoomSensitivity = std::clamp(zoomSensitivity, 0.1f, 3.0f);
-	panSensitivity = std::clamp(panSensitivity, 0.25f, 2.75f);
+	rotationSensitivity = std::clamp(rotationSensitivity, kMinimumSensitivity, kMaximumSensitivity);
+	zoomSensitivity = std::clamp(zoomSensitivity, kMinimumSensitivity, kMaximumSensitivity);
+	panSensitivity = std::clamp(panSensitivity, kMinimumPanSensitivity, kMaximumPanSensitivity);
 
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Loaded settings from " + path.string());
 	return true;
@@ -190,7 +190,7 @@ bool PluginSettings::Save() const
 		<< "{\n"
 		<< "  \"installedVersion\": \"" << installedVersion << "\",\n"
 		<< "  \"camera\": {\n"
-		<< "    \"mode\": \"" << ToString(cameraMode) << "\",\n"
+		<< "    \"mode\": \"" << PluginSettingText::ToString(cameraMode) << "\",\n"
 		<< "    \"wasdMovement\": " << (wasdMovement ? "true" : "false") << ",\n"
 		<< "    \"rotationSensitivity\": " << rotationSensitivity << ",\n"
 		<< "    \"zoomSensitivity\": " << zoomSensitivity << ",\n"
@@ -198,10 +198,10 @@ bool PluginSettings::Save() const
 		<< "    \"invertVertical\": " << (invertVertical ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"rendering\": {\n"
-		<< "    \"redrawAggression\": \"" << ToString(redrawAggression) << "\"\n"
+		<< "    \"redrawAggression\": \"" << PluginSettingText::ToString(redrawAggression) << "\"\n"
 		<< "  },\n"
 		<< "  \"diagnostics\": {\n"
-		<< "    \"logging\": \"" << ToString(debugLogging) << "\"\n"
+		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\"\n"
 		<< "  }\n"
 		<< "}\n";
 

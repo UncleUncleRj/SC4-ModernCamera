@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <stdexcept>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -13,10 +14,24 @@ namespace
 	constexpr const wchar_t* kSettingsFileName = L"SC4-ModernCamera.json";
 	constexpr const wchar_t* kLogFileName = L"SC4-ModernCamera.log";
 	constexpr const wchar_t* kPreviousLogFileName = L"SC4-ModernCamera.last";
+	constexpr const wchar_t* kTestFileName = L"test.json";
+	constexpr size_t kInitialModulePathCapacity = 512;
+
+	struct FileMigration
+	{
+		const wchar_t* sourceName;
+		const wchar_t* destinationName;
+	};
+
+	constexpr std::array kLegacyFileMigrations = {
+		FileMigration{ L"SC4-3DMouseCam.json", kSettingsFileName },
+		FileMigration{ L"SC4-3DMouseCam.log", kLogFileName },
+		FileMigration{ L"SC4-3DMouseCam.last", kPreviousLogFileName },
+	};
 
 	std::filesystem::path ResolvePluginDirectory()
 	{
-		std::wstring modulePath(512, L'\0');
+		std::wstring modulePath(kInitialModulePathCapacity, L'\0');
 
 		for (;;)
 		{
@@ -82,18 +97,28 @@ namespace
 			throw std::runtime_error("Failed to create the SC4-ModernCamera data directory.");
 		}
 
-		MoveFileIfMissing(pluginDirectory / L"SC4-3DMouseCam.json", dataDirectory / kSettingsFileName);
-		MoveFileIfMissing(pluginDirectory / L"SC4-3DMouseCam.log", dataDirectory / kLogFileName);
-		MoveFileIfMissing(pluginDirectory / L"SC4-3DMouseCam.last", dataDirectory / kPreviousLogFileName);
-		MoveFileIfMissing(pluginDirectory / L"test.json", dataDirectory / L"test.json");
+		for (const FileMigration& migration : kLegacyFileMigrations)
+		{
+			MoveFileIfMissing(
+				pluginDirectory / migration.sourceName,
+				dataDirectory / migration.destinationName);
+		}
+		MoveFileIfMissing(pluginDirectory / kTestFileName, dataDirectory / kTestFileName);
 
-		MoveFileIfMissing(dataDirectory / L"SC4-3DMouseCam.json", dataDirectory / kSettingsFileName);
-		MoveFileIfMissing(dataDirectory / L"SC4-3DMouseCam.log", dataDirectory / kLogFileName);
-		MoveFileIfMissing(dataDirectory / L"SC4-3DMouseCam.last", dataDirectory / kPreviousLogFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"SC4-3DMouseCam.json", dataDirectory / kSettingsFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"SC4-3DMouseCam.log", dataDirectory / kLogFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"SC4-3DMouseCam.last", dataDirectory / kPreviousLogFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"test.json", dataDirectory / L"test.json");
+		for (const FileMigration& migration : kLegacyFileMigrations)
+		{
+			MoveFileIfMissing(
+				dataDirectory / migration.sourceName,
+				dataDirectory / migration.destinationName);
+		}
+
+		for (const FileMigration& migration : kLegacyFileMigrations)
+		{
+			MoveFileIfMissing(
+				legacyDataDirectory / migration.sourceName,
+				dataDirectory / migration.destinationName);
+		}
+		MoveFileIfMissing(legacyDataDirectory / kTestFileName, dataDirectory / kTestFileName);
 
 		return dataDirectory;
 	}
@@ -123,5 +148,5 @@ std::filesystem::path PluginPaths::GetLogPath()
 
 std::filesystem::path PluginPaths::GetTestSettingsPath()
 {
-	return GetDataDirectory() / L"test.json";
+	return GetDataDirectory() / kTestFileName;
 }

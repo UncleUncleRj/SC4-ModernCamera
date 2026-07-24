@@ -5,22 +5,20 @@
 #include "PluginPaths.h"
 #include "PluginSettings.h"
 #include "PluginVersion.h"
+#include "SC4GameConstants.h"
 #include "SC4VersionDetection.h"
 #include "cGZMessage.h"
 #include "cGZPersistResourceKey.h"
-#include "cIGZFont.h"
 #include "cIGZString.h"
 #include "cIGZUIScriptService.h"
 #include "cIGZWin.h"
 #include "cIGZWinBtn.h"
-#include "cIGZWinCtrlMgr.h"
 #include "cIGZWinGen.h"
 #include "cIGZWinSlider.h"
 #include "cIGZWinText.h"
 #include "cISC4App.h"
 #include "cRZAutoRefCount.h"
 #include "cRZBaseString.h"
-#include "cRZRect.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -28,6 +26,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -35,7 +34,6 @@
 
 namespace
 {
-	constexpr uint32_t kWinSC4AppID = 0x6104489A;
 	constexpr uint32_t kWindowResourceGroup = 0x3D0C0700;
 	constexpr uint32_t kWindowResourceInstance = 0x3D0C0701;
 	constexpr uint32_t kWindowCLSID = 0x3D0C0702;
@@ -102,11 +100,6 @@ namespace
 	constexpr UINT kSettingsSliderSaveDelayMs = 200;
 	constexpr UINT kSettingsReopenDelayMs = 1;
 	constexpr UINT kDeferredWindowOpenDelayMs = 1;
-	constexpr float kSensitivityMin = 0.1f;
-	constexpr float kSensitivityRange = 2.9f;
-	constexpr float kPanSensitivityMin = 0.25f;
-	constexpr float kPanSensitivityRange = 2.5f;
-
 	SC4WindowManager* g_DelayedVersionNoticeManager = nullptr;
 	SettingsWindow* g_DelayedSettingsSaveWindow = nullptr;
 	SC4WindowManager* g_DelayedSettingsReopenManager = nullptr;
@@ -144,14 +137,102 @@ namespace
 		}
 	}
 
-	// The SDK does not yet expose the concrete interfaces for these controls.
-	// All of them begin with AsIGZWin(), which is the only method the harness
-	// needs; raw command data is intentionally captured for interface research.
-	class ControlWindowAdapter : public cIGZUnknown
+	struct SensitivitySlider
 	{
-	public:
-		virtual cIGZWin* AsIGZWin() = 0;
+		uint32_t controlID;
+		float PluginSettings::* value;
+		float minimum;
+		float range;
+		const char* optionName;
+		const char* changeReason;
+		const char* classicModeName;
 	};
+
+	constexpr std::array kSensitivitySliders = {
+		SensitivitySlider{
+			kSettingsRotationSliderID,
+			&PluginSettings::rotationSensitivity,
+			PluginSettings::kMinimumSensitivity,
+			PluginSettings::kSensitivityRange,
+			"Rotation Sensitivity",
+			"rotation sensitivity change",
+			"rotation sensitivity" },
+		SensitivitySlider{
+			kSettingsZoomSliderID,
+			&PluginSettings::zoomSensitivity,
+			PluginSettings::kMinimumSensitivity,
+			PluginSettings::kSensitivityRange,
+			"Zoom Sensitivity",
+			"zoom sensitivity change",
+			"zoom sensitivity" },
+		SensitivitySlider{
+			kSettingsPanSliderID,
+			&PluginSettings::panSensitivity,
+			PluginSettings::kMinimumPanSensitivity,
+			PluginSettings::kPanSensitivityRange,
+			"Panning Speed",
+			"panning speed change",
+			"panning speed" },
+	};
+
+	const SensitivitySlider* FindSensitivitySlider(uint32_t controlID)
+	{
+		for (const SensitivitySlider& slider : kSensitivitySliders)
+		{
+			if (slider.controlID == controlID)
+			{
+				return &slider;
+			}
+		}
+		return nullptr;
+	}
+
+	bool QueryWindowProcInterface(cIGZWinProc* windowProc, uint32_t riid, void** ppvObj)
+	{
+		if (!ppvObj)
+		{
+			return false;
+		}
+		if (riid == GZIID_cIGZWinProc)
+		{
+			*ppvObj = windowProc;
+		}
+		else if (riid == GZIID_cIGZUnknown)
+		{
+			*ppvObj = static_cast<cIGZUnknown*>(windowProc);
+		}
+		else
+		{
+			*ppvObj = nullptr;
+			return false;
+		}
+
+		windowProc->AddRef();
+		return true;
+	}
+
+	uint32_t AddWindowProcRef(uint32_t& refCount)
+	{
+		return ++refCount;
+	}
+
+	uint32_t ReleaseWindowProcRef(uint32_t& refCount)
+	{
+		if (refCount > 0)
+		{
+			--refCount;
+		}
+		return refCount;
+	}
+
+	void CancelTimer(uintptr_t& timerID)
+	{
+		if (timerID != 0)
+		{
+			KillTimer(NULL, static_cast<UINT_PTR>(timerID));
+			timerID = 0;
+		}
+	}
 
 	std::string EscapeJson(const std::string& value)
 	{
@@ -219,39 +300,6 @@ namespace
 			return button->SetCaption(text);
 		}
 		return window->SetCaption(text);
-	}
-
-	const char* ToCameraModeString(CameraMode value)
-	{
-		return value == CameraMode::Classic ? "Classic" : "Modern";
-	}
-
-	const char* ToRedrawAggressionString(RedrawAggression value)
-	{
-		switch (value)
-		{
-		case RedrawAggression::Classic:
-			return "Classic";
-		case RedrawAggression::High:
-			return "High";
-		case RedrawAggression::Extreme:
-			return "Extreme";
-		default:
-			return "Normal";
-		}
-	}
-
-	const char* ToDebugLoggingString(DebugLogging value)
-	{
-		switch (value)
-		{
-		case DebugLogging::Off:
-			return "Off";
-		case DebugLogging::Verbose:
-			return "Verbose";
-		default:
-			return "Normal";
-		}
 	}
 
 	const char* ToOnOffString(bool value)
@@ -382,40 +430,17 @@ BasicManagedWindow::~BasicManagedWindow()
 
 bool BasicManagedWindow::QueryInterface(uint32_t riid, void** ppvObj)
 {
-	if (!ppvObj)
-	{
-		return false;
-	}
-	if (riid == GZIID_cIGZWinProc)
-	{
-		*ppvObj = static_cast<cIGZWinProc*>(this);
-	}
-	else if (riid == GZIID_cIGZUnknown)
-	{
-		*ppvObj = static_cast<cIGZUnknown*>(this);
-	}
-	else
-	{
-		*ppvObj = nullptr;
-		return false;
-	}
-
-	AddRef();
-	return true;
+	return QueryWindowProcInterface(this, riid, ppvObj);
 }
 
 uint32_t BasicManagedWindow::AddRef()
 {
-	return ++refCount;
+	return AddWindowProcRef(refCount);
 }
 
 uint32_t BasicManagedWindow::Release()
 {
-	if (refCount > 0)
-	{
-		--refCount;
-	}
-	return refCount;
+	return ReleaseWindowProcRef(refCount);
 }
 
 bool BasicManagedWindow::Create(const SC4BasicWindowOptions& requestedOptions)
@@ -432,7 +457,7 @@ bool BasicManagedWindow::Create(const SC4BasicWindowOptions& requestedOptions)
 	{
 		return false;
 	}
-	parentWindow = app->GetMainWindow()->GetChildWindowFromID(kWinSC4AppID);
+	parentWindow = app->GetMainWindow()->GetChildWindowFromID(SC4WindowID::MainApplication);
 	if (!parentWindow)
 	{
 		return false;
@@ -603,40 +628,17 @@ BakedManagedWindow::~BakedManagedWindow()
 
 bool BakedManagedWindow::QueryInterface(uint32_t riid, void** ppvObj)
 {
-	if (!ppvObj)
-	{
-		return false;
-	}
-	if (riid == GZIID_cIGZWinProc)
-	{
-		*ppvObj = static_cast<cIGZWinProc*>(this);
-	}
-	else if (riid == GZIID_cIGZUnknown)
-	{
-		*ppvObj = static_cast<cIGZUnknown*>(this);
-	}
-	else
-	{
-		*ppvObj = nullptr;
-		return false;
-	}
-
-	AddRef();
-	return true;
+	return QueryWindowProcInterface(this, riid, ppvObj);
 }
 
 uint32_t BakedManagedWindow::AddRef()
 {
-	return ++refCount;
+	return AddWindowProcRef(refCount);
 }
 
 uint32_t BakedManagedWindow::Release()
 {
-	if (refCount > 0)
-	{
-		--refCount;
-	}
-	return refCount;
+	return ReleaseWindowProcRef(refCount);
 }
 
 bool BakedManagedWindow::Create()
@@ -657,7 +659,7 @@ bool BakedManagedWindow::Create()
 		return false;
 	}
 
-	parentWindow = app->GetMainWindow()->GetChildWindowFromID(kWinSC4AppID);
+	parentWindow = app->GetMainWindow()->GetChildWindowFromID(SC4WindowID::MainApplication);
 	if (!parentWindow)
 	{
 		Logger::GetInstance().WriteLine(
@@ -888,20 +890,20 @@ void SettingsWindow::SyncControlsFromSettings()
 		GetRootWindow(),
 		kSettingsRotationSliderID,
 		settings->rotationSensitivity,
-		kSensitivityMin,
-		kSensitivityRange);
+		PluginSettings::kMinimumSensitivity,
+		PluginSettings::kSensitivityRange);
 	SetSliderValueFromSetting(
 		GetRootWindow(),
 		kSettingsZoomSliderID,
 		settings->zoomSensitivity,
-		kSensitivityMin,
-		kSensitivityRange);
+		PluginSettings::kMinimumSensitivity,
+		PluginSettings::kSensitivityRange);
 	SetSliderValueFromSetting(
 		GetRootWindow(),
 		kSettingsPanSliderID,
 		settings->panSensitivity,
-		kPanSensitivityMin,
-		kPanSensitivityRange);
+		PluginSettings::kMinimumPanSensitivity,
+		PluginSettings::kPanSensitivityRange);
 	ApplyBooleanPair(kSettingsInvertOnButtonID, kSettingsInvertOffButtonID, settings->invertVertical);
 
 	const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
@@ -931,19 +933,16 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 	Logger::GetInstance().WriteLine(
 		LogLevel::Info,
 		"Settings UI state: mode="
-		+ std::string(settings->cameraMode == CameraMode::Modern ? "Modern" : "Classic")
+		+ std::string(PluginSettingText::ToString(settings->cameraMode))
 		+ " wasd=" + (settings->wasdMovement ? "true" : "false")
 		+ " rotationSensitivity=" + std::to_string(settings->rotationSensitivity)
 		+ " zoomSensitivity=" + std::to_string(settings->zoomSensitivity)
 		+ " panSensitivity=" + std::to_string(settings->panSensitivity)
 		+ " invertVertical=" + (settings->invertVertical ? "true" : "false")
 		+ " redrawAggression="
-		+ (settings->redrawAggression == RedrawAggression::Classic ? "Classic"
-			: settings->redrawAggression == RedrawAggression::High ? "High"
-			: settings->redrawAggression == RedrawAggression::Extreme ? "Extreme"
-			: "Normal")
+		+ PluginSettingText::ToString(settings->redrawAggression)
 		+ " debugLogging="
-		+ ToDebugLoggingString(settings->debugLogging));
+		+ PluginSettingText::ToString(settings->debugLogging));
 
 	if (!saveImmediately)
 	{
@@ -972,11 +971,7 @@ void SettingsWindow::ScheduleSettingsSave(const char* reason)
 {
 	delayedSavePending = true;
 	delayedSaveReason = reason ? reason : "change";
-	if (delayedSaveTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(delayedSaveTimerID));
-		delayedSaveTimerID = 0;
-	}
+	CancelTimer(delayedSaveTimerID);
 
 	g_DelayedSettingsSaveWindow = this;
 	delayedSaveTimerID = static_cast<uintptr_t>(
@@ -992,11 +987,7 @@ void SettingsWindow::ScheduleSettingsSave(const char* reason)
 
 void SettingsWindow::FlushPendingSettingsSave()
 {
-	if (delayedSaveTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(delayedSaveTimerID));
-		delayedSaveTimerID = 0;
-	}
+	CancelTimer(delayedSaveTimerID);
 	if (g_DelayedSettingsSaveWindow == this)
 	{
 		g_DelayedSettingsSaveWindow = nullptr;
@@ -1063,6 +1054,44 @@ float SettingsWindow::ReadSliderValueFromCursor(uint32_t sliderID, float fallbac
 	return minimum + (ratio * range);
 }
 
+bool SettingsWindow::ApplySensitivitySliderChange(uint32_t controlID)
+{
+	const SensitivitySlider* slider = FindSensitivitySlider(controlID);
+	if (!slider)
+	{
+		return false;
+	}
+	if (syncingControls)
+	{
+		return true;
+	}
+	if (settings->cameraMode != CameraMode::Modern)
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Verbose,
+			std::string("Settings UI: ignored ")
+			+ slider->classicModeName
+			+ " slider while Classic camera is selected.");
+		return true;
+	}
+
+	float& value = settings->*(slider->value);
+	const float previous = value;
+	value = ReadSliderValueFromCursor(
+		slider->controlID,
+		value,
+		slider->minimum,
+		slider->range);
+	LogOptionChanged(
+		"Settings UI",
+		slider->optionName,
+		FormatSettingFloat(previous),
+		FormatSettingFloat(value),
+		LogLevel::Verbose);
+	ApplySettingsChange(slider->changeReason, false);
+	return true;
+}
+
 bool SettingsWindow::OnCommandMessage(cGZMessage& msg)
 {
 	if (!settings)
@@ -1070,91 +1099,33 @@ bool SettingsWindow::OnCommandMessage(cGZMessage& msg)
 		return BakedManagedWindow::OnCommandMessage(msg);
 	}
 
-	if (msg.dwData1 == kCommandValueChanged)
+	if (msg.dwData1 == kCommandValueChanged
+		&& ApplySensitivitySliderChange(msg.dwData2))
 	{
-		if (syncingControls
-			&& (msg.dwData2 == kSettingsRotationSliderID
-				|| msg.dwData2 == kSettingsZoomSliderID
-				|| msg.dwData2 == kSettingsPanSliderID))
-		{
-			return true;
-		}
-
-		if (msg.dwData2 == kSettingsRotationSliderID)
-		{
-			if (settings->cameraMode != CameraMode::Modern)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored rotation sensitivity slider while Classic camera is selected.");
-				return true;
-			}
-			const float previous = settings->rotationSensitivity;
-			settings->rotationSensitivity = ReadSliderValueFromCursor(
-				kSettingsRotationSliderID,
-				settings->rotationSensitivity,
-				kSensitivityMin,
-				kSensitivityRange);
-			LogOptionChanged(
-				"Settings UI",
-				"Rotation Sensitivity",
-				FormatSettingFloat(previous),
-				FormatSettingFloat(settings->rotationSensitivity),
-				LogLevel::Verbose);
-			ApplySettingsChange("rotation sensitivity change", false);
-			return true;
-		}
-		if (msg.dwData2 == kSettingsZoomSliderID)
-		{
-			if (settings->cameraMode != CameraMode::Modern)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored zoom sensitivity slider while Classic camera is selected.");
-				return true;
-			}
-			const float previous = settings->zoomSensitivity;
-			settings->zoomSensitivity = ReadSliderValueFromCursor(
-				kSettingsZoomSliderID,
-				settings->zoomSensitivity,
-				kSensitivityMin,
-				kSensitivityRange);
-			LogOptionChanged(
-				"Settings UI",
-				"Zoom Sensitivity",
-				FormatSettingFloat(previous),
-				FormatSettingFloat(settings->zoomSensitivity),
-				LogLevel::Verbose);
-			ApplySettingsChange("zoom sensitivity change", false);
-			return true;
-		}
-		if (msg.dwData2 == kSettingsPanSliderID)
-		{
-			if (settings->cameraMode != CameraMode::Modern)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored panning speed slider while Classic camera is selected.");
-				return true;
-			}
-			const float previous = settings->panSensitivity;
-			settings->panSensitivity = ReadSliderValueFromCursor(
-				kSettingsPanSliderID,
-				settings->panSensitivity,
-				kPanSensitivityMin,
-				kPanSensitivityRange);
-			LogOptionChanged(
-				"Settings UI",
-				"Panning Speed",
-				FormatSettingFloat(previous),
-				FormatSettingFloat(settings->panSensitivity),
-				LogLevel::Verbose);
-			ApplySettingsChange("panning speed change", false);
-			return true;
-		}
+		return true;
 	}
 
 	return BakedManagedWindow::OnCommandMessage(msg);
+}
+
+void SettingsWindow::ApplyCameraMode(CameraMode mode)
+{
+	const CameraMode previous = settings->cameraMode;
+	settings->cameraMode = mode;
+	LogOptionChanged(
+		"Settings UI",
+		"Camera Mode",
+		PluginSettingText::ToString(previous),
+		PluginSettingText::ToString(settings->cameraMode));
+	ApplySettingsChange("camera mode change");
+	if (manager)
+	{
+		manager->RefreshSettingsWindows();
+	}
+	if (callbacks && callbacks->OnCameraModeChanged)
+	{
+		callbacks->OnCameraModeChanged(mode == CameraMode::Modern);
+	}
 }
 
 bool SettingsWindow::OnButtonClick(uint32_t controlID)
@@ -1171,45 +1142,11 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 		switch (controlID)
 		{
 		case kSettingsModernButtonID:
-		{
-			const CameraMode previous = settings->cameraMode;
-			settings->cameraMode = CameraMode::Modern;
-			LogOptionChanged(
-				"Settings UI",
-				"Camera Mode",
-				ToCameraModeString(previous),
-				ToCameraModeString(settings->cameraMode));
-			ApplySettingsChange("camera mode change");
-			if (manager)
-			{
-				manager->RefreshSettingsWindows();
-			}
-			if (callbacks && callbacks->OnCameraModeChanged)
-			{
-				callbacks->OnCameraModeChanged(true);
-			}
+			ApplyCameraMode(CameraMode::Modern);
 			return true;
-		}
 		case kSettingsClassicButtonID:
-		{
-			const CameraMode previous = settings->cameraMode;
-			settings->cameraMode = CameraMode::Classic;
-			LogOptionChanged(
-				"Settings UI",
-				"Camera Mode",
-				ToCameraModeString(previous),
-				ToCameraModeString(settings->cameraMode));
-			ApplySettingsChange("camera mode change");
-			if (manager)
-			{
-				manager->RefreshSettingsWindows();
-			}
-			if (callbacks && callbacks->OnCameraModeChanged)
-			{
-				callbacks->OnCameraModeChanged(false);
-			}
+			ApplyCameraMode(CameraMode::Classic);
 			return true;
-		}
 		case kSettingsWASDOnButtonID:
 			if (!modernCameraActive)
 			{
@@ -1280,8 +1217,8 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			LogOptionChanged(
 				"Settings UI",
 				"Camera Mode",
-				ToCameraModeString(previousCameraMode),
-				ToCameraModeString(settings->cameraMode));
+				PluginSettingText::ToString(previousCameraMode),
+				PluginSettingText::ToString(settings->cameraMode));
 			LogOptionChanged(
 				"Settings UI",
 				"WASD Movement",
@@ -1310,13 +1247,13 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			LogOptionChanged(
 				"Settings UI",
 				"Redraw Aggression",
-				ToRedrawAggressionString(previousRedrawAggression),
-				ToRedrawAggressionString(settings->redrawAggression));
+				PluginSettingText::ToString(previousRedrawAggression),
+				PluginSettingText::ToString(settings->redrawAggression));
 			LogOptionChanged(
 				"Settings UI",
 				"Diagnostics Logging",
-				ToDebugLoggingString(previousDebugLogging),
-				ToDebugLoggingString(settings->debugLogging));
+				PluginSettingText::ToString(previousDebugLogging),
+				PluginSettingText::ToString(settings->debugLogging));
 			ApplySettingsChange("restore defaults");
 			if (manager)
 			{
@@ -1621,16 +1558,16 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 				LogOptionChanged(
 					"Advanced Settings UI",
 					"Redraw Aggression",
-					ToRedrawAggressionString(previousRedrawAggression),
-					ToRedrawAggressionString(settings->redrawAggression));
+					PluginSettingText::ToString(previousRedrawAggression),
+					PluginSettingText::ToString(settings->redrawAggression));
 			}
 			if (debugLoggingChanged)
 			{
 				LogOptionChanged(
 					"Advanced Settings UI",
 					"Diagnostics Logging",
-					ToDebugLoggingString(previousDebugLogging),
-					ToDebugLoggingString(settings->debugLogging));
+					PluginSettingText::ToString(previousDebugLogging),
+					PluginSettingText::ToString(settings->debugLogging));
 			}
 
 			const char* reason = redrawChanged && debugLoggingChanged
@@ -1678,41 +1615,17 @@ ControlLaboratoryWindow::~ControlLaboratoryWindow()
 
 bool ControlLaboratoryWindow::QueryInterface(uint32_t riid, void** ppvObj)
 {
-	if (!ppvObj)
-	{
-		return false;
-	}
-
-	if (riid == GZIID_cIGZWinProc)
-	{
-		*ppvObj = static_cast<cIGZWinProc*>(this);
-	}
-	else if (riid == GZIID_cIGZUnknown)
-	{
-		*ppvObj = static_cast<cIGZUnknown*>(this);
-	}
-	else
-	{
-		*ppvObj = nullptr;
-		return false;
-	}
-
-	AddRef();
-	return true;
+	return QueryWindowProcInterface(this, riid, ppvObj);
 }
 
 uint32_t ControlLaboratoryWindow::AddRef()
 {
-	return ++refCount;
+	return AddWindowProcRef(refCount);
 }
 
 uint32_t ControlLaboratoryWindow::Release()
 {
-	if (refCount > 0)
-	{
-		--refCount;
-	}
-	return refCount;
+	return ReleaseWindowProcRef(refCount);
 }
 
 bool ControlLaboratoryWindow::Create()
@@ -1731,7 +1644,7 @@ bool ControlLaboratoryWindow::Create()
 		return false;
 	}
 
-	parentWindow = app->GetMainWindow()->GetChildWindowFromID(kWinSC4AppID);
+	parentWindow = app->GetMainWindow()->GetChildWindowFromID(SC4WindowID::MainApplication);
 	if (!parentWindow)
 	{
 		Logger::GetInstance().WriteLine(LogLevel::Error, "Test UI: SC4 application window was unavailable.");
@@ -1787,13 +1700,6 @@ void ControlLaboratoryWindow::Destroy()
 
 	SetWinProc(rootWindow, nullptr);
 	rootWindow->ChildDeleteAll();
-	for (const ChildControl& control : controls)
-	{
-		if (control.interfacePointer)
-		{
-			control.interfacePointer->Release();
-		}
-	}
 	controls.clear();
 
 	if (parentWindow)
@@ -1881,26 +1787,10 @@ void ControlLaboratoryWindow::ActivateScrollbarArrow(int32_t direction, intptr_t
 	}
 }
 
-void ControlLaboratoryWindow::AddControl(cIGZWin* window, cIGZUnknown* interfacePointer, uint32_t id,
-	const char* name, int32_t left, int32_t top, int32_t right, int32_t bottom, bool fixed)
-{
-	if (!window || !interfacePointer)
-	{
-		return;
-	}
-
-	window->SetID(id);
-	window->SetArea(left, top, right, bottom);
-	window->SetNotificationTarget(rootWindow);
-	rootWindow->ChildAdd(window);
-	controls.push_back({ window, interfacePointer, id, left, top, right - left, bottom - top, fixed, name });
-}
-
 bool ControlLaboratoryWindow::BuildControls()
 {
 	// Controls are authored in the UI DAT and instantiated by SC4's own UI
-	// script service. Production windows do not depend on cIGZWinCtrlMgr
-	// programmatic factory methods.
+	// script service.
 	struct ScriptControl { uint32_t id; const char* name; bool fixed; };
 	const ScriptControl scriptControls[] = {
 		{ kCloseButtonID, "close", true },
@@ -1926,15 +1816,10 @@ bool ControlLaboratoryWindow::BuildControls()
 		cIGZWin* child = rootWindow->GetChildWindowFromIDRecursive(spec.id);
 		if (child)
 		{
-			if (spec.id == kScrollUpButtonID || spec.id == kScrollDownButtonID)
-			{
-				child->HideWindow();
-			}
 			const int32_t left = child->GetL();
 			const int32_t top = child->GetT();
 			controls.push_back({
 				child,
-				nullptr,
 				spec.id,
 				left,
 				top,
@@ -1956,168 +1841,6 @@ bool ControlLaboratoryWindow::BuildControls()
 		"Test UI: registered " + std::to_string(controls.size()) + " scripted controls.");
 	ApplyScrollPosition();
 	return !controls.empty();
-
-	cIGZWinCtrlMgrPtr manager;
-	if (!manager)
-	{
-		Logger::GetInstance().WriteLine(LogLevel::Error, "Test UI: control manager was unavailable.");
-		return false;
-	}
-	Logger::GetInstance().WriteLine(LogLevel::Info, "Test UI: control manager acquired.");
-
-	auto addLabel = [&](uint32_t id, const char* caption, int32_t top, uint32_t style = 0, uint32_t color = 0x203050)
-	{
-		cRZBaseString text(caption);
-		cIGZWinText* label = manager->CreateLabel(id, text);
-		if (label)
-		{
-			label->SetFontStyle(style);
-			label->SetTextColor(color);
-			AddControl(label->AsIGZWin(), label, id, caption, 24, top, 490, top + 22);
-		}
-	};
-
-	auto addButton = [&](uint32_t id, const char* name, const char* caption, int32_t left, int32_t top,
-		cIGZWinBtn* button, bool fixed = false)
-	{
-		Logger::GetInstance().WriteLine(LogLevel::Info, std::string("Test UI: adding ") + name + '.');
-		if (button)
-		{
-			button->SetBtnFlag(cIGZWinBtn::BtnFlagShowCaption, true);
-			button->SetBtnFlag(cIGZWinBtn::BtnFlagFill, true);
-			AddControl(button->AsIGZWin(), button, id, name, left, top, left + 180, top + 28, fixed);
-		}
-	};
-
-	addLabel(0x3D0C0720, "SC4-ModernCamera Native UI Control Laboratory", 48, cIGZFont::Style_Bold);
-	Logger::GetInstance().WriteLine(LogLevel::Info, "Test UI: label creation succeeded.");
-	addLabel(0x3D0C0721, "Each interaction is logged and written to Plugins/SC4-ModernCamera/test.json.", 72);
-	addLabel(0x3D0C0722, "BUTTON CONTROLS", 108, cIGZFont::Style_Bold);
-
-	cRZBaseString buttonText("Standard Button");
-	addButton(0x3D0C0730, "standardButton", "Standard Button", 28, 136,
-		manager->CreateButton(0x3D0C0730, buttonText, nullptr, nullptr, 0));
-	cRZBaseString toggleText("Toggle Button");
-	addButton(0x3D0C0731, "toggleButton", "Toggle Button", 250, 136,
-		manager->CreateToggleButton(0x3D0C0731, toggleText, nullptr, nullptr, 0));
-	cRZBaseString fixedText("Fixed Button");
-	addButton(0x3D0C0732, "fixedButton", "Fixed Button", 28, 172,
-		manager->CreateFixedButton(0x3D0C0732, fixedText, nullptr, nullptr, 0));
-	cRZBaseString fixedToggleText("Fixed Toggle");
-	addButton(0x3D0C0733, "fixedToggleButton", "Fixed Toggle", 250, 172,
-		manager->CreateFixedToggleButton(0x3D0C0733, fixedToggleText, nullptr, nullptr, 0));
-	cRZBaseString checkText("Checkbox");
-	addButton(0x3D0C0734, "checkBox", "Checkbox", 28, 208,
-		manager->CreateCheckBox(0x3D0C0734, checkText, nullptr, nullptr, 0));
-	cRZBaseString radioCheckText("Radio Check");
-	addButton(0x3D0C0735, "radioCheck", "Radio Check", 250, 208,
-		manager->CreateRadioCheck(0x3D0C0735, radioCheckText, nullptr, nullptr, 0));
-	cRZBaseString radioOneText("Radio: Choice A");
-	addButton(0x3D0C0736, "radioChoiceA", "Radio: Choice A", 28, 244,
-		manager->CreateRadioButton(0x3D0C0736, radioOneText, nullptr, nullptr, 0));
-	cRZBaseString radioTwoText("Radio: Choice B");
-	addButton(0x3D0C0737, "radioChoiceB", "Radio: Choice B", 250, 244,
-		manager->CreateRadioButton(0x3D0C0737, radioTwoText, nullptr, nullptr, 0));
-
-	addLabel(0x3D0C0740, "VALUE AND TEXT INPUTS", 292, cIGZFont::Style_Bold);
-
-	auto addAdapterControl = [&](uint32_t id, const char* name, void* rawInterface,
-		int32_t left, int32_t top, int32_t right, int32_t bottom, bool fixed = false)
-	{
-		Logger::GetInstance().WriteLine(LogLevel::Info, std::string("Test UI: adding ") + name + '.');
-		ControlWindowAdapter* adapter = reinterpret_cast<ControlWindowAdapter*>(rawInterface);
-		if (adapter)
-		{
-			AddControl(adapter->AsIGZWin(), adapter, id, name, left, top, right, bottom, fixed);
-		}
-	};
-
-	addLabel(0x3D0C0741, "Horizontal Slider (25 / 100)", 322);
-	addAdapterControl(0x3D0C0750, "horizontalSlider", manager->CreateSlider(0x3D0C0750, 0, 0, 100, 25),
-		28, 348, 470, 374);
-	addLabel(0x3D0C0742, "Horizontal Scrollbar (40 / 100)", 390);
-	addAdapterControl(0x3D0C0751, "horizontalScrollbar", manager->CreateScrollbar(0x3D0C0751, 0, 0, 100, 40),
-		28, 416, 470, 442);
-	addLabel(0x3D0C0743, "Spinner (0-10, step 1, value 5)", 458);
-	addAdapterControl(0x3D0C0752, "spinner", manager->CreateSpinner(0x3D0C0752, 0, 0, 10, 1, 5),
-		28, 484, 230, 514);
-	addLabel(0x3D0C0744, "Editable Line Input", 530);
-	void* editableRaw = manager->CreateLineInput(0x3D0C0753, true);
-	addAdapterControl(0x3D0C0753, "editableLineInput", editableRaw, 28, 556, 470, 586);
-	if (cIGZWin* editable = rootWindow->GetChildWindowFromID(0x3D0C0753))
-	{
-		cRZBaseString initialText("Type here");
-		editable->SetCaption(initialText);
-	}
-	addLabel(0x3D0C0745, "Read-only Line Input", 602);
-	void* readOnlyRaw = manager->CreateLineInput(0x3D0C0754, false);
-	addAdapterControl(0x3D0C0754, "readOnlyLineInput", readOnlyRaw, 28, 628, 470, 658);
-	if (cIGZWin* readOnly = rootWindow->GetChildWindowFromID(0x3D0C0754))
-	{
-		cRZBaseString initialText("Read-only sample");
-		readOnly->SetCaption(initialText);
-	}
-	cIGZBuffer* systemBitmap = manager->SystemBMP(0);
-	if (systemBitmap)
-	{
-		addAdapterControl(0x3D0C0756, "bitmapControl",
-			manager->CreateWinBMP(0x3D0C0756, systemBitmap, false), 330, 674, 470, 702);
-		addLabel(0x3D0C0746, "Bitmap Control (system bitmap 0)", 674);
-	}
-	else
-	{
-		addLabel(0x3D0C0746, "Bitmap Control: system bitmap unavailable", 674);
-	}
-	cRZBaseString optionGroupText("Option Group Container");
-	cRZRect optionGroupArea{};
-	optionGroupArea.nX = 0;
-	optionGroupArea.nY = 0;
-	optionGroupArea.nWidth = 440;
-	optionGroupArea.nHeight = 28;
-	addAdapterControl(0x3D0C0755, "optionGroup",
-		manager->CreateOptGrp(0x3D0C0755, optionGroupText, &optionGroupArea), 28, 708, 470, 736);
-
-	addLabel(0x3D0C0760, "TEXT STYLE SAMPLES", 750, cIGZFont::Style_Bold);
-	addLabel(0x3D0C0761, "Regular: The quick brown fox", 780);
-	addLabel(0x3D0C0762, "Bold: The quick brown fox", 808, cIGZFont::Style_Bold);
-	addLabel(0x3D0C0763, "Italic: The quick brown fox", 836, cIGZFont::Style_Italic);
-	addLabel(0x3D0C0764, "Bold Italic: The quick brown fox", 864,
-		cIGZFont::Style_Bold | cIGZFont::Style_Italic);
-	addLabel(0x3D0C0765, "Underline: The quick brown fox", 892, cIGZFont::Style_Underline);
-	addLabel(0x3D0C0766, "Strikethrough: The quick brown fox", 920, cIGZFont::Style_Strikethrough);
-	addLabel(0x3D0C0767, "Shadow: The quick brown fox", 948, cIGZFont::Style_Shadow);
-
-	addLabel(0x3D0C0770, "COLOR SAMPLES", 992, cIGZFont::Style_Bold);
-	addLabel(0x3D0C0771, "Purple", 1022, 0, 0x800080);
-	addLabel(0x3D0C0772, "Red", 1050, 0, 0xFF0000);
-	addLabel(0x3D0C0773, "Green", 1078, 0, 0x008000);
-	addLabel(0x3D0C0774, "Blue", 1106, 0, 0x0000FF);
-	addLabel(0x3D0C0775, "Outlined text", 1134, 0, 0x203050);
-	if (cIGZWin* outlinedWindow = rootWindow->GetChildWindowFromID(0x3D0C0775))
-	{
-		cRZAutoRefCount<cIGZWinText> outlined;
-		if (outlinedWindow->QueryInterface(GZIID_cIGZWinText, outlined.AsPPVoid()))
-		{
-			outlined->SetOutlineUse(true, 0xFFFFFF);
-		}
-	}
-
-	addLabel(0x3D0C0780, "END OF TEST CONTENT", 1180, cIGZFont::Style_Bold);
-
-	cRZBaseString closeText("Close");
-	addButton(kCloseButtonID, "close", "Close", 390, 10,
-		manager->CreateFixedButton(kCloseButtonID, closeText, nullptr, nullptr, 0), true);
-	cRZBaseString upText("Scroll Up");
-	addButton(kScrollUpButtonID, "scrollUp", "Scroll Up", 390, 500,
-		manager->CreateFixedButton(kScrollUpButtonID, upText, nullptr, nullptr, 0), true);
-	cRZBaseString downText("Scroll Down");
-	addButton(kScrollDownButtonID, "scrollDown", "Scroll Down", 390, 534,
-		manager->CreateFixedButton(kScrollDownButtonID, downText, nullptr, nullptr, 0), true);
-	addAdapterControl(kScrollBarID, "verticalScrollbar", manager->CreateScrollbar(kScrollBarID, 1, 0, 600, 0),
-		520, 48, 548, 490, true);
-
-	ApplyScrollPosition();
-	return true;
 }
 
 void ControlLaboratoryWindow::ScrollBy(int32_t delta)
@@ -2371,11 +2094,7 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 
 	if (settings.NeedsVersionNotice())
 	{
-		if (versionNoticeTimerID != 0)
-		{
-			KillTimer(NULL, static_cast<UINT_PTR>(versionNoticeTimerID));
-			versionNoticeTimerID = 0;
-		}
+		CancelTimer(versionNoticeTimerID);
 
 		pendingVersionNoticeSettings = &settings;
 		g_DelayedVersionNoticeManager = this;
@@ -2430,11 +2149,7 @@ void SC4WindowManager::SetCallbacks(SC4WindowManagerCallbacks managerCallbacks)
 
 void SC4WindowManager::OnVersionNoticeTimer()
 {
-	if (versionNoticeTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(versionNoticeTimerID));
-		versionNoticeTimerID = 0;
-	}
+	CancelTimer(versionNoticeTimerID);
 
 	PluginSettings* settings = pendingVersionNoticeSettings;
 	pendingVersionNoticeSettings = nullptr;
@@ -2454,11 +2169,7 @@ void SC4WindowManager::OnVersionNoticeTimer()
 
 void SC4WindowManager::OnSettingsReopenTimer()
 {
-	if (settingsReopenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(settingsReopenTimerID));
-		settingsReopenTimerID = 0;
-	}
+	CancelTimer(settingsReopenTimerID);
 	if (g_DelayedSettingsReopenManager == this)
 	{
 		g_DelayedSettingsReopenManager = nullptr;
@@ -2470,11 +2181,7 @@ void SC4WindowManager::OnSettingsReopenTimer()
 
 void SC4WindowManager::OnDeferredWindowOpenTimer()
 {
-	if (deferredWindowOpenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(deferredWindowOpenTimerID));
-		deferredWindowOpenTimerID = 0;
-	}
+	CancelTimer(deferredWindowOpenTimerID);
 	if (g_DelayedWindowOpenManager == this)
 	{
 		g_DelayedWindowOpenManager = nullptr;
@@ -2552,21 +2259,9 @@ bool SC4WindowManager::CloseWindow(SC4WindowHandle handle)
 
 void SC4WindowManager::OnCityShutdown()
 {
-	if (settingsReopenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(settingsReopenTimerID));
-		settingsReopenTimerID = 0;
-	}
-	if (versionNoticeTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(versionNoticeTimerID));
-		versionNoticeTimerID = 0;
-	}
-	if (deferredWindowOpenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(deferredWindowOpenTimerID));
-		deferredWindowOpenTimerID = 0;
-	}
+	CancelTimer(settingsReopenTimerID);
+	CancelTimer(versionNoticeTimerID);
+	CancelTimer(deferredWindowOpenTimerID);
 	pendingDeferredWindowOpen = DeferredWindowOpen::None;
 	pendingVersionNoticeSettings = nullptr;
 	pendingSettings = nullptr;
@@ -2715,11 +2410,7 @@ void SC4WindowManager::RefreshSettingsWindows()
 
 void SC4WindowManager::ScheduleSettingsWindowReopen()
 {
-	if (settingsReopenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(settingsReopenTimerID));
-		settingsReopenTimerID = 0;
-	}
+	CancelTimer(settingsReopenTimerID);
 
 	g_DelayedSettingsReopenManager = this;
 	settingsReopenTimerID = static_cast<uintptr_t>(
@@ -2734,11 +2425,7 @@ void SC4WindowManager::ScheduleSettingsWindowReopen()
 
 void SC4WindowManager::ScheduleDeferredWindowOpen(DeferredWindowOpen window)
 {
-	if (deferredWindowOpenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(deferredWindowOpenTimerID));
-		deferredWindowOpenTimerID = 0;
-	}
+	CancelTimer(deferredWindowOpenTimerID);
 
 	pendingDeferredWindowOpen = window;
 	g_DelayedWindowOpenManager = this;

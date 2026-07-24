@@ -18,6 +18,7 @@
 #include "PluginSettings.h"
 #include "PluginVersion.h"
 #include "SC4CameraController.h"
+#include "SC4GameConstants.h"
 #include "SC4VersionDetection.h"
 #include "SC4WindowManager.h"
 #include <Windows.h>
@@ -36,11 +37,10 @@
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
 static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
-static constexpr uint32_t kGZWin_WinSC4App = 0x6104489A;
-static constexpr uint32_t kGZWin_SC4View3DWin = 0x9A47B417;
-static constexpr uint32_t kGZWin_SC4View3DSurface = 0x6A5E44B6;
+static constexpr uint32_t kDirectorID = 0x8C4B3A11;
 static constexpr size_t kView3DWinSetScrollingVTableIndex = 33;
 static constexpr size_t kView3DWinMinimizeUIVTableIndex = 55;
+static constexpr LPARAM kPreviousKeyStateMask = static_cast<LPARAM>(1) << 30;
 static constexpr float kMouseRotationSensitivity = 0.005f;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000;
 static constexpr UINT kKeyboardPanTickMs = 33;
@@ -491,7 +491,7 @@ cISC4View3DWin* GetView3DWinForInput(const char* context)
         return nullptr;
     }
 
-    cIGZWin* parentWindow = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+    cIGZWin* parentWindow = mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication);
     if (!parentWindow) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
@@ -501,7 +501,7 @@ cISC4View3DWin* GetView3DWinForInput(const char* context)
 
     cISC4View3DWin* view3D = nullptr;
     if (!parentWindow->GetChildAs(
-        kGZWin_SC4View3DWin,
+        SC4WindowID::View3D,
         kGZIID_cISC4View3DWin,
         reinterpret_cast<void**>(&view3D)) || !view3D) {
         Logger::GetInstance().WriteLine(
@@ -575,20 +575,25 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
     view3D->Release();
 }
 
+bool CancelTimer(UINT_PTR& timerID)
+{
+    if (timerID == 0) {
+        return false;
+    }
+
+    KillTimer(NULL, timerID);
+    timerID = 0;
+    return true;
+}
+
 void KillNativeToolClearEscTimer()
 {
-    if (g_NativeToolClearEscTimerID != 0) {
-        KillTimer(NULL, g_NativeToolClearEscTimerID);
-        g_NativeToolClearEscTimerID = 0;
-    }
+    CancelTimer(g_NativeToolClearEscTimerID);
 }
 
 void KillModernCameraFocusRestoreTimer()
 {
-    if (g_ModernCameraFocusRestoreTimerID != 0) {
-        KillTimer(NULL, g_ModernCameraFocusRestoreTimerID);
-        g_ModernCameraFocusRestoreTimerID = 0;
-    }
+    CancelTimer(g_ModernCameraFocusRestoreTimerID);
 }
 
 void ScheduleView3DFocusRestore(bool requireModern, const char* context)
@@ -681,7 +686,7 @@ NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
         return result;
     }
 
-    cIGZWin* parentWindow = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+    cIGZWin* parentWindow = mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication);
     if (!parentWindow) {
         result.targetDescription = "no WinSC4App";
         return result;
@@ -689,7 +694,7 @@ NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
 
     cISC4View3DWin* view3D = nullptr;
     if (!parentWindow->GetChildAs(
-        kGZWin_SC4View3DWin,
+        SC4WindowID::View3D,
         kGZIID_cISC4View3DWin,
         reinterpret_cast<void**>(&view3D))) {
         result.targetDescription = "no SC4View3DWin";
@@ -732,7 +737,7 @@ NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
     }
 
     result.targetIsView3D = targetWindow && viewWindow && targetWindow == viewWindow;
-    result.targetIsView3DSurface = targetWindow && targetWindow->GetID() == kGZWin_SC4View3DSurface;
+    result.targetIsView3DSurface = targetWindow && targetWindow->GetID() == SC4WindowID::View3DSurface;
     result.insideView3DRect = viewWindow
         && viewWindow->IsPointInWindowParentCoordinates(parentX, parentY);
 
@@ -750,35 +755,14 @@ NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
     return result;
 }
 
-const char* GetRedrawAggressionName()
-{
-    switch (g_Settings.redrawAggression) {
-    case RedrawAggression::Classic:
-        return "Classic";
-    case RedrawAggression::High:
-        return "High";
-    case RedrawAggression::Extreme:
-        return "Extreme";
-    default:
-        return "Normal";
-    }
-}
-
 void KillIdleTimer()
 {
-    if (g_IdleTimerID != 0) {
-        KillTimer(NULL, g_IdleTimerID);
-        g_IdleTimerID = 0;
-    }
-
+    CancelTimer(g_IdleTimerID);
 }
 
 void KillPeriodicRedrawTimer()
 {
-    if (g_PeriodicRedrawTimerID != 0) {
-        KillTimer(NULL, g_PeriodicRedrawTimerID);
-        g_PeriodicRedrawTimerID = 0;
-    }
+    CancelTimer(g_PeriodicRedrawTimerID);
 }
 
 void KillRedrawTimers()
@@ -789,9 +773,7 @@ void KillRedrawTimers()
 
 void KillKeyboardPanTimer()
 {
-    if (g_KeyboardPanTimerID != 0) {
-        KillTimer(NULL, g_KeyboardPanTimerID);
-        g_KeyboardPanTimerID = 0;
+    if (CancelTimer(g_KeyboardPanTimerID)) {
         Logger::GetInstance().WriteLine(LogLevel::Verbose, "Keyboard movement timer stopped.");
     }
 }
@@ -996,7 +978,7 @@ void StartPeriodicRedrawTimer()
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
         "Starting periodic redraw timer: aggression="
-        + std::string(GetRedrawAggressionName())
+        + std::string(PluginSettingText::ToString(g_Settings.redrawAggression))
         + " delayMs=" + std::to_string(delayMs));
     g_PeriodicRedrawTimerID = SetTimer(NULL, 0, delayMs, PeriodicRedrawTimerProc);
     if (g_PeriodicRedrawTimerID == 0) {
@@ -1022,7 +1004,7 @@ void StartIdleTimer(UINT delayMs)
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
         "Starting idle redraw timer: aggression="
-        + std::string(GetRedrawAggressionName())
+        + std::string(PluginSettingText::ToString(g_Settings.redrawAggression))
         + " delayMs=" + std::to_string(delayMs));
     g_IdleTimerID = SetTimer(NULL, 0, delayMs, RedrawTimerProc);
     if (g_IdleTimerID == 0) {
@@ -1058,10 +1040,7 @@ void StopMiddleMouseRotation(const char* reason, bool scheduleRedraw)
 
 void KillCameraDumpConfirmationTimer()
 {
-    if (g_CameraDumpConfirmationTimerID != 0) {
-        KillTimer(NULL, g_CameraDumpConfirmationTimerID);
-        g_CameraDumpConfirmationTimerID = 0;
-    }
+    CancelTimer(g_CameraDumpConfirmationTimerID);
 }
 
 void StartCameraDumpConfirmationTimer()
@@ -1125,7 +1104,9 @@ bool IsNativeUICornerProbeClick(const POINT& point)
 {
 	cISC4AppPtr app;
 	cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
-	cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+	cIGZWin* parentWindow = mainWindow
+		? mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication)
+		: nullptr;
 	if (!parentWindow) {
 		return false;
 	}
@@ -1152,14 +1133,16 @@ cISC4View3DWin* GetView3DWinForNativeUIHook()
 {
 	cISC4AppPtr app;
 	cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
-	cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+	cIGZWin* parentWindow = mainWindow
+		? mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication)
+		: nullptr;
 	if (!parentWindow) {
 		return nullptr;
 	}
 
 	cISC4View3DWin* view3D = nullptr;
 	if (!parentWindow->GetChildAs(
-		kGZWin_SC4View3DWin,
+		SC4WindowID::View3D,
 		kGZIID_cISC4View3DWin,
 		reinterpret_cast<void**>(&view3D))) {
 		return nullptr;
@@ -1510,7 +1493,7 @@ void ApplyRedrawAggressionChange()
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
         "Settings UI: redraw aggression changed to "
-        + std::string(GetRedrawAggressionName())
+        + std::string(PluginSettingText::ToString(g_Settings.redrawAggression))
         + "; restarting redraw timers.");
     KillRedrawTimers();
     if (g_IsModernCamEnabled && g_Settings.redrawAggression != RedrawAggression::Classic) {
@@ -1638,11 +1621,13 @@ bool FocusView3DForNativeInput(const char* context)
 {
     cISC4AppPtr app;
     cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
-    cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+    cIGZWin* parentWindow = mainWindow
+        ? mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication)
+        : nullptr;
     cISC4View3DWin* view3D = nullptr;
     if (!parentWindow
         || !parentWindow->GetChildAs(
-            kGZWin_SC4View3DWin,
+            SC4WindowID::View3D,
             kGZIID_cISC4View3DWin,
             reinterpret_cast<void**>(&view3D))
         || !view3D) {
@@ -1683,7 +1668,7 @@ bool IsCameraKeyboardFocus()
     }
 
     const uint32_t focusedID = focusedWindow->GetID();
-    if (focusedID == kGZWin_SC4View3DWin || focusedID == kGZWin_SC4View3DSurface) {
+    if (focusedID == SC4WindowID::View3D || focusedID == SC4WindowID::View3DSurface) {
         return true;
     }
     if (IsModernCameraWindowID(focusedID)) {
@@ -1706,12 +1691,14 @@ bool IsCameraKeyboardFocus()
 
     cISC4AppPtr app;
     cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
-    cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+    cIGZWin* parentWindow = mainWindow
+        ? mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication)
+        : nullptr;
     cISC4View3DWin* view3D = nullptr;
     bool cameraFocus = false;
     if (parentWindow
         && parentWindow->GetChildAs(
-            kGZWin_SC4View3DWin,
+            SC4WindowID::View3D,
             kGZIID_cISC4View3DWin,
             reinterpret_cast<void**>(&view3D))) {
         cIGZWin* viewWindow = view3D->AsIGZWin();
@@ -2204,8 +2191,7 @@ VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
     Logger& log = Logger::GetInstance();
     if (idEvent == g_IdleTimerID && g_IdleTimerID != 0) {
         log.WriteLine(LogLevel::Verbose, "Camera redraw timer fired.");
-        KillTimer(NULL, g_IdleTimerID);
-        g_IdleTimerID = 0;
+        CancelTimer(g_IdleTimerID);
 
         TriggerCityRedraw();
         StartPeriodicRedrawTimer();
@@ -2214,8 +2200,7 @@ VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
 
 VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     if (idEvent == g_PeriodicRedrawTimerID && g_PeriodicRedrawTimerID != 0) {
-        KillTimer(NULL, g_PeriodicRedrawTimerID);
-        g_PeriodicRedrawTimerID = 0;
+        CancelTimer(g_PeriodicRedrawTimerID);
 
         if (!IsMiddleMouseRotationActive()) {
             Logger::GetInstance().WriteLine(LogLevel::Verbose, "Periodic camera redraw timer fired.");
@@ -2244,7 +2229,220 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
     }
 }
 
-LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
+void ResetTransientInputState(const char* reason)
+{
+    StopHeldKeyboardPan();
+    StopClassicAngleHold(reason);
+    StopMiddleMouseRotation(reason, false);
+    ClearTrackedKeyStates(reason);
+}
+
+bool IsCanvasMouseMessage(UINT message)
+{
+    return message == WM_LBUTTONDOWN
+        || message == WM_LBUTTONUP
+        || message == WM_RBUTTONDOWN
+        || message == WM_RBUTTONUP
+        || message == WM_MBUTTONDOWN
+        || message == WM_MBUTTONUP
+        || message == WM_MOUSEMOVE
+        || message == WM_MOUSEWHEEL;
+}
+
+bool ResumesCameraInteraction(UINT message)
+{
+    return message == WM_LBUTTONDOWN
+        || message == WM_RBUTTONDOWN
+        || message == WM_MBUTTONDOWN
+        || message == WM_MOUSEWHEEL
+        || message == WM_KEYDOWN
+        || message == WM_SYSKEYDOWN;
+}
+
+bool RouteMouseInputToVisiblePluginWindow(
+    HWND window,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    bool& handled)
+{
+    if (!g_WindowManager.HasVisibleWindow()
+        || !IsCanvasMouseMessage(message)
+        || IsMiddleMouseRotationActive()) {
+        return false;
+    }
+
+    // WM_MOUSEWHEEL supplies screen coordinates. Convert them to the canvas
+    // coordinates used by the native SC4 window hierarchy.
+    POINT cursor = MakePointFromLParam(lParam);
+    if (message == WM_MOUSEWHEEL) {
+        if (!ScreenToClient(window, &cursor)) {
+            return true;
+        }
+        if (g_WindowManager.HandleMouseWheel(
+            GET_WHEEL_DELTA_WPARAM(wParam),
+            cursor.x,
+            cursor.y,
+            reinterpret_cast<intptr_t>(window))) {
+            handled = true;
+            return true;
+        }
+    }
+
+    return g_WindowManager.IsPointOverVisibleWindow(cursor.x, cursor.y);
+}
+
+bool HandleManualCameraDumpHotkey(WPARAM key, LPARAM lParam, bool& handled)
+{
+    const bool isRepeat = (lParam & kPreviousKeyStateMask) != 0;
+    if (!IsManualCameraDumpHotkey(key) || isRepeat || !IsCameraKeyboardFocus()) {
+        return false;
+    }
+
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        "Canvas WinProc Filter: Ctrl+Alt+F8 pressed, dumping camera info.");
+    g_CameraController.DumpCameraInfo("Ctrl+Alt+F8 hotkey");
+    if (g_CameraController.ShowCameraDumpConfirmation()) {
+        StartCameraDumpConfirmationTimer();
+    }
+    handled = true;
+    return true;
+}
+
+bool HandleMiddleMouseButtonDown(HWND window, LPARAM lParam, bool& handled)
+{
+    if (!g_IsModernCamEnabled) {
+        return false;
+    }
+
+    Logger& log = Logger::GetInstance();
+    log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+    if (!ClaimKey(VK_MBUTTON, KeyOwner::ModernCameraRotation)) {
+        log.WriteLine(
+            LogLevel::Verbose,
+            "Middle mouse camera rotation ignored because MButton is owned by another feature.");
+        return false;
+    }
+
+    g_LastMousePos = MakePointFromLParam(lParam);
+    const bool beganRotation = g_CameraController.BeginRotationGesture();
+    SetCapture(window);
+    g_CapturedMouseWindow = window;
+    KillRedrawTimers();
+    log.WriteLine(
+        LogLevel::Verbose,
+        std::string("Middle mouse camera rotation started. BeginResult:")
+        + (beganRotation ? "true" : "false")
+        + " CaptureWindow:" + std::to_string(reinterpret_cast<intptr_t>(window)));
+    handled = true;
+    return true;
+}
+
+bool HandleMiddleMouseButtonUp(bool& handled)
+{
+    if (!g_IsModernCamEnabled) {
+        return false;
+    }
+
+    Logger::GetInstance().WriteLine(
+        LogLevel::Verbose,
+        "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
+    StopMiddleMouseRotation("middle mouse released", true);
+    handled = true;
+    return true;
+}
+
+bool HandleMiddleMouseMove(LPARAM lParam, bool& handled)
+{
+    if (!g_IsModernCamEnabled || !IsMiddleMouseRotationActive()) {
+        return false;
+    }
+
+    const POINT mousePos = MakePointFromLParam(lParam);
+    const int deltaX = mousePos.x - g_LastMousePos.x;
+    const int deltaY = mousePos.y - g_LastMousePos.y;
+
+    const float yawDelta = static_cast<float>(deltaX)
+        * kMouseRotationSensitivity
+        * g_Settings.rotationSensitivity;
+    float pitchDelta = static_cast<float>(deltaY)
+        * kMouseRotationSensitivity
+        * g_Settings.rotationSensitivity;
+    if (g_Settings.invertVertical) {
+        pitchDelta = -pitchDelta;
+    }
+
+    g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
+    g_LastMousePos = mousePos;
+    handled = true;
+    return true;
+}
+
+void LogNativeWheelHitTest(const POINT& cursor, const NativeWheelHitTest& hitTest)
+{
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        std::string("Mouse wheel hit-test: X:") + std::to_string(cursor.x)
+        + " Y:" + std::to_string(cursor.y)
+        + " Resolved:" + (hitTest.resolved ? "true" : "false")
+        + " OverView3D:" + (hitTest.overView3D ? "true" : "false")
+        + " TargetIsView3D:" + (hitTest.targetIsView3D ? "true" : "false")
+        + " TargetIsView3DSurface:" + (hitTest.targetIsView3DSurface ? "true" : "false")
+        + " InsideView3DRect:" + (hitTest.insideView3DRect ? "true" : "false")
+        + " TargetSource:" + hitTest.targetSource
+        + " Target:{" + hitTest.targetDescription + "}"
+        + " GlobalTarget:{" + hitTest.globalTargetDescription + "}"
+        + " MainTarget:{" + hitTest.mainTargetDescription + "}"
+        + " ParentTarget:{" + hitTest.parentTargetDescription + "}"
+        + " View3D:{" + hitTest.viewDescription + "}");
+}
+
+bool HandleCameraZoom(HWND window, WPARAM wParam, LPARAM lParam, bool& handled)
+{
+    if (!g_IsModernCamEnabled) {
+        return false;
+    }
+
+    Logger& log = Logger::GetInstance();
+    const short wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+    log.WriteLine(
+        LogLevel::Verbose,
+        "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(wheelDelta) + ")");
+
+    POINT cursor = MakePointFromLParam(lParam);
+    if (!ScreenToClient(window, &cursor)) {
+        log.WriteLine(
+            LogLevel::Warning,
+            "Mouse wheel hit-test: failed to convert screen coordinates; using camera zoom.");
+    }
+    else {
+        const NativeWheelHitTest hitTest = HitTestNativeWheelTarget(cursor.x, cursor.y);
+        LogNativeWheelHitTest(cursor, hitTest);
+        if (hitTest.resolved && !hitTest.overView3D) {
+            log.WriteLine(
+                LogLevel::Info,
+                "Mouse wheel hit-test: passing wheel through to native SC4 UI.");
+            return false;
+        }
+    }
+
+    bool zoomChanged = false;
+    const int32_t adjustedZoomDelta = static_cast<int32_t>(
+        std::lround(static_cast<float>(wheelDelta) * g_Settings.zoomSensitivity));
+    if (!g_CameraController.ZoomByWheel(adjustedZoomDelta, zoomChanged)) {
+        return false;
+    }
+
+    if (zoomChanged) {
+        log.WriteLine(LogLevel::Verbose, "Camera zoom changed: scheduling redraw sequence.");
+        StartIdleTimer(kZoomIdleRedrawDelayMs);
+    }
+    handled = true;
+    return true;
+}
+
+LRESULT HandleCanvasMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
     if (hWnd && IsWindow(hWnd)) {
         g_CanvasWindow = hWnd;
@@ -2254,20 +2452,12 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         return 0;
     }
 
-    Logger& log = Logger::GetInstance();
-
     if (uMsg == WM_KILLFOCUS) {
-        StopHeldKeyboardPan();
-        StopClassicAngleHold("canvas focus lost");
-        StopMiddleMouseRotation("canvas focus lost", false);
-        ClearTrackedKeyStates("canvas focus lost");
+        ResetTransientInputState("canvas focus lost");
         return 0;
     }
     if (uMsg == WM_ACTIVATEAPP && wParam == FALSE) {
-        StopHeldKeyboardPan();
-        StopClassicAngleHold("application deactivated");
-        StopMiddleMouseRotation("application deactivated", false);
-        ClearTrackedKeyStates("application deactivated");
+        ResetTransientInputState("application deactivated");
         return 0;
     }
 
@@ -2292,42 +2482,12 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
     }
 
-    const bool isMouseMessage = uMsg == WM_LBUTTONDOWN
-        || uMsg == WM_LBUTTONUP
-        || uMsg == WM_RBUTTONDOWN
-        || uMsg == WM_RBUTTONUP
-        || uMsg == WM_MBUTTONDOWN
-        || uMsg == WM_MBUTTONUP
-        || uMsg == WM_MOUSEMOVE
-        || uMsg == WM_MOUSEWHEEL;
-    if (g_WindowManager.HasVisibleWindow() && isMouseMessage && !IsMiddleMouseRotationActive()) {
-        // WM_MOUSEWHEEL supplies screen coordinates. Convert them to the
-        // canvas coordinates used by the native SC4 window hierarchy.
-        POINT cursor = MakePointFromLParam(lParam);
-        if (uMsg == WM_MOUSEWHEEL) {
-            if (!ScreenToClient(hWnd, &cursor)) {
-                return 0;
-            }
-            if (g_WindowManager.HandleMouseWheel(
-                GET_WHEEL_DELTA_WPARAM(wParam), cursor.x, cursor.y,
-                reinterpret_cast<intptr_t>(hWnd))) {
-                handled = true;
-                return 0;
-            }
-        }
-
-        if (g_WindowManager.IsPointOverVisibleWindow(cursor.x, cursor.y)) {
-            return 0;
-        }
+    if (RouteMouseInputToVisiblePluginWindow(hWnd, uMsg, wParam, lParam, handled)) {
+        return 0;
     }
 
-    const bool resumesCameraInteraction = uMsg == WM_LBUTTONDOWN
-        || uMsg == WM_RBUTTONDOWN
-        || uMsg == WM_MBUTTONDOWN
-        || uMsg == WM_MOUSEWHEEL
-        || uMsg == WM_KEYDOWN
-        || uMsg == WM_SYSKEYDOWN;
-    if (resumesCameraInteraction && g_CameraController.IsSavePreviewNormalizationActive()) {
+    if (ResumesCameraInteraction(uMsg)
+        && g_CameraController.IsSavePreviewNormalizationActive()) {
         g_CameraController.EndSavePreviewNormalization();
     }
 
@@ -2386,21 +2546,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
     switch (uMsg) {
     case WM_KEYDOWN:
-    case WM_SYSKEYDOWN: {
-        const bool isRepeat = (lParam & (1 << 30)) != 0;
-
-        if (IsManualCameraDumpHotkey(wParam) && !isRepeat && IsCameraKeyboardFocus()) {
-            log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: Ctrl+Alt+F8 pressed, dumping camera info.");
-            g_CameraController.DumpCameraInfo("Ctrl+Alt+F8 hotkey");
-            if (g_CameraController.ShowCameraDumpConfirmation()) {
-                StartCameraDumpConfirmationTimer();
-            }
-            handled = true;
+    case WM_SYSKEYDOWN:
+        if (HandleManualCameraDumpHotkey(wParam, lParam, handled)) {
             return 0;
         }
-
         break;
-    }
     case WM_LBUTTONDOWN: {
         const POINT cursor = MakePointFromLParam(lParam);
         LogMouseButtonEvent("WM_LBUTTONDOWN (Left Mouse Down)", cursor);
@@ -2421,109 +2571,26 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         LogMouseButtonEvent("WM_RBUTTONUP (Right Mouse Up)", MakePointFromLParam(lParam));
         break;
     }
-    case WM_MBUTTONDOWN: {
-        if (!g_IsModernCamEnabled) {
-            break;
-        }
-
-        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
-        if (!ClaimKey(VK_MBUTTON, KeyOwner::ModernCameraRotation)) {
-            log.WriteLine(LogLevel::Verbose, "Middle mouse camera rotation ignored because MButton is owned by another feature.");
-            break;
-        }
-        g_LastMousePos = MakePointFromLParam(lParam);
-        const bool beganRotation = g_CameraController.BeginRotationGesture();
-        SetCapture(hWnd);
-        g_CapturedMouseWindow = hWnd;
-        KillRedrawTimers();
-        log.WriteLine(
-            LogLevel::Verbose,
-            std::string("Middle mouse camera rotation started. BeginResult:")
-            + (beganRotation ? "true" : "false")
-            + " CaptureWindow:" + std::to_string(reinterpret_cast<intptr_t>(hWnd)));
-        handled = true;
-        return 0;
-    }
-    case WM_MBUTTONUP: {
-        if (!g_IsModernCamEnabled) {
-            break;
-        }
-
-        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONUP (Middle Mouse Up)");
-        StopMiddleMouseRotation("middle mouse released", true);
-        handled = true;
-        return 0;
-    }
-    case WM_MOUSEMOVE: {
-        if (g_IsModernCamEnabled && IsMiddleMouseRotationActive()) {
-            POINT mousePos = MakePointFromLParam(lParam);
-            int deltaX = mousePos.x - g_LastMousePos.x;
-            int deltaY = mousePos.y - g_LastMousePos.y;
-
-			float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
-			float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
-			if (g_Settings.invertVertical) {
-				pitchDelta = -pitchDelta;
-			}
-
-			g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
-
-            g_LastMousePos = mousePos;
-            handled = true;
+    case WM_MBUTTONDOWN:
+        if (HandleMiddleMouseButtonDown(hWnd, lParam, handled)) {
             return 0;
         }
         break;
-    }
-    case WM_MOUSEWHEEL: {
-        if (!g_IsModernCamEnabled) {
-            break;
-        }
-
-        short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
-
-        POINT cursor = MakePointFromLParam(lParam);
-        if (!ScreenToClient(hWnd, &cursor)) {
-            log.WriteLine(LogLevel::Warning, "Mouse wheel hit-test: failed to convert screen coordinates; using camera zoom.");
-        }
-        else {
-            NativeWheelHitTest hitTest = HitTestNativeWheelTarget(cursor.x, cursor.y);
-            log.WriteLine(
-                LogLevel::Info,
-                std::string("Mouse wheel hit-test: X:") + std::to_string(cursor.x)
-                + " Y:" + std::to_string(cursor.y)
-                + " Resolved:" + (hitTest.resolved ? "true" : "false")
-                + " OverView3D:" + (hitTest.overView3D ? "true" : "false")
-                + " TargetIsView3D:" + (hitTest.targetIsView3D ? "true" : "false")
-                + " TargetIsView3DSurface:" + (hitTest.targetIsView3DSurface ? "true" : "false")
-                + " InsideView3DRect:" + (hitTest.insideView3DRect ? "true" : "false")
-                + " TargetSource:" + hitTest.targetSource
-                + " Target:{" + hitTest.targetDescription + "}"
-                + " GlobalTarget:{" + hitTest.globalTargetDescription + "}"
-                + " MainTarget:{" + hitTest.mainTargetDescription + "}"
-                + " ParentTarget:{" + hitTest.parentTargetDescription + "}"
-                + " View3D:{" + hitTest.viewDescription + "}");
-
-            if (hitTest.resolved && !hitTest.overView3D) {
-                log.WriteLine(LogLevel::Info, "Mouse wheel hit-test: passing wheel through to native SC4 UI.");
-                break;
-            }
-        }
-
-        bool zoomChanged = false;
-        const int32_t adjustedZoomDelta = static_cast<int32_t>(
-            std::lround(static_cast<float>(zDelta) * g_Settings.zoomSensitivity));
-        if (g_CameraController.ZoomByWheel(adjustedZoomDelta, zoomChanged)) {
-            if (zoomChanged) {
-                log.WriteLine(LogLevel::Verbose, "Camera zoom changed: scheduling redraw sequence.");
-                StartIdleTimer(kZoomIdleRedrawDelayMs);
-            }
-            handled = true;
+    case WM_MBUTTONUP:
+        if (HandleMiddleMouseButtonUp(handled)) {
             return 0;
         }
-
         break;
-    }
+    case WM_MOUSEMOVE:
+        if (HandleMiddleMouseMove(lParam, handled)) {
+            return 0;
+        }
+        break;
+    case WM_MOUSEWHEEL:
+        if (HandleCameraZoom(hWnd, wParam, lParam, handled)) {
+            return 0;
+        }
+        break;
     }
 
     return 0;
@@ -2551,7 +2618,7 @@ public:
 
     uint32_t GetDirectorID() const override
     {
-        return 0x8C4B3A11;
+        return kDirectorID;
     }
 
     bool OnStart(cIGZCOM* pCOM) override
@@ -2659,7 +2726,7 @@ public:
 
     LRESULT FilterMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled) override
     {
-        return HandleCanvasMouseMessage(hWnd, uMsg, wParam, lParam, handled);
+        return HandleCanvasMessage(hWnd, uMsg, wParam, lParam, handled);
     }
 
 private:

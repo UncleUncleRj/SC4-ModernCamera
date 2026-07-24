@@ -2,6 +2,7 @@
 
 #include "GZServPtrs.h"
 #include "Logger.h"
+#include "SC4GameConstants.h"
 #include "cIGZWin.h"
 #include "cISC43DRender.h"
 #include "cISC4App.h"
@@ -19,14 +20,21 @@
 
 namespace
 {
-	constexpr uint32_t kGZWin_WinSC4App = 0x6104489a;
-	constexpr uint32_t kGZWin_SC4View3DWin = 0x9a47b417;
 	constexpr uint32_t kCameraUpdateMode = 2;
 	constexpr uint32_t kCameraDumpCursorTextId = 0x3D0C4D01;
 	constexpr uint32_t kCameraDumpCursorTextPriority = 1000;
+	constexpr uintptr_t kUpdateCameraPositionAddress = 0x007CCF80;
+	constexpr uintptr_t kSetCustomMagnificationAddress = 0x007CD6E0;
 	constexpr float kMagnificationScalePerWheelNotch = 1.04f;
 	constexpr float kZoomRangeMagnificationMin = 0.5f;
 	constexpr float kZoomRangeMagnificationMax = 2.0f;
+	constexpr float kMinimumMagnification = 0.001f;
+	constexpr float kMaximumMagnification = 10.0f;
+	constexpr float kCameraBasisEpsilon = 0.0001f;
+	constexpr float kRotationFitCorrectionEpsilon = 0.0005f;
+	constexpr float kMinimumScrollProbeSpeed = 0.05f;
+	constexpr float kMinimumFallbackProbeDistance = 8.0f;
+	constexpr float kFallbackProbeScale = 0.02f;
 	constexpr size_t kZoomCount = 5;
 	constexpr float kNativePitchByZoom[kZoomCount] = {
 		0.52359879f,
@@ -36,6 +44,7 @@ namespace
 		0.78539816f,
 	};
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
+	constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 	// Rebalance before SC4 enters the high-positive end of its native yaw
 	// bucket, where building side meshes begin to disappear. The window is
 	// deliberately wider than 90 degrees: this gives the quarter-turn handoff
@@ -55,12 +64,19 @@ namespace
 
 	UpdateCameraPositionFn GetUpdateCameraPosition()
 	{
-		return reinterpret_cast<UpdateCameraPositionFn>(0x007CCF80);
+		return reinterpret_cast<UpdateCameraPositionFn>(kUpdateCameraPositionAddress);
 	}
 
 	SetCustomMagnificationFn GetSetCustomMagnification()
 	{
-		return reinterpret_cast<SetCustomMagnificationFn>(0x007CD6E0);
+		return reinterpret_cast<SetCustomMagnificationFn>(kSetCustomMagnificationAddress);
+	}
+
+	SC4CameraControlLayout* GetCameraControl(cISC43DRender* renderer)
+	{
+		return renderer
+			? reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl())
+			: nullptr;
 	}
 
 	template <typename Function>
@@ -76,13 +92,16 @@ namespace
 			return false;
 		}
 
-		cIGZWin* pParentWin = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+		cIGZWin* pParentWin = mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication);
 		if (!pParentWin) {
 			return false;
 		}
 
 		cISC4View3DWin* pView3D = nullptr;
-		if (!pParentWin->GetChildAs(kGZWin_SC4View3DWin, kGZIID_cISC4View3DWin, reinterpret_cast<void**>(&pView3D))) {
+		if (!pParentWin->GetChildAs(
+			SC4WindowID::View3D,
+			kGZIID_cISC4View3DWin,
+			reinterpret_cast<void**>(&pView3D))) {
 			return false;
 		}
 
@@ -172,7 +191,6 @@ namespace
 
 	float GetNearestQuarterTurnOffset(float yaw)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 		const float nearestQuarterTurn = std::round(yaw / kQuarterTurn) * kQuarterTurn;
 
 		return yaw - nearestQuarterTurn;
@@ -180,7 +198,6 @@ namespace
 
 	float GetNativeYawAnchorOffset(float yaw)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 		const float nearestNativeBucket = kNativeYawAnchor
 			+ (std::round((yaw - kNativeYawAnchor) / kQuarterTurn) * kQuarterTurn);
 
@@ -199,8 +216,6 @@ namespace
 
 	int32_t RebalanceYawAndRotation(float& yaw, int32_t& rotation)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
-
 		int32_t quarterTurns = 0;
 
 		while (yaw - kNativeYawAnchor > kMaxNativeYawOffset) {
@@ -219,11 +234,16 @@ namespace
 
 	int32_t SnapYawToNearestNativeAngle(float yaw, int32_t& rotation)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 		const int32_t quarterTurns = static_cast<int32_t>(std::lround((yaw - kNativeYawAnchor) / kQuarterTurn));
 
 		rotation = WrapRotation(rotation + quarterTurns);
 		return quarterTurns;
+	}
+
+	void TranslateXZ(cS3DVector3& vector, float deltaX, float deltaZ)
+	{
+		vector.fX += deltaX;
+		vector.fZ += deltaZ;
 	}
 
 	std::string FormatPointer(const void* value)
@@ -403,7 +423,7 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 bool SC4CameraController::CaptureNativeCameraState(const char* source)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(
 				LogLevel::Warning,
@@ -436,7 +456,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 
 	const SC4NativeCameraState state = nativeCameraState;
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(
 				LogLevel::Warning,
@@ -451,7 +471,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetZoom failed.");
 			return false;
 		}
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetZoom.");
 			return false;
@@ -461,7 +481,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetRotation failed.");
 			return false;
 		}
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetRotation.");
 			return false;
@@ -526,7 +546,7 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 	}
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: camera control unavailable.");
 			return false;
@@ -545,13 +565,7 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 		savedPreviewViewTarget = cameraControl->viewTargetPosition;
 		savedPreviewBaseTarget = cameraControl->baseTargetForRotation;
 
-		for (size_t i = 0; i < kZoomCount; ++i) {
-			OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
-			OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
-			OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
-			OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
-		}
-		OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+		WriteNativeCameraAngleTables();
 
 		const int32_t nativeZoom = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
 		cameraControl->pitch = kNativePitchByZoom[nativeZoom];
@@ -560,19 +574,8 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 		const bool refreshed = Refresh(*cameraControl);
 		if (!refreshed) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: native camera refresh failed.");
-			for (size_t i = 0; i < kZoomCount; ++i) {
-				OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
-				OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
-				OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
-				OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
-			}
-			OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
-			cameraControl->pitch = savedPreviewPitch;
-			cameraControl->yaw = savedPreviewYaw;
-			cameraControl->viewTargetPosition = savedPreviewViewTarget;
-			cameraControl->baseTargetForRotation = savedPreviewBaseTarget;
-			cameraControl->viewTargetVelocity = {};
-			Refresh(*cameraControl);
+			RestoreSavedCameraAngleTables();
+			RestoreSavedPreviewCameraState(*cameraControl);
 			return false;
 		}
 		renderer->ForceFullRedraw();
@@ -597,26 +600,15 @@ void SC4CameraController::EndSavePreviewNormalization()
 		return;
 	}
 
-	for (size_t i = 0; i < kZoomCount; ++i) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
-	}
-	OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
+	RestoreSavedCameraAngleTables();
 
 	const bool restored = WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			return false;
 		}
 
-		cameraControl->pitch = savedPreviewPitch;
-		cameraControl->yaw = savedPreviewYaw;
-		cameraControl->viewTargetPosition = savedPreviewViewTarget;
-		cameraControl->baseTargetForRotation = savedPreviewBaseTarget;
-		cameraControl->viewTargetVelocity = {};
-		return Refresh(*cameraControl);
+		return RestoreSavedPreviewCameraState(*cameraControl);
 	});
 
 	savePreviewNormalizationActive = false;
@@ -643,7 +635,7 @@ bool SC4CameraController::IsSavePreviewNormalizationActive() const
 bool SC4CameraController::BeginRotationGesture()
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			return false;
 		}
@@ -677,7 +669,7 @@ void SC4CameraController::EndRotationGesture()
 bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control from renderer.");
 			return false;
@@ -711,7 +703,7 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 					return false;
 				}
 
-				cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+				cameraControl = GetCameraControl(renderer);
 				if (!cameraControl) {
 					Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Rotation Rebalance: camera control unavailable after SetRotation.");
 					return false;
@@ -740,23 +732,20 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 			&& cameraControl->orthoScale > 0.0f && cameraControl->customMagnification > 0.0f) {
 			const float fitCorrection = cameraControl->orthoScale / rotationOrthoScale;
 
-			if (std::abs(fitCorrection - 1.0f) > 0.0005f) {
+			if (std::abs(fitCorrection - 1.0f) > kRotationFitCorrectionEpsilon) {
 				const float correctedMagnification = std::clamp(
 					cameraControl->customMagnification * fitCorrection,
-					0.001f,
-					10.0f);
+					kMinimumMagnification,
+					kMaximumMagnification);
 				auto setCustomMagnification = GetSetCustomMagnification();
 
 				if (setCustomMagnification && setCustomMagnification(cameraControl, correctedMagnification)) {
-					cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+					cameraControl = GetCameraControl(renderer);
 					if (!cameraControl) {
 						return false;
 					}
 
-					ApplyPitchOverride(currentPitch);
-					ApplyYawOverride(currentYaw);
-					cameraControl->pitch = currentPitch;
-					cameraControl->yaw = currentYaw;
+					ApplyAngleOverrides(*cameraControl, currentPitch, currentYaw);
 					RestoreRotationAnchor(*cameraControl);
 					result = Refresh(*cameraControl);
 					RestoreRotationAnchor(*cameraControl);
@@ -783,7 +772,7 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 	}
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for scroll bounds preflight.");
 			return false;
@@ -814,7 +803,7 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 		const float forwardLength = GetHorizontalLength(
 			cameraControl->groundRayDirection.fX,
 			cameraControl->groundRayDirection.fZ);
-		if (rightLength <= 0.0001f || forwardLength <= 0.0001f) {
+		if (rightLength <= kCameraBasisEpsilon || forwardLength <= kCameraBasisEpsilon) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Scroll Bounds: camera basis was invalid.");
 			return false;
 		}
@@ -827,9 +816,12 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 		const float rightSteps = std::cos(directionAngle);
 		const float forwardSteps = -std::sin(directionAngle);
 		const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
-		float probeDistance = cameraControl->zoomStepWorld[zoomIndex] * (std::max)(std::abs(speed), 0.05f);
+		float probeDistance = cameraControl->zoomStepWorld[zoomIndex]
+			* (std::max)(std::abs(speed), kMinimumScrollProbeSpeed);
 		if (!std::isfinite(probeDistance) || probeDistance <= 0.0f) {
-			probeDistance = (std::max)(8.0f, cameraControl->orthoScale * 0.02f);
+			probeDistance = (std::max)(
+				kMinimumFallbackProbeDistance,
+				cameraControl->orthoScale * kFallbackProbeScale);
 		}
 
 		const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * probeDistance;
@@ -844,7 +836,7 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 		const float requestedDotAdjusted = (requestedDeltaX * deltaX) + (requestedDeltaZ * deltaZ);
 		const float adjustedDistance = GetHorizontalLength(deltaX, deltaZ);
 		if (!std::isfinite(adjustedDistance)
-			|| adjustedDistance <= 0.0001f
+			|| adjustedDistance <= kCameraBasisEpsilon
 			|| !std::isfinite(requestedDotAdjusted)
 			|| requestedDotAdjusted <= 0.0f) {
 			blocked = true;
@@ -864,7 +856,7 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 		const float adjustedRight = (deltaX * rightX) + (deltaZ * rightZ);
 		const float adjustedForward = (deltaX * forwardX) + (deltaZ * forwardZ);
 		const float adjustedInputLength = GetHorizontalLength(adjustedRight, adjustedForward);
-		if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= 0.0001f) {
+		if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= kCameraBasisEpsilon) {
 			blocked = true;
 			return true;
 		}
@@ -891,7 +883,7 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 	}
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: camera control unavailable.");
 			return false;
@@ -917,16 +909,13 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: camera control unavailable after SetRotation.");
 			return false;
 		}
 
-		ApplyPitchOverride(targetPitch);
-		ApplyYawOverride(targetYaw);
-		cameraControl->pitch = targetPitch;
-		cameraControl->yaw = targetYaw;
+		ApplyAngleOverrides(*cameraControl, targetPitch, targetYaw);
 		cameraControl->viewTargetPosition = viewTarget;
 		cameraControl->baseTargetForRotation = baseTarget;
 		cameraControl->viewTargetVelocity = {};
@@ -967,7 +956,7 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 	const float targetPitch = classicAngleHoldPitch;
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: camera control unavailable.");
 			return false;
@@ -987,16 +976,13 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: camera control unavailable after SetRotation.");
 			return false;
 		}
 
-		ApplyPitchOverride(targetPitch);
-		ApplyYawOverride(targetYaw);
-		cameraControl->pitch = targetPitch;
-		cameraControl->yaw = targetYaw;
+		ApplyAngleOverrides(*cameraControl, targetPitch, targetYaw);
 		cameraControl->viewTargetPosition = viewTarget;
 		cameraControl->baseTargetForRotation = baseTarget;
 		cameraControl->viewTargetVelocity = {};
@@ -1028,7 +1014,7 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* source)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera recenter: camera control unavailable.");
 			return false;
@@ -1075,17 +1061,12 @@ bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* so
 		const float deltaX = targetX - cameraControl->viewTargetPosition.fX;
 		const float deltaZ = targetZ - cameraControl->viewTargetPosition.fZ;
 
-		cameraControl->cameraPlaneOrigin.fX += deltaX;
-		cameraControl->cameraPlaneOrigin.fZ += deltaZ;
-		cameraControl->baseTargetForRotation.fX += deltaX;
-		cameraControl->baseTargetForRotation.fZ += deltaZ;
-		cameraControl->cameraPosition.fX += deltaX;
-		cameraControl->cameraPosition.fZ += deltaZ;
-		cameraControl->viewTargetPosition.fX += deltaX;
-		cameraControl->viewTargetPosition.fZ += deltaZ;
+		TranslateXZ(cameraControl->cameraPlaneOrigin, deltaX, deltaZ);
+		TranslateXZ(cameraControl->baseTargetForRotation, deltaX, deltaZ);
+		TranslateXZ(cameraControl->cameraPosition, deltaX, deltaZ);
+		TranslateXZ(cameraControl->viewTargetPosition, deltaX, deltaZ);
 		cameraControl->viewTargetVelocity = {};
-		cameraControl->cameraOffset.fX += deltaX;
-		cameraControl->cameraOffset.fZ += deltaZ;
+		TranslateXZ(cameraControl->cameraOffset, deltaX, deltaZ);
 		cameraControl->pitch = currentPitch;
 		cameraControl->yaw = currentYaw;
 
@@ -1115,7 +1096,7 @@ bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 		return false;
 	}
 
-	return ZoomByNotches(static_cast<float>(wheelDelta) / 120.0f, changed);
+	return ZoomByNotches(static_cast<float>(wheelDelta) / static_cast<float>(WHEEL_DELTA), changed);
 }
 
 bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
@@ -1123,7 +1104,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 	changed = false;
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for zoom.");
 			return false;
@@ -1143,19 +1124,23 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 		const float minContinuousZoom = static_cast<float>(minZoom) + std::log2(kZoomRangeMagnificationMin);
 		const float maxContinuousZoom = static_cast<float>(maxZoom) + std::log2(kZoomRangeMagnificationMax);
 
-		targetMagnification = std::clamp(targetMagnification, 0.001f, 10.0f);
+		targetMagnification = std::clamp(
+			targetMagnification,
+			kMinimumMagnification,
+			kMaximumMagnification);
 
-		while (targetMagnification > 2.0f && targetZoom < maxZoom) {
-			targetMagnification *= 0.5f;
+		while (targetMagnification > kZoomRangeMagnificationMax && targetZoom < maxZoom) {
+			targetMagnification *= kZoomRangeMagnificationMin;
 			++targetZoom;
 		}
 
-		while (targetMagnification < 0.5f && targetZoom > minZoom) {
-			targetMagnification *= 2.0f;
+		while (targetMagnification < kZoomRangeMagnificationMin && targetZoom > minZoom) {
+			targetMagnification *= kZoomRangeMagnificationMax;
 			--targetZoom;
 		}
 
-		float targetContinuousZoom = static_cast<float>(targetZoom) + std::log2((std::max)(targetMagnification, 0.001f));
+		float targetContinuousZoom = static_cast<float>(targetZoom)
+			+ std::log2((std::max)(targetMagnification, kMinimumMagnification));
 		targetContinuousZoom = std::clamp(targetContinuousZoom, minContinuousZoom, maxContinuousZoom);
 
 		targetZoom = std::clamp(static_cast<int32_t>(std::lround(targetContinuousZoom)), minZoom, maxZoom);
@@ -1170,7 +1155,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		auto setCustomMagnification = GetSetCustomMagnification();
 
 		if (!cameraControl || !setCustomMagnification) {
@@ -1184,7 +1169,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			return false;
 		}
@@ -1192,10 +1177,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 		// Zoom never owns orientation. Reapply the player's current pitch and yaw
 		// after SC4 changes native zoom stages, which may otherwise reload its
 		// per-stage angle tables.
-		ApplyPitchOverride(currentPitch);
-		ApplyYawOverride(currentYaw);
-		cameraControl->pitch = currentPitch;
-		cameraControl->yaw = currentYaw;
+		ApplyAngleOverrides(*cameraControl, currentPitch, currentYaw);
 		const bool result = Refresh(*cameraControl);
 
 		Logger::GetInstance().WriteLine(
@@ -1248,7 +1230,7 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 			log.WriteLine(LogLevel::Warning, "S3D Camera: null");
 		}
 
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			log.WriteLine(LogLevel::Warning, "Camera Control: null");
 			return true;
@@ -1409,18 +1391,6 @@ bool SC4CameraController::ClearCameraDumpConfirmation() const
 	});
 }
 
-SC4CameraControlLayout* SC4CameraController::GetActiveCameraControl()
-{
-	SC4CameraControlLayout* cameraControl = nullptr;
-
-	WithRenderer([&](cISC43DRender* renderer) {
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
-		return cameraControl != nullptr;
-	});
-
-	return cameraControl;
-}
-
 bool SC4CameraController::Refresh(SC4CameraControlLayout& cameraControl)
 {
 	auto updateCameraPosition = GetUpdateCameraPosition();
@@ -1475,7 +1445,7 @@ void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraCo
 	cameraControl.viewTargetVelocity = {};
 }
 
-void SC4CameraController::RestoreNativeAngleTables()
+void SC4CameraController::WriteNativeCameraAngleTables()
 {
 	for (size_t i = 0; i < kZoomCount; i++) {
 		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
@@ -1484,7 +1454,44 @@ void SC4CameraController::RestoreNativeAngleTables()
 		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
 	}
 	OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+}
+
+void SC4CameraController::RestoreNativeAngleTables()
+{
+	WriteNativeCameraAngleTables();
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Camera Reset: restored native global pitch/yaw tables.");
+}
+
+void SC4CameraController::RestoreSavedCameraAngleTables()
+{
+	for (size_t i = 0; i < kZoomCount; ++i) {
+		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
+		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
+		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
+		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
+	}
+	OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
+}
+
+bool SC4CameraController::RestoreSavedPreviewCameraState(SC4CameraControlLayout& cameraControl)
+{
+	cameraControl.pitch = savedPreviewPitch;
+	cameraControl.yaw = savedPreviewYaw;
+	cameraControl.viewTargetPosition = savedPreviewViewTarget;
+	cameraControl.baseTargetForRotation = savedPreviewBaseTarget;
+	cameraControl.viewTargetVelocity = {};
+	return Refresh(cameraControl);
+}
+
+void SC4CameraController::ApplyAngleOverrides(
+	SC4CameraControlLayout& cameraControl,
+	float pitch,
+	float yaw)
+{
+	ApplyPitchOverride(pitch);
+	ApplyYawOverride(yaw);
+	cameraControl.pitch = pitch;
+	cameraControl.yaw = yaw;
 }
 
 void SC4CameraController::ApplyPitchOverride(float pitch)

@@ -12,9 +12,9 @@
 #include <vector>
 
 class cGZMessage;
-class cIGZUnknown;
 class cIGZWin;
 class PluginSettings;
+enum class CameraMode;
 
 struct SC4WindowManagerCallbacks
 {
@@ -152,6 +152,8 @@ protected:
 
 private:
 	void SyncControlsFromSettings();
+	bool ApplySensitivitySliderChange(uint32_t controlID);
+	void ApplyCameraMode(CameraMode mode);
 	void ApplyBooleanPair(uint32_t onID, uint32_t offID, bool value);
 	void ApplyChoice(uint32_t selectedID, const uint32_t* ids, size_t count);
 	void ApplySettingsChange(const char* reason, bool saveImmediately = true);
@@ -242,7 +244,6 @@ private:
 	struct ChildControl
 	{
 		cIGZWin* window;
-		cIGZUnknown* interfacePointer;
 		uint32_t id;
 		int32_t baseLeft;
 		int32_t baseTop;
@@ -263,8 +264,6 @@ private:
 	};
 
 	bool BuildControls();
-	void AddControl(cIGZWin* window, cIGZUnknown* interfacePointer, uint32_t id,
-		const char* name, int32_t left, int32_t top, int32_t right, int32_t bottom, bool fixed = false);
 	void ScrollBy(int32_t delta);
 	void ActivateScrollbarArrow(int32_t direction, intptr_t nativeWindowHandle);
 	void ApplyScrollPosition();

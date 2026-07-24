@@ -24,9 +24,24 @@ enum class DebugLogging
 	Verbose
 };
 
+namespace PluginSettingText
+{
+	const char* ToString(CameraMode value);
+	const char* ToString(RedrawAggression value);
+	const char* ToString(DebugLogging value);
+}
+
 class PluginSettings
 {
 public:
+	static constexpr float kDefaultSensitivity = 1.0f;
+	static constexpr float kMinimumSensitivity = 0.1f;
+	static constexpr float kMaximumSensitivity = 3.0f;
+	static constexpr float kSensitivityRange = kMaximumSensitivity - kMinimumSensitivity;
+	static constexpr float kMinimumPanSensitivity = 0.25f;
+	static constexpr float kMaximumPanSensitivity = 2.75f;
+	static constexpr float kPanSensitivityRange = kMaximumPanSensitivity - kMinimumPanSensitivity;
+
 	PluginSettings();
 
 	bool Load(const std::filesystem::path& path);

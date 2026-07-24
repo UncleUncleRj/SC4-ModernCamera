@@ -5,6 +5,14 @@
 
 namespace
 {
+	constexpr DWORD kVersionInfoSignature = 0xFEEF04BD;
+	constexpr uintptr_t kVersionSentinelAddress = 0x6E5000;
+	constexpr uint8_t kVersion610Sentinel = 0x8B;
+	constexpr uint8_t kVersion638Sentinel = 0xFF;
+	constexpr uint8_t kVersion640Sentinel = 0x24;
+	constexpr uint8_t kVersion641Sentinel = 0x0F;
+	constexpr uint16_t kDigitalDistributionVersion = 641;
+
 	uint64_t GetAssemblyVersion(HMODULE hModule)
 	{
 		wchar_t versionFile[MAX_PATH]{};
@@ -29,7 +37,7 @@ namespace
 			{
 				VS_FIXEDFILEINFO* verInfo = reinterpret_cast<VS_FIXEDFILEINFO*>(buffer);
 
-				if (verInfo->dwSignature == 0xfeef04bd)
+				if (verInfo->dwSignature == kVersionInfoSignature)
 				{
 					uint64_t value = static_cast<uint64_t>(verInfo->dwFileVersionMS) << 32;
 					value |= verInfo->dwFileVersionLS;
@@ -56,18 +64,18 @@ namespace
 
 		// Fallback used by SC4Fix/sc4-dll-utilities when the executable has no
 		// readable version resource.
-		const uint8_t sentinel = *reinterpret_cast<uint8_t*>(0x6E5000);
+		const uint8_t sentinel = *reinterpret_cast<uint8_t*>(kVersionSentinelAddress);
 
 		switch (sentinel)
 		{
-		case 0x8B:
+		case kVersion610Sentinel:
 			return 610; // Cannot distinguish from 613 with this fallback.
-		case 0xFF:
+		case kVersion638Sentinel:
 			return 638;
-		case 0x24:
+		case kVersion640Sentinel:
 			return 640;
-		case 0x0F:
-			return 641;
+		case kVersion641Sentinel:
+			return kDigitalDistributionVersion;
 		default:
 			return 0;
 		}
@@ -83,5 +91,5 @@ uint16_t SC4VersionDetection::GetGameVersion()
 
 bool SC4VersionDetection::IsDigitalDistributionVersion()
 {
-	return GetGameVersion() == 641;
+	return GetGameVersion() == kDigitalDistributionVersion;
 }

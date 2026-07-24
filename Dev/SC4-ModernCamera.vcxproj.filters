@@ -32,6 +32,9 @@
     <ClInclude Include="src\SC4CameraController.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\SC4GameConstants.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\SC4VersionDetection.h">
       <Filter>Header Files</Filter>
     </ClInclude>

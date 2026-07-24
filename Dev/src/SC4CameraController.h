@@ -150,11 +150,17 @@ public:
 
 private:
 	bool EnsureNativeCameraStateCaptured(const SC4CameraControlLayout& cameraControl);
-	static SC4CameraControlLayout* GetActiveCameraControl();
 	static bool Refresh(SC4CameraControlLayout& cameraControl);
 	static float SanitizePitch(float pitch);
 	static float SanitizeYaw(float yaw);
+	static void WriteNativeCameraAngleTables();
 	static void RestoreNativeAngleTables();
+	void RestoreSavedCameraAngleTables();
+	bool RestoreSavedPreviewCameraState(SC4CameraControlLayout& cameraControl);
+	static void ApplyAngleOverrides(
+		SC4CameraControlLayout& cameraControl,
+		float pitch,
+		float yaw);
 	static void ApplyPitchOverride(float pitch);
 	static void ApplyYawOverride(float yaw);
 	static void OverwriteMemoryFloat(uintptr_t address, float value);
