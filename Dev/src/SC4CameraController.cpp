@@ -13,8 +13,10 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <sstream>
 #include <string>
 
@@ -36,6 +38,8 @@ namespace
 	constexpr float kMinimumFallbackProbeDistance = 8.0f;
 	constexpr float kFallbackProbeScale = 0.02f;
 	constexpr size_t kZoomCount = 5;
+	constexpr size_t kMaximumAnglePatchCount = (kZoomCount * 4) + 1;
+	constexpr size_t kMaximumPatchPageCount = 3;
 	constexpr float kNativePitchByZoom[kZoomCount] = {
 		0.52359879f,
 		0.61086524f,
@@ -61,6 +65,178 @@ namespace
 
 	using UpdateCameraPositionFn = bool(__thiscall*)(SC4CameraControlLayout*, uint32_t);
 	using SetCustomMagnificationFn = bool(__thiscall*)(SC4CameraControlLayout*, float);
+
+	struct MemoryFloatPatch
+	{
+		uintptr_t address;
+		float value;
+	};
+
+	struct ProtectedMemoryPage
+	{
+		uintptr_t address = 0;
+		DWORD oldProtect = 0;
+		bool writable = false;
+		bool executable = false;
+		bool modified = false;
+	};
+
+	bool IsExecutableProtection(DWORD protection)
+	{
+		switch (protection & 0xFF) {
+		case PAGE_EXECUTE:
+		case PAGE_EXECUTE_READ:
+		case PAGE_EXECUTE_READWRITE:
+		case PAGE_EXECUTE_WRITECOPY:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	size_t GetSystemPageSize()
+	{
+		static const size_t pageSize = []() {
+			SYSTEM_INFO systemInfo{};
+			GetSystemInfo(&systemInfo);
+			return static_cast<size_t>(systemInfo.dwPageSize);
+		}();
+
+		return pageSize;
+	}
+
+	void LogMemoryPatchError(const char* message, uintptr_t address)
+	{
+		char hexAddress[32]{};
+		sprintf_s(hexAddress, sizeof(hexAddress), "0x%08X", static_cast<uint32_t>(address));
+		Logger::GetInstance().WriteLine(
+			LogLevel::Error,
+			std::string(message) + " at " + hexAddress);
+	}
+
+	class MemoryFloatPatchBatch
+	{
+	public:
+		void Add(uintptr_t address, float value)
+		{
+			if (std::memcmp(
+				reinterpret_cast<const void*>(address),
+				&value,
+				sizeof(value)) == 0) {
+				return;
+			}
+			if (patchCount >= patches.size()) {
+				LogMemoryPatchError("Camera memory patch batch exceeded its fixed capacity", address);
+				return;
+			}
+
+			patches[patchCount++] = { address, value };
+		}
+
+		void Apply()
+		{
+			if (patchCount == 0) {
+				return;
+			}
+
+			const size_t pageSize = GetSystemPageSize();
+			std::array<ProtectedMemoryPage, kMaximumPatchPageCount> pages{};
+			size_t pageCount = 0;
+
+			for (size_t i = 0; i < patchCount; ++i) {
+				const uintptr_t pageAddress = (patches[i].address / pageSize) * pageSize;
+				if (FindPage(pages, pageCount, pageAddress)) {
+					continue;
+				}
+				if (pageCount >= pages.size()) {
+					LogMemoryPatchError("Camera memory patch batch exceeded its page capacity", pageAddress);
+					continue;
+				}
+
+				ProtectedMemoryPage& page = pages[pageCount++];
+				page.address = pageAddress;
+				page.writable = VirtualProtect(
+					reinterpret_cast<void*>(page.address),
+					pageSize,
+					PAGE_EXECUTE_READWRITE,
+					&page.oldProtect) != FALSE;
+				if (!page.writable) {
+					LogMemoryPatchError("VirtualProtect failed for camera memory page", page.address);
+					continue;
+				}
+				page.executable = IsExecutableProtection(page.oldProtect);
+			}
+
+			for (size_t i = 0; i < patchCount; ++i) {
+				const uintptr_t pageAddress = (patches[i].address / pageSize) * pageSize;
+				ProtectedMemoryPage* page = FindPage(pages, pageCount, pageAddress);
+				if (!page || !page->writable) {
+					continue;
+				}
+
+				*reinterpret_cast<float*>(patches[i].address) = patches[i].value;
+				page->modified = true;
+			}
+
+			for (size_t i = 0; i < pageCount; ++i) {
+				const ProtectedMemoryPage& page = pages[i];
+				if (page.writable && page.modified && page.executable) {
+					FlushInstructionCache(
+						GetCurrentProcess(),
+						reinterpret_cast<void*>(page.address),
+						pageSize);
+				}
+			}
+
+			for (size_t i = pageCount; i > 0; --i) {
+				const ProtectedMemoryPage& page = pages[i - 1];
+				if (!page.writable) {
+					continue;
+				}
+
+				DWORD ignored = 0;
+				VirtualProtect(
+					reinterpret_cast<void*>(page.address),
+					pageSize,
+					page.oldProtect,
+					&ignored);
+			}
+		}
+
+	private:
+		static ProtectedMemoryPage* FindPage(
+			std::array<ProtectedMemoryPage, kMaximumPatchPageCount>& pages,
+			size_t pageCount,
+			uintptr_t address)
+		{
+			for (size_t i = 0; i < pageCount; ++i) {
+				if (pages[i].address == address) {
+					return &pages[i];
+				}
+			}
+			return nullptr;
+		}
+
+		std::array<MemoryFloatPatch, kMaximumAnglePatchCount> patches{};
+		size_t patchCount = 0;
+	};
+
+	void AddPitchOverridePatches(MemoryFloatPatchBatch& patches, float pitch)
+	{
+		for (size_t i = 0; i < kZoomCount; ++i) {
+			patches.Add(kPitchAddress1 + (i * sizeof(float)), pitch);
+			patches.Add(kPitchAddress2 + (i * sizeof(float)), pitch);
+		}
+	}
+
+	void AddYawOverridePatches(MemoryFloatPatchBatch& patches, float yaw)
+	{
+		patches.Add(kYawAddress0, yaw);
+		for (size_t i = 0; i < kZoomCount; ++i) {
+			patches.Add(kYawAddress1 + (i * sizeof(float)), yaw);
+			patches.Add(kYawAddress2 + (i * sizeof(float)), yaw);
+		}
+	}
 
 	UpdateCameraPositionFn GetUpdateCameraPosition()
 	{
@@ -713,14 +889,13 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 			}
 		}
 
-		ApplyPitchOverride(currentPitch);
-
 		if (updateYaw) {
-			ApplyYawOverride(currentYaw);
-			cameraControl->yaw = currentYaw;
+			ApplyAngleOverrides(*cameraControl, currentPitch, currentYaw);
 		}
-
-		cameraControl->pitch = currentPitch;
+		else {
+			ApplyPitchOverride(currentPitch);
+			cameraControl->pitch = currentPitch;
+		}
 
 		bool result = Refresh(*cameraControl);
 		RestoreRotationAnchor(*cameraControl);
@@ -767,113 +942,133 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 	adjustedDirectionAngle = directionAngle;
 	blocked = false;
 
-	if (!std::isfinite(directionAngle)) {
+	return WithRenderer([&](cISC43DRender* renderer) {
+		return AdjustScrollForCityBounds(
+			renderer,
+			directionAngle,
+			speed,
+			adjustedDirectionAngle,
+			blocked,
+			source);
+	});
+}
+
+bool SC4CameraController::AdjustScrollForCityBounds(
+	cISC43DRender* renderer,
+	float directionAngle,
+	float speed,
+	float& adjustedDirectionAngle,
+	bool& blocked,
+	const char* source)
+{
+	adjustedDirectionAngle = directionAngle;
+	blocked = false;
+
+	if (!renderer || !std::isfinite(directionAngle)) {
 		return false;
 	}
 
-	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
-		if (!cameraControl) {
-			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for scroll bounds preflight.");
-			return false;
-		}
+	SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+	if (!cameraControl) {
+		Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for scroll bounds preflight.");
+		return false;
+	}
 
-		if (!std::isfinite(cameraControl->viewTargetPosition.fX)
-			|| !std::isfinite(cameraControl->viewTargetPosition.fZ)) {
-			return false;
-		}
+	if (!std::isfinite(cameraControl->viewTargetPosition.fX)
+		|| !std::isfinite(cameraControl->viewTargetPosition.fZ)) {
+		return false;
+	}
 
-		if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
-			blocked = true;
-			Logger::GetInstance().WriteLine(
-				LogLevel::Warning,
-				std::string("Camera Scroll Bounds: unusable city extents; blocking scroll. Source:")
-				+ (source ? source : "unknown")
-				+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
-				+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
-			return true;
-		}
+	if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
+		blocked = true;
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			std::string("Camera Scroll Bounds: unusable city extents; blocking scroll. Source:")
+			+ (source ? source : "unknown")
+			+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
+			+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
+		return true;
+	}
 
-		EnsureNativeCameraStateCaptured(*cameraControl);
-		SyncAngles(*cameraControl);
+	EnsureNativeCameraStateCaptured(*cameraControl);
+	SyncAngles(*cameraControl);
 
-		const float rightLength = GetHorizontalLength(
-			cameraControl->cachedViewXformB.fX,
-			cameraControl->cachedViewXformB.fZ);
-		const float forwardLength = GetHorizontalLength(
-			cameraControl->groundRayDirection.fX,
-			cameraControl->groundRayDirection.fZ);
-		if (rightLength <= kCameraBasisEpsilon || forwardLength <= kCameraBasisEpsilon) {
-			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Scroll Bounds: camera basis was invalid.");
-			return false;
-		}
+	const float rightLength = GetHorizontalLength(
+		cameraControl->cachedViewXformB.fX,
+		cameraControl->cachedViewXformB.fZ);
+	const float forwardLength = GetHorizontalLength(
+		cameraControl->groundRayDirection.fX,
+		cameraControl->groundRayDirection.fZ);
+	if (rightLength <= kCameraBasisEpsilon || forwardLength <= kCameraBasisEpsilon) {
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Scroll Bounds: camera basis was invalid.");
+		return false;
+	}
 
-		const float rightX = cameraControl->cachedViewXformB.fX / rightLength;
-		const float rightZ = cameraControl->cachedViewXformB.fZ / rightLength;
-		const float forwardX = cameraControl->groundRayDirection.fX / forwardLength;
-		const float forwardZ = cameraControl->groundRayDirection.fZ / forwardLength;
+	const float rightX = cameraControl->cachedViewXformB.fX / rightLength;
+	const float rightZ = cameraControl->cachedViewXformB.fZ / rightLength;
+	const float forwardX = cameraControl->groundRayDirection.fX / forwardLength;
+	const float forwardZ = cameraControl->groundRayDirection.fZ / forwardLength;
 
-		const float rightSteps = std::cos(directionAngle);
-		const float forwardSteps = -std::sin(directionAngle);
-		const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
-		float probeDistance = cameraControl->zoomStepWorld[zoomIndex]
-			* (std::max)(std::abs(speed), kMinimumScrollProbeSpeed);
-		if (!std::isfinite(probeDistance) || probeDistance <= 0.0f) {
-			probeDistance = (std::max)(
-				kMinimumFallbackProbeDistance,
-				cameraControl->orthoScale * kFallbackProbeScale);
-		}
+	const float rightSteps = std::cos(directionAngle);
+	const float forwardSteps = -std::sin(directionAngle);
+	const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
+	float probeDistance = cameraControl->zoomStepWorld[zoomIndex]
+		* (std::max)(std::abs(speed), kMinimumScrollProbeSpeed);
+	if (!std::isfinite(probeDistance) || probeDistance <= 0.0f) {
+		probeDistance = (std::max)(
+			kMinimumFallbackProbeDistance,
+			cameraControl->orthoScale * kFallbackProbeScale);
+	}
 
-		const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * probeDistance;
-		const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * probeDistance;
-		float deltaX = requestedDeltaX;
-		float deltaZ = requestedDeltaZ;
-		const bool clampedToCityBounds = ClampPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
-		if (!clampedToCityBounds) {
-			return true;
-		}
+	const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * probeDistance;
+	const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * probeDistance;
+	float deltaX = requestedDeltaX;
+	float deltaZ = requestedDeltaZ;
+	const bool clampedToCityBounds = ClampPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
+	if (!clampedToCityBounds) {
+		return true;
+	}
 
-		const float requestedDotAdjusted = (requestedDeltaX * deltaX) + (requestedDeltaZ * deltaZ);
-		const float adjustedDistance = GetHorizontalLength(deltaX, deltaZ);
-		if (!std::isfinite(adjustedDistance)
-			|| adjustedDistance <= kCameraBasisEpsilon
-			|| !std::isfinite(requestedDotAdjusted)
-			|| requestedDotAdjusted <= 0.0f) {
-			blocked = true;
-			Logger::GetInstance().WriteLine(
-				LogLevel::Verbose,
-				std::string("Camera Scroll Bounds: blocked outward scroll at city bounds. Source:")
+	const float requestedDotAdjusted = (requestedDeltaX * deltaX) + (requestedDeltaZ * deltaZ);
+	const float adjustedDistance = GetHorizontalLength(deltaX, deltaZ);
+	if (!std::isfinite(adjustedDistance)
+		|| adjustedDistance <= kCameraBasisEpsilon
+		|| !std::isfinite(requestedDotAdjusted)
+		|| requestedDotAdjusted <= 0.0f) {
+		blocked = true;
+		Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+			return std::string("Camera Scroll Bounds: blocked outward scroll at city bounds. Source:")
 				+ (source ? source : "unknown")
 				+ " DirectionAngle:" + std::to_string(directionAngle)
 				+ " Speed:" + std::to_string(speed)
 				+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
 				+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
 				+ " AdjustedDeltaX:" + std::to_string(deltaX)
-				+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
-			return true;
-		}
+				+ " AdjustedDeltaZ:" + std::to_string(deltaZ);
+		});
+		return true;
+	}
 
-		const float adjustedRight = (deltaX * rightX) + (deltaZ * rightZ);
-		const float adjustedForward = (deltaX * forwardX) + (deltaZ * forwardZ);
-		const float adjustedInputLength = GetHorizontalLength(adjustedRight, adjustedForward);
-		if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= kCameraBasisEpsilon) {
-			blocked = true;
-			return true;
-		}
+	const float adjustedRight = (deltaX * rightX) + (deltaZ * rightZ);
+	const float adjustedForward = (deltaX * forwardX) + (deltaZ * forwardZ);
+	const float adjustedInputLength = GetHorizontalLength(adjustedRight, adjustedForward);
+	if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= kCameraBasisEpsilon) {
+		blocked = true;
+		return true;
+	}
 
-		adjustedDirectionAngle = std::atan2(-adjustedForward, adjustedRight);
-		Logger::GetInstance().WriteLine(
-			LogLevel::Verbose,
-			std::string("Camera Scroll Bounds: adjusted native scroll along city edge. Source:")
+	adjustedDirectionAngle = std::atan2(-adjustedForward, adjustedRight);
+	Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+		return std::string("Camera Scroll Bounds: adjusted native scroll along city edge. Source:")
 			+ (source ? source : "unknown")
 			+ " DirectionAngle:" + std::to_string(directionAngle)
 			+ " AdjustedDirectionAngle:" + std::to_string(adjustedDirectionAngle)
 			+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
 			+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
 			+ " AdjustedDeltaX:" + std::to_string(deltaX)
-			+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
-		return true;
+			+ " AdjustedDeltaZ:" + std::to_string(deltaZ);
 	});
+	return true;
 }
 
 bool SC4CameraController::BeginClassicAngleHold(const char* source)
@@ -1447,13 +1642,15 @@ void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraCo
 
 void SC4CameraController::WriteNativeCameraAngleTables()
 {
+	MemoryFloatPatchBatch patches;
 	for (size_t i = 0; i < kZoomCount; i++) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
+		patches.Add(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
+		patches.Add(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
+		patches.Add(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
+		patches.Add(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
 	}
-	OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+	patches.Add(kYawAddress0, kDefaultYaw);
+	patches.Apply();
 }
 
 void SC4CameraController::RestoreNativeAngleTables()
@@ -1464,13 +1661,15 @@ void SC4CameraController::RestoreNativeAngleTables()
 
 void SC4CameraController::RestoreSavedCameraAngleTables()
 {
+	MemoryFloatPatchBatch patches;
 	for (size_t i = 0; i < kZoomCount; ++i) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
+		patches.Add(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
+		patches.Add(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
+		patches.Add(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
+		patches.Add(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
 	}
-	OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
+	patches.Add(kYawAddress0, savedYawInstruction);
+	patches.Apply();
 }
 
 bool SC4CameraController::RestoreSavedPreviewCameraState(SC4CameraControlLayout& cameraControl)
@@ -1488,8 +1687,10 @@ void SC4CameraController::ApplyAngleOverrides(
 	float pitch,
 	float yaw)
 {
-	ApplyPitchOverride(pitch);
-	ApplyYawOverride(yaw);
+	MemoryFloatPatchBatch patches;
+	AddPitchOverridePatches(patches, SanitizePitch(pitch));
+	AddYawOverridePatches(patches, SanitizeYaw(yaw));
+	patches.Apply();
 	cameraControl.pitch = pitch;
 	cameraControl.yaw = yaw;
 }
@@ -1498,37 +1699,7 @@ void SC4CameraController::ApplyPitchOverride(float pitch)
 {
 	pitch = SanitizePitch(pitch);
 
-	for (size_t i = 0; i < kZoomCount; i++) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), pitch);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), pitch);
-	}
-}
-
-void SC4CameraController::ApplyYawOverride(float yaw)
-{
-	yaw = SanitizeYaw(yaw);
-
-	OverwriteMemoryFloat(kYawAddress0, yaw);
-
-	for (size_t i = 0; i < kZoomCount; i++) {
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), yaw);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), yaw);
-	}
-}
-
-void SC4CameraController::OverwriteMemoryFloat(uintptr_t address, float value)
-{
-	DWORD oldProtect = 0;
-
-	if (VirtualProtect(reinterpret_cast<void*>(address), sizeof(value), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-		*reinterpret_cast<float*>(address) = value;
-
-		DWORD ignored = 0;
-		VirtualProtect(reinterpret_cast<void*>(address), sizeof(value), oldProtect, &ignored);
-	}
-	else {
-		char hexAddr[32];
-		sprintf_s(hexAddr, sizeof(hexAddr), "0x%X", address);
-		Logger::GetInstance().WriteLine(LogLevel::Error, std::string("VirtualProtect failed at ") + hexAddr);
-	}
+	MemoryFloatPatchBatch patches;
+	AddPitchOverridePatches(patches, pitch);
+	patches.Apply();
 }

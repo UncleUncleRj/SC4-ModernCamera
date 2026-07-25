@@ -1,13 +1,14 @@
 #pragma once
 
-#include <string>
-#include <fstream>
-#include <iostream>
-#include <mutex>
+#include <atomic>
 #include <chrono>
-#include <iomanip>
-#include <sstream>
+#include <cstdio>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <utility>
 
 enum class LogLevel {
 	Verbose,
@@ -52,18 +53,39 @@ public:
 
 	void SetVerbosity(LogVerbosity verbosity) {
 		std::lock_guard<std::mutex> lock(m_mutex);
-		m_verbosity = verbosity;
+		m_verbosity.store(verbosity, std::memory_order_relaxed);
+		if (m_out.is_open()) {
+			m_out.flush();
+		}
+	}
+
+	bool IsEnabled(LogLevel level) const {
+		const LogVerbosity verbosity = m_verbosity.load(std::memory_order_relaxed);
+		return verbosity != LogVerbosity::Off
+			&& (level != LogLevel::Verbose || verbosity == LogVerbosity::Verbose);
+	}
+
+	template <typename MessageFactory>
+	void WriteLineLazy(LogLevel level, MessageFactory&& createMessage) {
+		if (!IsEnabled(level)) {
+			return;
+		}
+
+		WriteLine(level, std::forward<MessageFactory>(createMessage)());
 	}
 
 	void WriteLine(LogLevel level, const std::string& message) {
+		if (!IsEnabled(level)) {
+			return;
+		}
+
 		std::lock_guard<std::mutex> lock(m_mutex);
-		if (m_verbosity == LogVerbosity::Off
-			|| (level == LogLevel::Verbose && m_verbosity != LogVerbosity::Verbose)) {
+		if (!IsEnabled(level)) {
 			return;
 		}
 
 		if (m_out.is_open()) {
-			std::string prefix;
+			const char* prefix = "";
 			switch (level) {
 				case LogLevel::Verbose: prefix = "[VERBOSE] "; break;
 				case LogLevel::Info: prefix = "[INFO] "; break;
@@ -76,11 +98,21 @@ public:
 			
 			struct tm timeinfo;
 			localtime_s(&timeinfo, &in_time_t);
-			
-			std::stringstream ss;
-			ss << std::put_time(&timeinfo, "%Y-%m-%d %H:%M:%S");
-			
-			m_out << "[" << ss.str() << "] " << prefix << message << std::endl;
+
+			char timestamp[20]{};
+			sprintf_s(
+				timestamp,
+				sizeof(timestamp),
+				"%04d-%02d-%02d %02d:%02d:%02d",
+				timeinfo.tm_year + 1900,
+				timeinfo.tm_mon + 1,
+				timeinfo.tm_mday,
+				timeinfo.tm_hour,
+				timeinfo.tm_min,
+				timeinfo.tm_sec);
+
+			m_out << "[" << timestamp << "] " << prefix << message << '\n';
+			m_out.flush();
 		}
 	}
 
@@ -96,5 +128,5 @@ private:
 
 	std::ofstream m_out;
 	std::mutex m_mutex;
-	LogVerbosity m_verbosity = LogVerbosity::Normal;
+	std::atomic<LogVerbosity> m_verbosity = LogVerbosity::Normal;
 };

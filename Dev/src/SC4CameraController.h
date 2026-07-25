@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 
+class cISC43DRender;
+
 struct SC4Float4
 {
 	float fX;
@@ -131,6 +133,13 @@ public:
 		float& adjustedDirectionAngle,
 		bool& blocked,
 		const char* source);
+	bool AdjustScrollForCityBounds(
+		cISC43DRender* renderer,
+		float directionAngle,
+		float speed,
+		float& adjustedDirectionAngle,
+		bool& blocked,
+		const char* source);
 	bool BeginClassicAngleHold(const char* source);
 	bool EndClassicAngleHold(const char* source);
 	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
@@ -162,8 +171,6 @@ private:
 		float pitch,
 		float yaw);
 	static void ApplyPitchOverride(float pitch);
-	static void ApplyYawOverride(float yaw);
-	static void OverwriteMemoryFloat(uintptr_t address, float value);
 	bool ZoomByNotches(float wheelNotches, bool& changed);
 	void SyncAngles(const SC4CameraControlLayout& cameraControl);
 	void RestoreRotationAnchor(SC4CameraControlLayout& cameraControl) const;

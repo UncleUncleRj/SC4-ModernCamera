@@ -260,6 +260,7 @@ static constexpr std::array<WPARAM, 8> kKeyboardPanKeys = {
 };
 POINT g_LastMousePos = { 0, 0 };
 HWND g_CapturedMouseWindow = NULL;
+bool g_RotationCursorHidden = false;
 HWND g_CanvasWindow = NULL;
 HHOOK g_KeyboardHook = NULL;
 SC4CameraController g_CameraController;
@@ -1012,6 +1013,25 @@ void StartIdleTimer(UINT delayMs)
     }
 }
 
+void SetRotationCursorVisible(bool visible)
+{
+    const bool hidden = !visible;
+    if (g_RotationCursorHidden == hidden) {
+        return;
+    }
+
+    cIGZWinMgrPtr winMgr;
+    if (!winMgr || !winMgr->GZShowCursor(visible)) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Warning,
+            std::string("Failed to ") + (visible ? "show" : "hide")
+            + " the cursor for middle mouse camera rotation.");
+        return;
+    }
+
+    g_RotationCursorHidden = hidden;
+}
+
 void StopMiddleMouseRotation(const char* reason, bool scheduleRedraw)
 {
     const bool wasActive = IsMiddleMouseRotationActive();
@@ -1021,6 +1041,7 @@ void StopMiddleMouseRotation(const char* reason, bool scheduleRedraw)
 
     ClearMiddleMouseRotationClaim();
     g_CapturedMouseWindow = NULL;
+    SetRotationCursorVisible(true);
 
     if (!wasActive) {
         return;
@@ -1359,32 +1380,40 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 	float adjustedX = x;
 	bool blockedByBounds = false;
 	if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
-		const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
+		cISC43DRender* renderer = view3D ? view3D->GetRenderer() : nullptr;
+		const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(
+			renderer,
+			x,
+			z,
+			adjustedX,
+			blockedByBounds,
+			source);
 		if (!boundsChecked || blockedByBounds) {
 			const bool stopped = original(view3D, false, 0.0f, 0.0f);
-			Logger::GetInstance().WriteLine(
-				boundsChecked ? LogLevel::Verbose : LogLevel::Warning,
-				std::string(boundsChecked
+			const LogLevel logLevel = boundsChecked ? LogLevel::Verbose : LogLevel::Warning;
+			Logger::GetInstance().WriteLineLazy(logLevel, [&]() {
+				return std::string(boundsChecked
 					? "View3D SetScrolling blocked at city bounds. Source:"
 					: "View3D SetScrolling bounds preflight failed; stopping scroll. Source:")
-				+ source
-				+ " X:" + std::to_string(x)
-				+ " Z:" + std::to_string(z)
-				+ " StopResult:" + (stopped ? "true" : "false"));
+					+ source
+					+ " X:" + std::to_string(x)
+					+ " Z:" + std::to_string(z)
+					+ " StopResult:" + (stopped ? "true" : "false");
+			});
 			return stopped;
 		}
 	}
 
 	const bool result = original(view3D, scrolling, adjustedX, z);
-	Logger::GetInstance().WriteLine(
-		LogLevel::Verbose,
-		std::string("View3D SetScrolling observed. Source:")
-		+ (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
-		+ " Scrolling:" + (scrolling ? "true" : "false")
-		+ " X:" + std::to_string(x)
-		+ " AdjustedX:" + std::to_string(adjustedX)
-		+ " Z:" + std::to_string(z)
-		+ " Result:" + (result ? "true" : "false"));
+	Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+		return std::string("View3D SetScrolling observed. Source:")
+			+ (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
+			+ " Scrolling:" + (scrolling ? "true" : "false")
+			+ " X:" + std::to_string(x)
+			+ " AdjustedX:" + std::to_string(adjustedX)
+			+ " Z:" + std::to_string(z)
+			+ " Result:" + (result ? "true" : "false");
+	});
 
 	return result;
 }
@@ -1843,11 +1872,11 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
         - ((IsKeyboardPanKeyDown('S') || IsKeyboardPanKeyDown(VK_DOWN)) ? 1.0f : 0.0f);
     if (rightSteps == 0.0f && forwardSteps == 0.0f) {
         const bool stopped = view3D->ScrollStop();
-        Logger::GetInstance().WriteLine(
-            successLogLevel,
-            "Keyboard movement stopped. Source:"
-            + std::string(source ? source : "unknown")
-            + " Result:" + (stopped ? "true" : "false"));
+        Logger::GetInstance().WriteLineLazy(successLogLevel, [&]() {
+            return "Keyboard movement stopped. Source:"
+                + std::string(source ? source : "unknown")
+                + " Result:" + (stopped ? "true" : "false");
+        });
         view3D->Release();
         return stopped;
     }
@@ -1863,15 +1892,15 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
     const bool nativeScrollResult = view3D->SetScrolling(true, directionAngle, scrollSpeed);
     g_IsApplyingKeyboardPan = false;
 
-    Logger::GetInstance().WriteLine(
-        successLogLevel,
-        "Keyboard native movement updated. Source:"
-        + std::string(source ? source : "unknown")
-        + " RightSteps:" + std::to_string(rightSteps)
-        + " ForwardSteps:" + std::to_string(forwardSteps)
-        + " DirectionAngle:" + std::to_string(directionAngle)
-        + " ScrollSpeed:" + std::to_string(scrollSpeed)
-        + " Result:" + (nativeScrollResult ? "true" : "false"));
+    Logger::GetInstance().WriteLineLazy(successLogLevel, [&]() {
+        return "Keyboard native movement updated. Source:"
+            + std::string(source ? source : "unknown")
+            + " RightSteps:" + std::to_string(rightSteps)
+            + " ForwardSteps:" + std::to_string(forwardSteps)
+            + " DirectionAngle:" + std::to_string(directionAngle)
+            + " ScrollSpeed:" + std::to_string(scrollSpeed)
+            + " Result:" + (nativeScrollResult ? "true" : "false");
+    });
 
     view3D->Release();
     return nativeScrollResult;
@@ -2329,6 +2358,7 @@ bool HandleMiddleMouseButtonDown(HWND window, LPARAM lParam, bool& handled)
     const bool beganRotation = g_CameraController.BeginRotationGesture();
     SetCapture(window);
     g_CapturedMouseWindow = window;
+    SetRotationCursorVisible(false);
     KillRedrawTimers();
     log.WriteLine(
         LogLevel::Verbose,
@@ -2362,6 +2392,10 @@ bool HandleMiddleMouseMove(LPARAM lParam, bool& handled)
     const POINT mousePos = MakePointFromLParam(lParam);
     const int deltaX = mousePos.x - g_LastMousePos.x;
     const int deltaY = mousePos.y - g_LastMousePos.y;
+    if (deltaX == 0 && deltaY == 0) {
+        handled = true;
+        return true;
+    }
 
     const float yawDelta = static_cast<float>(deltaX)
         * kMouseRotationSensitivity
