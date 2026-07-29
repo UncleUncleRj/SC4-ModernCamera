@@ -106,12 +106,15 @@ void PluginSettings::RestoreDefaults()
 {
 	cameraMode = CameraMode::Modern;
 	wasdMovement = true;
+	qeRotation = true;
 	rotationSensitivity = kDefaultSensitivity;
 	zoomSensitivity = kDefaultSensitivity;
 	panSensitivity = kDefaultSensitivity;
 	invertVertical = false;
 	redrawAggression = RedrawAggression::Normal;
 	debugLogging = DebugLogging::Normal;
+	cameraDumpHotkey = true;
+	showChangelogsOnUpdate = true;
 }
 
 bool PluginSettings::Load(const std::filesystem::path& settingsPath)
@@ -142,6 +145,7 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	}
 
 	TryReadBool(json, "wasdMovement", wasdMovement);
+	TryReadBool(json, "qeRotation", qeRotation);
 	TryReadFloat(json, "rotationSensitivity", rotationSensitivity);
 	TryReadFloat(json, "zoomSensitivity", zoomSensitivity);
 	TryReadFloat(json, "panSensitivity", panSensitivity);
@@ -162,6 +166,8 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		else if (value == "Verbose") debugLogging = DebugLogging::Verbose;
 		else debugLogging = DebugLogging::Normal;
 	}
+	TryReadBool(json, "cameraDumpHotkey", cameraDumpHotkey);
+	TryReadBool(json, "showChangelogsOnUpdate", showChangelogsOnUpdate);
 
 	rotationSensitivity = std::clamp(rotationSensitivity, kMinimumSensitivity, kMaximumSensitivity);
 	zoomSensitivity = std::clamp(zoomSensitivity, kMinimumSensitivity, kMaximumSensitivity);
@@ -192,6 +198,7 @@ bool PluginSettings::Save() const
 		<< "  \"camera\": {\n"
 		<< "    \"mode\": \"" << PluginSettingText::ToString(cameraMode) << "\",\n"
 		<< "    \"wasdMovement\": " << (wasdMovement ? "true" : "false") << ",\n"
+		<< "    \"qeRotation\": " << (qeRotation ? "true" : "false") << ",\n"
 		<< "    \"rotationSensitivity\": " << rotationSensitivity << ",\n"
 		<< "    \"zoomSensitivity\": " << zoomSensitivity << ",\n"
 		<< "    \"panSensitivity\": " << panSensitivity << ",\n"
@@ -201,7 +208,11 @@ bool PluginSettings::Save() const
 		<< "    \"redrawAggression\": \"" << PluginSettingText::ToString(redrawAggression) << "\"\n"
 		<< "  },\n"
 		<< "  \"diagnostics\": {\n"
-		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\"\n"
+		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\",\n"
+		<< "    \"cameraDumpHotkey\": " << (cameraDumpHotkey ? "true" : "false") << "\n"
+		<< "  },\n"
+		<< "  \"ui\": {\n"
+		<< "    \"showChangelogsOnUpdate\": " << (showChangelogsOnUpdate ? "true" : "false") << "\n"
 		<< "  }\n"
 		<< "}\n";
 

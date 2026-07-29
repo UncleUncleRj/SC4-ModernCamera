@@ -29,7 +29,10 @@
 #include <array>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
+#include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace
@@ -56,9 +59,15 @@ namespace
 	constexpr uint32_t kGreetingCloseXButtonID = 0x3D0C0840;
 	constexpr uint32_t kGreetingOKButtonID = 0x3D0C0843;
 	constexpr uint32_t kGreetingViewControlsButtonID = 0x3D0C0844;
+	constexpr uint32_t kGreetingSuppressChangelogsButtonID = 0x3D0C0847;
 	constexpr uint32_t kControlsCloseXButtonID = 0x3D0C0850;
 	constexpr uint32_t kControlsOKButtonID = 0x3D0C0853;
 	constexpr uint32_t kMenuButtonID = 0x3D0C0910;
+	// 0x3D0C0911 through 0x3D0C0913 were used by the layered mode-lip and
+	// prototype text LED controls. Keep those IDs retired.
+	constexpr uint32_t kMenuClassicButtonID = 0x3D0C0914;
+	// 0x3D0C0915 was used by the layered Classic mode lip. Keep it retired.
+	constexpr int32_t kMenuModeLipTop = 56;
 	constexpr uint32_t kSettingsCloseXButtonID = 0x3D0C0920;
 	constexpr uint32_t kSettingsModernButtonID = 0x3D0C0930;
 	constexpr uint32_t kSettingsClassicButtonID = 0x3D0C0931;
@@ -70,6 +79,8 @@ namespace
 	constexpr uint32_t kSettingsInvertOffButtonID = 0x3D0C0937;
 	constexpr uint32_t kSettingsResetCameraButtonID = 0x3D0C0938;
 	constexpr uint32_t kSettingsPanSliderID = 0x3D0C0939;
+	constexpr uint32_t kSettingsQERotationOnButtonID = 0x3D0C093A;
+	constexpr uint32_t kSettingsQERotationOffButtonID = 0x3D0C093B;
 	constexpr uint32_t kSettingsRedrawOffButtonID = 0x3D0C0940;
 	constexpr uint32_t kSettingsRedrawNormalButtonID = 0x3D0C0941;
 	constexpr uint32_t kSettingsRedrawHighButtonID = 0x3D0C0942;
@@ -83,7 +94,137 @@ namespace
 	constexpr uint32_t kAdvancedDebugLoggingOffButtonID = 0x3D0C0968;
 	constexpr uint32_t kAdvancedDebugLoggingNormalButtonID = 0x3D0C0969;
 	constexpr uint32_t kAdvancedDebugLoggingVerboseButtonID = 0x3D0C096A;
+	constexpr uint32_t kAdvancedCameraDumpHotkeyOnButtonID = 0x3D0C096C;
+	constexpr uint32_t kAdvancedCameraDumpHotkeyOffButtonID = 0x3D0C096D;
+	constexpr uint32_t kAdvancedShowChangelogsButtonID = 0x3D0C096E;
 	constexpr SC4WindowHandle kControlLaboratoryHandle = 1;
+
+	struct ThemeState
+	{
+		bool active = false;
+		std::string name;
+		uint32_t resourceGroup = kWindowResourceGroup;
+		uint32_t contractMinor = 0;
+	};
+
+	ThemeState g_Theme;
+
+	std::string FormatHexID(uint32_t id)
+	{
+		std::ostringstream stream;
+		stream << "0x" << std::uppercase << std::hex << id;
+		return stream.str();
+	}
+
+	bool ReadThemeManifestValue(
+		const std::string& json,
+		const char* name,
+		std::string& value)
+	{
+		const std::regex expression(
+			std::string("\"") + name + "\"\\s*:\\s*\"([^\"]+)\"",
+			std::regex::icase);
+		std::smatch match;
+		if (!std::regex_search(json, match, expression))
+		{
+			return false;
+		}
+		value = match[1].str();
+		return true;
+	}
+
+	bool ReadThemeResourceGroup(const std::string& json, std::string& value)
+	{
+		if (ReadThemeManifestValue(json, "resourceGroup", value))
+		{
+			return true;
+		}
+		const std::regex expression(
+			R"("resourceGroup"\s*:\s*([0-9]+))",
+			std::regex::icase);
+		std::smatch match;
+		if (!std::regex_search(json, match, expression))
+		{
+			return false;
+		}
+		value = match[1].str();
+		return true;
+	}
+
+	void LoadThemeManifest()
+	{
+		g_Theme = {};
+		const std::filesystem::path path = PluginPaths::GetThemeManifestPath();
+		std::ifstream stream(path, std::ios::binary);
+		if (!stream)
+		{
+			return;
+		}
+
+		const std::string json(
+			(std::istreambuf_iterator<char>(stream)),
+			std::istreambuf_iterator<char>());
+		std::string name;
+		std::string contractVersion;
+		std::string resourceGroup;
+		if (!ReadThemeManifestValue(json, "name", name)
+			|| !ReadThemeManifestValue(json, "contractVersion", contractVersion)
+			|| !ReadThemeResourceGroup(json, resourceGroup))
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"UI Theme: theme.json is missing name, contractVersion, or resourceGroup; using built-in UI.");
+			return;
+		}
+
+		const std::regex versionExpression(R"(^\s*(\d+)\.(\d+)\s*$)");
+		std::smatch versionMatch;
+		if (!std::regex_match(contractVersion, versionMatch, versionExpression))
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"UI Theme: incompatible contract version for '" + name
+				+ "' (" + contractVersion + "); using built-in UI.");
+			return;
+		}
+
+		try
+		{
+			const unsigned long contractMajor = std::stoul(versionMatch[1].str());
+			const unsigned long contractMinor = std::stoul(versionMatch[2].str());
+			if (contractMajor != 1 || contractMinor > UINT32_MAX)
+			{
+				Logger::GetInstance().WriteLine(
+					LogLevel::Warning,
+					"UI Theme: incompatible contract version for '" + name
+					+ "' (" + contractVersion + "); using built-in UI.");
+				return;
+			}
+			size_t parsed = 0;
+			const unsigned long group = std::stoul(resourceGroup, &parsed, 0);
+			if (parsed != resourceGroup.size()
+				|| group > UINT32_MAX
+				|| group == kWindowResourceGroup)
+			{
+				throw std::out_of_range("resource group");
+			}
+			g_Theme.active = true;
+			g_Theme.name = name;
+			g_Theme.resourceGroup = static_cast<uint32_t>(group);
+			g_Theme.contractMinor = static_cast<uint32_t>(contractMinor);
+			Logger::GetInstance().WriteLine(
+				LogLevel::Info,
+				"UI Theme: activated '" + name + "' contract " + contractVersion
+				+ " resource group " + resourceGroup + ".");
+		}
+		catch (const std::exception&)
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"UI Theme: invalid contractVersion or resourceGroup for '" + name
+				+ "'; using built-in UI.");
+		}
+	}
 
 	constexpr uint32_t kCloseButtonID = 0x3D0C0710;
 	constexpr uint32_t kScrollUpButtonID = 0x3D0C0711;
@@ -379,6 +520,12 @@ namespace
 		}
 	}
 
+	void SetButtonToggle(cIGZWin* root, uint32_t id, bool enabled)
+	{
+		const uint32_t ids[2] = { id, 0 };
+		ApplyButtonChoice(root, enabled ? id : 0, ids, 1);
+	}
+
 	void SetControlEnabled(cIGZWin* root, uint32_t id, bool enabled)
 	{
 		cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
@@ -391,12 +538,123 @@ namespace
 		child->InvalidateSelfAndParents();
 	}
 
+	void SetControlVisible(cIGZWin* root, uint32_t id, bool visible)
+	{
+		cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
+		if (!child)
+		{
+			return;
+		}
+
+		if (visible)
+		{
+			child->ShowWindow();
+		}
+		else
+		{
+			child->HideWindow();
+		}
+		child->InvalidateSelfAndParents();
+	}
+
 	void SetControlsEnabled(cIGZWin* root, const uint32_t* ids, size_t count, bool enabled)
 	{
 		for (size_t i = 0; i < count; ++i)
 		{
 			SetControlEnabled(root, ids[i], enabled);
 		}
+	}
+
+	bool ValidateThemeControls(
+		cIGZWin* root,
+		uint32_t resourceInstanceID,
+		std::string& failure)
+	{
+		std::vector<uint32_t> buttons;
+		std::vector<uint32_t> sliders;
+		switch (resourceInstanceID)
+		{
+		case kGreetingWindowResourceInstance:
+			buttons = {
+				kGreetingCloseXButtonID,
+				kGreetingOKButtonID,
+				kGreetingViewControlsButtonID,
+				kGreetingSuppressChangelogsButtonID,
+			};
+			break;
+		case kControlsWindowResourceInstance:
+			buttons = { kControlsCloseXButtonID, kControlsOKButtonID };
+			break;
+		case kMenuButtonResourceInstance:
+			buttons = {
+				kMenuButtonID,
+				kMenuClassicButtonID,
+			};
+			break;
+		case kSettingsWindowResourceInstance:
+			buttons = {
+				kSettingsCloseXButtonID,
+				kSettingsModernButtonID,
+				kSettingsClassicButtonID,
+				kSettingsWASDOnButtonID,
+				kSettingsWASDOffButtonID,
+				kSettingsQERotationOnButtonID,
+				kSettingsQERotationOffButtonID,
+				kSettingsInvertOnButtonID,
+				kSettingsInvertOffButtonID,
+				kSettingsResetCameraButtonID,
+				kSettingsRestoreDefaultsButtonID,
+				kSettingsAdvancedButtonID,
+				kSettingsReadChangelogButtonID,
+				kSettingsCloseButtonID,
+			};
+			sliders = {
+				kSettingsRotationSliderID,
+				kSettingsZoomSliderID,
+				kSettingsPanSliderID,
+			};
+			break;
+		case kAdvancedWindowResourceInstance:
+			buttons = {
+				kAdvancedCloseXButtonID,
+				kAdvancedCloseButtonID,
+				kSettingsRedrawOffButtonID,
+				kSettingsRedrawNormalButtonID,
+				kSettingsRedrawHighButtonID,
+				kSettingsRedrawAggressiveButtonID,
+				kAdvancedDebugLoggingOffButtonID,
+				kAdvancedDebugLoggingNormalButtonID,
+				kAdvancedDebugLoggingVerboseButtonID,
+				kAdvancedCameraDumpHotkeyOnButtonID,
+				kAdvancedCameraDumpHotkeyOffButtonID,
+				kAdvancedShowChangelogsButtonID,
+			};
+			break;
+		default:
+			return true;
+		}
+
+		for (uint32_t id : buttons)
+		{
+			cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
+			cRZAutoRefCount<cIGZWinBtn> button;
+			if (!child || !child->QueryInterface(GZIID_cIGZWinBtn, button.AsPPVoid()))
+			{
+				failure = "required button " + FormatHexID(id) + " is missing or has the wrong type";
+				return false;
+			}
+		}
+		for (uint32_t id : sliders)
+		{
+			cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
+			cRZAutoRefCount<cIGZWinSlider> slider;
+			if (!child || !child->QueryInterface(GZIID_cIGZWinSlider, slider.AsPPVoid()))
+			{
+				failure = "required slider " + FormatHexID(id) + " is missing or has the wrong type";
+				return false;
+			}
+		}
+		return true;
 	}
 
 	bool IsRedrawAggressionControl(uint32_t controlID)
@@ -670,9 +928,46 @@ bool BakedManagedWindow::Create()
 	parentWindow->AddRef();
 
 	cIGZUIScriptServicePtr scriptService;
-	const cGZPersistResourceKey key(0x00000000, kWindowResourceGroup, resourceInstanceID);
-	if (!scriptService || !scriptService->CreateWindowFromScript(
-		key, parentWindow, rootCLSID, GZIID_cIGZWin, reinterpret_cast<void**>(&rootWindow)) || !rootWindow)
+	auto createFromGroup = [&](uint32_t group) {
+		const cGZPersistResourceKey key(0x00000000, group, resourceInstanceID);
+		return scriptService
+			&& scriptService->CreateWindowFromScript(
+				key,
+				parentWindow,
+				rootCLSID,
+				GZIID_cIGZWin,
+				reinterpret_cast<void**>(&rootWindow))
+			&& rootWindow;
+	};
+
+	bool created = false;
+	if (g_Theme.active)
+	{
+		created = createFromGroup(g_Theme.resourceGroup);
+		std::string validationFailure;
+		if (created && !ValidateThemeControls(rootWindow, resourceInstanceID, validationFailure))
+		{
+			created = false;
+		}
+		if (!created)
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				std::string("UI Theme: '") + g_Theme.name + "' failed for " + logName
+				+ (validationFailure.empty() ? "." : ": " + validationFailure + ".")
+				+ " Reopening the built-in window.");
+			if (rootWindow)
+			{
+				rootWindow->Release();
+				rootWindow = nullptr;
+			}
+		}
+	}
+	if (!created)
+	{
+		created = createFromGroup(kWindowResourceGroup);
+	}
+	if (!created)
 	{
 		Logger::GetInstance().WriteLine(
 			LogLevel::Error,
@@ -886,6 +1181,10 @@ void SettingsWindow::SyncControlsFromSettings()
 		cameraModeIDs,
 		2);
 	ApplyBooleanPair(kSettingsWASDOnButtonID, kSettingsWASDOffButtonID, settings->wasdMovement);
+	ApplyBooleanPair(
+		kSettingsQERotationOnButtonID,
+		kSettingsQERotationOffButtonID,
+		settings->qeRotation);
 	SetSliderValueFromSetting(
 		GetRootWindow(),
 		kSettingsRotationSliderID,
@@ -910,6 +1209,8 @@ void SettingsWindow::SyncControlsFromSettings()
 	const uint32_t modernOnlyControlIDs[] = {
 		kSettingsWASDOnButtonID,
 		kSettingsWASDOffButtonID,
+		kSettingsQERotationOnButtonID,
+		kSettingsQERotationOffButtonID,
 		kSettingsRotationSliderID,
 		kSettingsZoomSliderID,
 		kSettingsPanSliderID,
@@ -935,6 +1236,7 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 		"Settings UI state: mode="
 		+ std::string(PluginSettingText::ToString(settings->cameraMode))
 		+ " wasd=" + (settings->wasdMovement ? "true" : "false")
+		+ " qeRotation=" + (settings->qeRotation ? "true" : "false")
 		+ " rotationSensitivity=" + std::to_string(settings->rotationSensitivity)
 		+ " zoomSensitivity=" + std::to_string(settings->zoomSensitivity)
 		+ " panSensitivity=" + std::to_string(settings->panSensitivity)
@@ -1179,6 +1481,34 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				callbacks->OnInputSettingsChanged();
 			}
 			return true;
+		case kSettingsQERotationOnButtonID:
+			if (!modernCameraActive)
+			{
+				SyncControlsFromSettings();
+				return true;
+			}
+			LogOptionChanged("Settings UI", "Q/E Rotation", ToOnOffString(settings->qeRotation), "On");
+			settings->qeRotation = true;
+			ApplySettingsChange("Q/E rotation change");
+			if (callbacks && callbacks->OnInputSettingsChanged)
+			{
+				callbacks->OnInputSettingsChanged();
+			}
+			return true;
+		case kSettingsQERotationOffButtonID:
+			if (!modernCameraActive)
+			{
+				SyncControlsFromSettings();
+				return true;
+			}
+			LogOptionChanged("Settings UI", "Q/E Rotation", ToOnOffString(settings->qeRotation), "Off");
+			settings->qeRotation = false;
+			ApplySettingsChange("Q/E rotation change");
+			if (callbacks && callbacks->OnInputSettingsChanged)
+			{
+				callbacks->OnInputSettingsChanged();
+			}
+			return true;
 		case kSettingsInvertOnButtonID:
 			if (!modernCameraActive)
 			{
@@ -1207,12 +1537,15 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 		{
 			const CameraMode previousCameraMode = settings->cameraMode;
 			const bool previousWASD = settings->wasdMovement;
+			const bool previousQERotation = settings->qeRotation;
 			const float previousRotationSensitivity = settings->rotationSensitivity;
 			const float previousZoomSensitivity = settings->zoomSensitivity;
 			const float previousPanSensitivity = settings->panSensitivity;
 			const bool previousInvertVertical = settings->invertVertical;
 			const RedrawAggression previousRedrawAggression = settings->redrawAggression;
 			const DebugLogging previousDebugLogging = settings->debugLogging;
+			const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
+			const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
 			settings->RestoreDefaults();
 			LogOptionChanged(
 				"Settings UI",
@@ -1224,6 +1557,11 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				"WASD Movement",
 				ToOnOffString(previousWASD),
 				ToOnOffString(settings->wasdMovement));
+			LogOptionChanged(
+				"Settings UI",
+				"Q/E Rotation",
+				ToOnOffString(previousQERotation),
+				ToOnOffString(settings->qeRotation));
 			LogOptionChanged(
 				"Settings UI",
 				"Rotation Sensitivity",
@@ -1254,6 +1592,16 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				"Diagnostics Logging",
 				PluginSettingText::ToString(previousDebugLogging),
 				PluginSettingText::ToString(settings->debugLogging));
+			LogOptionChanged(
+				"Settings UI",
+				"Camera Dump Hotkey",
+				ToOnOffString(previousCameraDumpHotkey),
+				ToOnOffString(settings->cameraDumpHotkey));
+			LogOptionChanged(
+				"Settings UI",
+				"Show Changelogs on Update",
+				ToOnOffString(previousShowChangelogs),
+				ToOnOffString(settings->showChangelogsOnUpdate));
 			ApplySettingsChange("restore defaults");
 			if (manager)
 			{
@@ -1323,7 +1671,8 @@ MenuButtonWindow::MenuButtonWindow()
 		0,
 		0,
 		Placement::TopRightButton),
-	manager(nullptr)
+	manager(nullptr),
+	settings(nullptr)
 {
 }
 
@@ -1332,29 +1681,95 @@ void MenuButtonWindow::SetWindowManager(SC4WindowManager* windowManager)
 	manager = windowManager;
 }
 
+void MenuButtonWindow::SetSettings(PluginSettings* pluginSettings)
+{
+	settings = pluginSettings;
+}
+
+void MenuButtonWindow::OnCreated()
+{
+	RefreshMode();
+}
+
+void MenuButtonWindow::RefreshMode()
+{
+	const bool modern = settings && settings->cameraMode == CameraMode::Modern;
+	if (modern)
+	{
+		SetControlVisible(GetRootWindow(), kMenuClassicButtonID, false);
+		SetControlVisible(GetRootWindow(), kMenuButtonID, true);
+	}
+	else
+	{
+		SetControlVisible(GetRootWindow(), kMenuButtonID, false);
+		SetControlVisible(GetRootWindow(), kMenuClassicButtonID, true);
+	}
+	RefreshCursor();
+}
+
+void MenuButtonWindow::RefreshCursor()
+{
+	POINT cursor{};
+	HWND activeWindow = GetActiveWindow();
+	if (activeWindow
+		&& GetCursorPos(&cursor)
+		&& ScreenToClient(activeWindow, &cursor))
+	{
+		UpdateCursorIfHovered(cursor.x, cursor.y);
+	}
+}
+
+bool MenuButtonWindow::UpdateCursorIfHovered(int32_t parentX, int32_t parentY)
+{
+	if (!ContainsPoint(parentX, parentY))
+	{
+		return false;
+	}
+
+	cIGZWin* root = GetRootWindow();
+	const uint32_t activeButtonID =
+		settings && settings->cameraMode == CameraMode::Modern
+			? kMenuButtonID
+			: kMenuClassicButtonID;
+	cIGZWin* activeButton = root
+		? root->GetChildWindowFromIDRecursive(activeButtonID)
+		: nullptr;
+	if (activeButton)
+	{
+		activeButton->UpdateCursor();
+	}
+	return true;
+}
+
 void MenuButtonWindow::SetSettingsOpen(bool open)
 {
-	cIGZWin* buttonWindow = GetRootWindow()
-		? GetRootWindow()->GetChildWindowFromIDRecursive(kMenuButtonID)
-		: nullptr;
-	cRZAutoRefCount<cIGZWinBtn> button;
-	if (buttonWindow && buttonWindow->QueryInterface(GZIID_cIGZWinBtn, button.AsPPVoid()))
+	(void)open;
+	if (GetRootWindow())
 	{
-		if (open)
-		{
-			button->ToggleOn();
-		}
-		else
-		{
-			button->ToggleOff();
-		}
+		GetRootWindow()->InvalidateSelfAndParents();
 	}
 }
 
 bool MenuButtonWindow::OnButtonClick(uint32_t controlID)
 {
-	if (controlID == kMenuButtonID)
+	if (controlID == kMenuButtonID || controlID == kMenuClassicButtonID)
 	{
+		POINT cursor{};
+		HWND activeWindow = GetActiveWindow();
+		cIGZWin* root = GetRootWindow();
+		if (activeWindow
+			&& root
+			&& GetCursorPos(&cursor)
+			&& ScreenToClient(activeWindow, &cursor)
+			&& cursor.y - root->GetT() >= kMenuModeLipTop)
+		{
+			if (manager)
+			{
+				manager->ToggleCameraMode();
+			}
+			return true;
+		}
+
 		const bool opened = manager && manager->ToggleSettingsWindow();
 		SetSettingsOpen(opened);
 		return true;
@@ -1369,7 +1784,8 @@ GreetingWindow::GreetingWindow()
 		kGreetingWindowCLSID,
 		kGreetingCloseXButtonID,
 		kGreetingOKButtonID),
-	manager(nullptr)
+	manager(nullptr),
+	settings(nullptr)
 {
 }
 
@@ -1378,8 +1794,42 @@ void GreetingWindow::SetWindowManager(SC4WindowManager* windowManager)
 	manager = windowManager;
 }
 
+void GreetingWindow::SetSettings(PluginSettings* pluginSettings)
+{
+	settings = pluginSettings;
+}
+
+void GreetingWindow::OnCreated()
+{
+	RefreshFromSettings();
+}
+
+void GreetingWindow::RefreshFromSettings()
+{
+	SetButtonToggle(
+		GetRootWindow(),
+		kGreetingSuppressChangelogsButtonID,
+		settings && !settings->showChangelogsOnUpdate);
+}
+
 bool GreetingWindow::OnButtonClick(uint32_t controlID)
 {
+	if (controlID == kGreetingSuppressChangelogsButtonID && settings)
+	{
+		settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
+		if (!settings->Save())
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Changelog UI: failed to save the automatic changelog preference.");
+		}
+		RefreshFromSettings();
+		if (manager)
+		{
+			manager->RefreshSettingsWindows();
+		}
+		return true;
+	}
 	if (controlID == kGreetingViewControlsButtonID)
 	{
 		if (manager)
@@ -1408,9 +1858,15 @@ AdvancedSettingsWindow::AdvancedSettingsWindow()
 		kAdvancedWindowCLSID,
 		kAdvancedCloseXButtonID,
 		kAdvancedCloseButtonID),
+	manager(nullptr),
 	settings(nullptr),
 	callbacks(nullptr)
 {
+}
+
+void AdvancedSettingsWindow::SetWindowManager(SC4WindowManager* windowManager)
+{
+	manager = windowManager;
 }
 
 void AdvancedSettingsWindow::SetSettings(PluginSettings* pluginSettings)
@@ -1496,6 +1952,21 @@ void AdvancedSettingsWindow::SyncControlsFromSettings()
 		break;
 	}
 	ApplyButtonChoice(GetRootWindow(), selectedDebugLoggingID, debugLoggingIDs, 3);
+	const uint32_t cameraDumpHotkeyIDs[2] = {
+		kAdvancedCameraDumpHotkeyOnButtonID,
+		kAdvancedCameraDumpHotkeyOffButtonID,
+	};
+	ApplyButtonChoice(
+		GetRootWindow(),
+		settings->cameraDumpHotkey
+			? kAdvancedCameraDumpHotkeyOnButtonID
+			: kAdvancedCameraDumpHotkeyOffButtonID,
+		cameraDumpHotkeyIDs,
+		2);
+	SetButtonToggle(
+		GetRootWindow(),
+		kAdvancedShowChangelogsButtonID,
+		settings->showChangelogsOnUpdate);
 }
 
 bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
@@ -1508,14 +1979,22 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 				LogLevel::Verbose,
 				"Advanced Settings UI: ignored Redraw Aggression button while Classic camera is selected.");
 			SyncControlsFromSettings();
+			if (manager)
+			{
+				manager->RefreshSettingsWindows();
+			}
 			return true;
 		}
 
 		bool changed = true;
 		bool redrawChanged = false;
 		bool debugLoggingChanged = false;
+		bool cameraDumpHotkeyChanged = false;
+		bool showChangelogsChanged = false;
 		const RedrawAggression previousRedrawAggression = settings->redrawAggression;
 		const DebugLogging previousDebugLogging = settings->debugLogging;
+		const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
+		const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
 		switch (controlID)
 		{
 		case kSettingsRedrawOffButtonID:
@@ -1546,6 +2025,18 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 			settings->debugLogging = DebugLogging::Verbose;
 			debugLoggingChanged = true;
 			break;
+		case kAdvancedCameraDumpHotkeyOnButtonID:
+			settings->cameraDumpHotkey = true;
+			cameraDumpHotkeyChanged = true;
+			break;
+		case kAdvancedCameraDumpHotkeyOffButtonID:
+			settings->cameraDumpHotkey = false;
+			cameraDumpHotkeyChanged = true;
+			break;
+		case kAdvancedShowChangelogsButtonID:
+			settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
+			showChangelogsChanged = true;
+			break;
 		default:
 			changed = false;
 			break;
@@ -1569,11 +2060,30 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 					PluginSettingText::ToString(previousDebugLogging),
 					PluginSettingText::ToString(settings->debugLogging));
 			}
+			if (cameraDumpHotkeyChanged)
+			{
+				LogOptionChanged(
+					"Advanced Settings UI",
+					"Camera Dump Hotkey",
+					ToOnOffString(previousCameraDumpHotkey),
+					ToOnOffString(settings->cameraDumpHotkey));
+			}
+			if (showChangelogsChanged)
+			{
+				LogOptionChanged(
+					"Advanced Settings UI",
+					"Show Changelogs on Update",
+					ToOnOffString(previousShowChangelogs),
+					ToOnOffString(settings->showChangelogsOnUpdate));
+			}
 
-			const char* reason = redrawChanged && debugLoggingChanged
-				? "advanced settings change"
-				: redrawChanged ? "redraw aggression change"
-				: "diagnostics change";
+			const char* reason = redrawChanged
+				? "redraw aggression change"
+				: debugLoggingChanged
+					? "diagnostics logging change"
+					: cameraDumpHotkeyChanged
+						? "camera dump hotkey change"
+						: "changelog preference change";
 			if (!settings->Save())
 			{
 				Logger::GetInstance().WriteLine(
@@ -1587,6 +2097,10 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 					std::string("Advanced Settings UI: saved settings after ") + reason + ".");
 			}
 			SyncControlsFromSettings();
+			if (manager)
+			{
+				manager->RefreshSettingsWindows();
+			}
 			if (redrawChanged && callbacks && callbacks->OnRedrawAggressionChanged)
 			{
 				callbacks->OnRedrawAggressionChanged();
@@ -2079,8 +2593,10 @@ bool ControlLaboratoryWindow::DoWinMsg(cIGZWin* pWin, uint32_t messageID, uint32
 
 void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 {
+	LoadThemeManifest();
 	pendingSettings = &settings;
 	menuButtonWindow.SetWindowManager(this);
+	menuButtonWindow.SetSettings(&settings);
 	if (!menuButtonWindow.Create())
 	{
 		Logger::GetInstance().WriteLine(
@@ -2090,6 +2606,16 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 	else
 	{
 		menuButtonWindow.SetVisible(true);
+		menuButtonWindow.RefreshMode();
+	}
+
+	if (settings.NeedsVersionNotice() && !settings.showChangelogsOnUpdate)
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			"Window Manager: automatic changelog suppressed; recording the installed version.");
+		settings.AcknowledgeCurrentVersion();
+		return;
 	}
 
 	if (settings.NeedsVersionNotice())
@@ -2303,6 +2829,11 @@ bool SC4WindowManager::ShowVersionNoticeIfNeeded(PluginSettings& settings)
 		return true;
 	}
 
+	if (!settings.showChangelogsOnUpdate)
+	{
+		return settings.AcknowledgeCurrentVersion();
+	}
+
 	if (!ShowGreetingWindow())
 	{
 		Logger::GetInstance().WriteLine(
@@ -2329,6 +2860,7 @@ bool SC4WindowManager::ShowControlLaboratory()
 bool SC4WindowManager::ShowGreetingWindow()
 {
 	greetingWindow.SetWindowManager(this);
+	greetingWindow.SetSettings(pendingSettings);
 	return greetingWindow.Create();
 }
 
@@ -2340,6 +2872,7 @@ bool SC4WindowManager::ShowControlsWindow()
 bool SC4WindowManager::ShowAdvancedSettingsWindow()
 {
 	advancedSettingsWindow.Destroy();
+	advancedSettingsWindow.SetWindowManager(this);
 	advancedSettingsWindow.SetSettings(pendingSettings);
 	advancedSettingsWindow.SetCallbacks(&callbacks);
 	if (!advancedSettingsWindow.Create())
@@ -2377,6 +2910,36 @@ bool SC4WindowManager::ToggleSettingsWindow()
 	return ShowSettingsWindow();
 }
 
+void SC4WindowManager::ToggleCameraMode()
+{
+	if (!pendingSettings)
+	{
+		return;
+	}
+
+	const CameraMode previous = pendingSettings->cameraMode;
+	pendingSettings->cameraMode = previous == CameraMode::Modern
+		? CameraMode::Classic
+		: CameraMode::Modern;
+	LogOptionChanged(
+		"Menu Button UI",
+		"Camera Mode",
+		PluginSettingText::ToString(previous),
+		PluginSettingText::ToString(pendingSettings->cameraMode));
+	if (!pendingSettings->Save())
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Menu Button UI: failed to save the camera mode change.");
+	}
+	RefreshSettingsWindows();
+	if (callbacks.OnCameraModeChanged)
+	{
+		callbacks.OnCameraModeChanged(pendingSettings->cameraMode == CameraMode::Modern);
+	}
+	menuButtonWindow.RefreshCursor();
+}
+
 void SC4WindowManager::SetMenuButtonVisible(bool visible)
 {
 	Logger::GetInstance().WriteLine(
@@ -2398,6 +2961,7 @@ void SC4WindowManager::OnSettingsWindowClosed()
 
 void SC4WindowManager::RefreshSettingsWindows()
 {
+	menuButtonWindow.RefreshMode();
 	if (settingsWindow.IsVisible())
 	{
 		settingsWindow.RefreshFromSettings();
@@ -2405,6 +2969,10 @@ void SC4WindowManager::RefreshSettingsWindows()
 	if (advancedSettingsWindow.IsVisible())
 	{
 		advancedSettingsWindow.RefreshFromSettings();
+	}
+	if (greetingWindow.IsVisible())
+	{
+		greetingWindow.RefreshFromSettings();
 	}
 }
 
@@ -2488,8 +3056,12 @@ bool SC4WindowManager::HasVisibleWindow() const
 	return false;
 }
 
-bool SC4WindowManager::IsPointOverVisibleWindow(int32_t parentX, int32_t parentY) const
+bool SC4WindowManager::IsPointOverVisibleWindow(int32_t parentX, int32_t parentY)
 {
+	if (menuButtonWindow.UpdateCursorIfHovered(parentX, parentY))
+	{
+		return true;
+	}
 	if (controlsWindow.ContainsPoint(parentX, parentY))
 	{
 		return true;

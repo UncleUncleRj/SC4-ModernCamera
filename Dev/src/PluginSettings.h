@@ -56,12 +56,15 @@ public:
 
 	CameraMode cameraMode;
 	bool wasdMovement;
+	bool qeRotation;
 	float rotationSensitivity;
 	float zoomSensitivity;
 	float panSensitivity;
 	bool invertVertical;
 	RedrawAggression redrawAggression;
 	DebugLogging debugLogging;
+	bool cameraDumpHotkey;
+	bool showChangelogsOnUpdate;
 
 private:
 	std::filesystem::path path;

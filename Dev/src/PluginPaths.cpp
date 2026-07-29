@@ -12,6 +12,7 @@ namespace
 	constexpr const wchar_t* kPluginDataDirectory = L"SC4-ModernCamera";
 	constexpr const wchar_t* kLegacyPluginDataDirectory = L"SC4-3DMouseCam";
 	constexpr const wchar_t* kSettingsFileName = L"SC4-ModernCamera.json";
+	constexpr const wchar_t* kThemeManifestFileName = L"theme.json";
 	constexpr const wchar_t* kLogFileName = L"SC4-ModernCamera.log";
 	constexpr const wchar_t* kPreviousLogFileName = L"SC4-ModernCamera.last";
 	constexpr const wchar_t* kTestFileName = L"test.json";
@@ -139,6 +140,11 @@ const std::filesystem::path& PluginPaths::GetDataDirectory()
 std::filesystem::path PluginPaths::GetSettingsPath()
 {
 	return GetDataDirectory() / kSettingsFileName;
+}
+
+std::filesystem::path PluginPaths::GetThemeManifestPath()
+{
+	return GetDataDirectory() / kThemeManifestFileName;
 }
 
 std::filesystem::path PluginPaths::GetLogPath()

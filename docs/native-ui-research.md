@@ -151,10 +151,19 @@ DXT3 data is 16 bytes per 4-by-4 pixel block:
 (width / 4) * (height / 4) * 16
 ```
 
-For `Dev/ui/moderncamera-menu-icon.png`, a 176-by-44 four-state strip, the packaged DXT3 payload size is:
+The Modern and Classic menu sources are
+`Dev/ui/moderncamera-menu-icon-on.png` and
+`Dev/ui/moderncamera-menu-icon-off.png`. Each source is a 256-by-76 strip of
+four 64-by-76 states in Disabled, Normal, Clicked, Hovered order. The builder
+resamples each state to 60 by 72 with premultiplied-alpha bilinear filtering
+and aligns every state's alpha-weighted center to the Normal frame before
+packaging a 240-by-72 strip. This removes frame-to-frame movement baked into a
+source atlas while retaining each state's color and artwork. Both encoded
+dimensions remain divisible by four. The packaged DXT3 payload size for each
+strip is:
 
 ```text
-(176 / 4) * (44 / 4) * 16 = 7,744 bytes
+(240 / 4) * (72 / 4) * 16 = 17,280 bytes
 ```
 
 A minimal uncompressed one-image FSH/SHPI payload for that strip is:
@@ -164,26 +173,33 @@ A minimal uncompressed one-image FSH/SHPI payload for that strip is:
  8 bytes  one directory entry
  8 bytes  metadata/padding
 16 bytes  image block header
-7744 bytes DXT3 payload
+17280 bytes DXT3 payload
 ---------
-7792 bytes total
+17328 bytes total
 ```
 
-`tools/build_sc4_ui_dat.py` packages `Dev/ui/moderncamera-menu-icon.png` as an uncompressed SHPI/FSH payload with this TGI:
+`tools/build_sc4_ui_dat.py` packages both images as uncompressed SHPI/FSH
+payloads:
 
 ```text
-Type:  0x856DDBAC
-Group: 0x3D0C0700
-IID:   0x3D0C0900
+                         Modern/on       Classic/off
+Type:                    0x856DDBAC      0x856DDBAC
+Group:                   0x3D0C0700      0x3D0C0700
+IID:                     0x3D0C0900      0x3D0C090A
 ```
 
-The corresponding UI script reference is:
+The corresponding UI controls occupy the same 60-by-72 area. Only the control
+for the active camera mode is visible, so hover and click replace the complete
+button image rather than exposing a separate lower layer. The lower 16 pixels
+remain a separate mode-switch click region; the rest opens Camera Settings.
 
 ```text
-image={3d0c0700,3d0c0900}
+Modern: image={3d0c0700,3d0c0900}
+Classic: image={3d0c0700,3d0c090a}
 ```
 
-The generated companion DAT contains the UI script resources plus `0x856DDBAC / 0x3D0C0700 / 0x3D0C0900` with an `SHPI` payload.
+The generated companion DAT contains the UI script resources plus both image
+TGIs with `SHPI` payloads.
 
 ## UI script coordinates
 
@@ -346,6 +362,15 @@ The first-install/changelog popup is a baked native SC4 window generated from `d
 Creating the managed greeting during city-load notification can run before the city view and UI hierarchy finish initializing. A 3-second Win32 timer defers greeting creation until the native UI is ready.
 
 Opening a plugin child window directly inside a settings-window button callback can leave the child behind the settings window after SC4 finishes its own command handling. The stable pattern is to schedule the child open on a short timer, let the button callback return, then send the settings window back and call `PullToFront()` on the child. This is used for the Advanced Settings and Show Changelog buttons.
+
+The canvas Win32 filter remains installed for the full city lifetime in both
+camera modes. In Classic mode it performs only plugin-window mouse routing;
+Modern camera input handling still returns immediately. The floating menu
+button participates in that hit test, refreshes its native button cursor while
+hovered, and reapplies the cursor after a mode transition so a newly selected
+native city tool cannot replace it with the circular world cursor. The settings
+controls are synchronized before the camera-mode callback performs its
+world-focus and native-tool handoff.
 
 Advanced Settings and Show Changelog use an additional z-order guard: when the user explicitly opens the child from Settings, destroy and recreate that child before showing it, then send Settings back and pull the child to the front. Reusing an existing native child can inherit stale z-order after the user changes settings, especially after switching to Classic and reopening a child window. Do not replace this with ordinary reuse unless a replacement z-order rule is validated in game.
 

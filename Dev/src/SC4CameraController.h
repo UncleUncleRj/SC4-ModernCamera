@@ -142,6 +142,8 @@ public:
 		const char* source);
 	bool BeginClassicAngleHold(const char* source);
 	bool EndClassicAngleHold(const char* source);
+	bool IsClassicAngleHoldActive() const;
+	bool RotateClassicStep(bool left, const char* source);
 	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
 	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
 	bool ForceFullRedraw();

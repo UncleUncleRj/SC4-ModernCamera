@@ -1142,6 +1142,61 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 	});
 }
 
+bool SC4CameraController::IsClassicAngleHoldActive() const
+{
+	return classicAngleHoldActive;
+}
+
+bool SC4CameraController::RotateClassicStep(bool left, const char* source)
+{
+	if (!classicAngleHoldActive) {
+		return false;
+	}
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Q/E: camera control unavailable.");
+			return false;
+		}
+
+		const cS3DVector3 viewTarget = cameraControl->viewTargetPosition;
+		const cS3DVector3 baseTarget = cameraControl->baseTargetForRotation;
+		const bool rotated = left ? renderer->RotateLeft() : renderer->RotateRight();
+		if (!rotated) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				std::string("Classic Angle Q/E: native ")
+				+ (left ? "RotateLeft" : "RotateRight")
+				+ " failed. Source:" + (source ? source : "unknown"));
+			return false;
+		}
+
+		cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Classic Angle Q/E: camera control unavailable after native rotation.");
+			return false;
+		}
+
+		cameraControl->viewTargetPosition = viewTarget;
+		cameraControl->baseTargetForRotation = baseTarget;
+		cameraControl->viewTargetVelocity = {};
+		SyncAngles(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
+		renderer->ForceFullRedraw();
+
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("Classic Angle Q/E: native ")
+			+ (left ? "RotateLeft" : "RotateRight")
+			+ " completed. Source:" + (source ? source : "unknown")
+			+ " Rotation:" + std::to_string(cameraControl->rotation));
+		return true;
+	});
+}
+
 bool SC4CameraController::EndClassicAngleHold(const char* source)
 {
 	if (!classicAngleHoldActive) {

@@ -175,13 +175,19 @@ class MenuButtonWindow final : public BakedManagedWindow
 public:
 	MenuButtonWindow();
 	void SetWindowManager(class SC4WindowManager* manager);
+	void SetSettings(PluginSettings* settings);
 	void SetSettingsOpen(bool open);
+	void RefreshMode();
+	void RefreshCursor();
+	bool UpdateCursorIfHovered(int32_t parentX, int32_t parentY);
 
 protected:
+	void OnCreated() override;
 	bool OnButtonClick(uint32_t controlID) override;
 
 private:
 	SC4WindowManager* manager;
+	PluginSettings* settings;
 };
 
 class GreetingWindow final : public BakedManagedWindow
@@ -189,12 +195,16 @@ class GreetingWindow final : public BakedManagedWindow
 public:
 	GreetingWindow();
 	void SetWindowManager(class SC4WindowManager* manager);
+	void SetSettings(PluginSettings* settings);
+	void RefreshFromSettings();
 
 protected:
+	void OnCreated() override;
 	bool OnButtonClick(uint32_t controlID) override;
 
 private:
 	SC4WindowManager* manager;
+	PluginSettings* settings;
 };
 
 class ControlsWindow final : public BakedManagedWindow
@@ -207,6 +217,7 @@ class AdvancedSettingsWindow final : public BakedManagedWindow
 {
 public:
 	AdvancedSettingsWindow();
+	void SetWindowManager(class SC4WindowManager* manager);
 	void SetSettings(PluginSettings* settings);
 	void SetCallbacks(const SC4WindowManagerCallbacks* callbacks);
 	void RefreshFromSettings();
@@ -218,6 +229,7 @@ protected:
 private:
 	void SyncControlsFromSettings();
 
+	SC4WindowManager* manager;
 	PluginSettings* settings;
 	const SC4WindowManagerCallbacks* callbacks;
 };
@@ -307,6 +319,7 @@ public:
 	bool ShowAdvancedSettingsWindow();
 	bool ShowSettingsWindow();
 	bool ToggleSettingsWindow();
+	void ToggleCameraMode();
 	void SetMenuButtonVisible(bool visible);
 	void OnSettingsWindowClosed();
 	void RefreshSettingsWindows();
@@ -314,7 +327,7 @@ public:
 	void ScheduleDeferredWindowOpen(DeferredWindowOpen window);
 	void CloseAllWindows();
 	bool HasVisibleWindow() const;
-	bool IsPointOverVisibleWindow(int32_t parentX, int32_t parentY) const;
+	bool IsPointOverVisibleWindow(int32_t parentX, int32_t parentY);
 	bool HandleMouseWheel(
 		int32_t wheelDelta, int32_t parentX, int32_t parentY, intptr_t nativeWindowHandle);
 
