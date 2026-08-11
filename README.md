@@ -9,6 +9,13 @@ SC4-ModernCamera is a DLL plugin for SimCity 4 Deluxe Edition. It completely cha
 
 Disc and retail builds are not supported.
 
+<a href="https://ko-fi.com/V6N721RG6K">
+  <img src="https://rickeyjsimas.neocities.org/img/Ko-fi_FIRE.gif" width="48" alt="Ko-fi" align="left">
+</a>
+<br>
+<a href="https://ko-fi.com/V6N721RG6K"><strong>Support Development!</strong></a>
+<br clear="left">
+
 ## Installation
 
 1. Download the release package from the releases page.
