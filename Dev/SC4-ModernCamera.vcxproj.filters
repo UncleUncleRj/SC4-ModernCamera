@@ -6,17 +6,53 @@
       <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
     </Filter>
     <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
     <Filter Include="Resource Files">
-      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <UniqueIdentifier>{67DA6AB6-F800-4C08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Source Files\Hooks">
+      <UniqueIdentifier>{1A915A0C-AE63-4F6C-AFC2-8F02AA38C7DC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Input">
+      <UniqueIdentifier>{955AE397-14E6-4A38-9D5F-08540FB46E32}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Runtime">
+      <UniqueIdentifier>{48512D4D-7F7D-4B4F-87D0-FE4582B2BFAE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Vendor">
+      <UniqueIdentifier>{5F9A64C7-C3BB-45BD-98CF-537626E4B873}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Hooks">
+      <UniqueIdentifier>{769DEB6E-2A8C-47B3-BFF9-7F1B8CA64ABF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Input">
+      <UniqueIdentifier>{E50EAAC1-5585-4E47-905E-7D4F0A0DEBFA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Runtime">
+      <UniqueIdentifier>{AC0223CB-10D0-47DB-8402-55A8D2245E5B}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Hooks\VTableHook.cpp">
+      <Filter>Source Files\Hooks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Input\KeyStateManager.cpp">
+      <Filter>Source Files\Input</Filter>
+    </ClCompile>
     <ClCompile Include="src\Main.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PluginPaths.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PluginSettings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Runtime\TimerManager.cpp">
+      <Filter>Source Files\Runtime</Filter>
     </ClCompile>
     <ClCompile Include="src\SC4CameraController.cpp">
       <Filter>Source Files</Filter>
@@ -24,15 +60,57 @@
     <ClCompile Include="src\SC4VersionDetection.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\SC4WindowManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cRZBaseString.cpp">
+      <Filter>Source Files\Vendor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cRZBaseUnknown.cpp">
+      <Filter>Source Files\Vendor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cRZBaseVariant.cpp">
+      <Filter>Source Files\Vendor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cRZCOMDllDirector.cpp">
+      <Filter>Source Files\Vendor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cRZMessage2.cpp">
+      <Filter>Source Files\Vendor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cRZMessage2Standard.cpp">
+      <Filter>Source Files\Vendor</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Hooks\VTableHook.h">
+      <Filter>Header Files\Hooks</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Input\KeyStateManager.h">
+      <Filter>Header Files\Input</Filter>
+    </ClInclude>
     <ClInclude Include="src\Logger.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PluginPaths.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PluginSettings.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PluginVersion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Runtime\TimerManager.h">
+      <Filter>Header Files\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="src\SC4CameraController.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\SC4VersionDetection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SC4WindowManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

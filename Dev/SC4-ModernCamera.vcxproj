@@ -11,9 +11,12 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Hooks\VTableHook.cpp" />
+    <ClCompile Include="src\Input\KeyStateManager.cpp" />
     <ClCompile Include="src\Main.cpp" />
     <ClCompile Include="src\PluginPaths.cpp" />
     <ClCompile Include="src\PluginSettings.cpp" />
+    <ClCompile Include="src\Runtime\TimerManager.cpp" />
     <ClCompile Include="src\SC4CameraController.cpp" />
     <ClCompile Include="src\SC4VersionDetection.cpp" />
     <ClCompile Include="src\SC4WindowManager.cpp" />
@@ -141,10 +144,13 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClCompile Include="src\cRZMessage2Standard.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Hooks\VTableHook.h" />
+    <ClInclude Include="src\Input\KeyStateManager.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\PluginPaths.h" />
     <ClInclude Include="src\PluginSettings.h" />
     <ClInclude Include="src\PluginVersion.h" />
+    <ClInclude Include="src\Runtime\TimerManager.h" />
     <ClInclude Include="src\SC4CameraController.h" />
     <ClInclude Include="src\SC4VersionDetection.h" />
     <ClInclude Include="src\SC4WindowManager.h" />
