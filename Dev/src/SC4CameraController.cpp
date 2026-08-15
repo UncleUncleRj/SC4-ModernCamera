@@ -19,15 +19,25 @@
 
 namespace
 {
+	// Native SC4 application-window class identifier.
 	constexpr uint32_t kGZWin_WinSC4App = 0x6104489a;
+	// Native SC4 3D-view window class identifier.
 	constexpr uint32_t kGZWin_SC4View3DWin = 0x9a47b417;
+	// Native update mode used after direct camera-control changes.
 	constexpr uint32_t kCameraUpdateMode = 2;
+	// Cursor-text identifier reserved for the camera-dump confirmation.
 	constexpr uint32_t kCameraDumpCursorTextId = 0x3D0C4D01;
+	// Cursor-text priority that keeps the dump confirmation visible.
 	constexpr uint32_t kCameraDumpCursorTextPriority = 1000;
+	// Multiplier applied to custom magnification for each wheel notch.
 	constexpr float kMagnificationScalePerWheelNotch = 1.04f;
+	// Lowest custom magnification retained within a native zoom stage.
 	constexpr float kZoomRangeMagnificationMin = 0.5f;
+	// Highest custom magnification retained within a native zoom stage.
 	constexpr float kZoomRangeMagnificationMax = 2.0f;
+	// Number of native pitch and yaw table entries.
 	constexpr size_t kZoomCount = 5;
+	// Native pitch values restored for the five zoom stages.
 	constexpr float kNativePitchByZoom[kZoomCount] = {
 		0.52359879f,
 		0.61086524f,
@@ -35,6 +45,7 @@ namespace
 		0.78539816f,
 		0.78539816f,
 	};
+	// Center of the native yaw bucket used when rebasing quarter turns.
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
 	// Rebalance before SC4 enters the high-positive end of its native yaw
 	// bucket, where building side meshes begin to disappear. The window is
@@ -44,26 +55,34 @@ namespace
 	constexpr float kMaxNativeYawOffset = 30.0f * SC4CameraController::kPi / 180.0f;
 	constexpr float kMinNativeYawOffset = -70.0f * SC4CameraController::kPi / 180.0f;
 
+	// Native pitch-table address used by the supported game executable.
 	constexpr uintptr_t kPitchAddress1 = 0x00ABCFD8;
+	// Second native pitch-table address used by the supported game executable.
 	constexpr uintptr_t kPitchAddress2 = 0x00ABACCC;
+	// Native yaw instruction address used by the supported game executable.
 	constexpr uintptr_t kYawAddress0 = 0x007CCB0A;
+	// First native yaw-table address used by the supported game executable.
 	constexpr uintptr_t kYawAddress1 = 0x00ABCFC4;
+	// Second native yaw-table address used by the supported game executable.
 	constexpr uintptr_t kYawAddress2 = 0x00ABACB8;
 
 	using UpdateCameraPositionFn = bool(__thiscall*)(SC4CameraControlLayout*, uint32_t);
 	using SetCustomMagnificationFn = bool(__thiscall*)(SC4CameraControlLayout*, float);
 
+	// Returns the native camera-position update entry point.
 	UpdateCameraPositionFn GetUpdateCameraPosition()
 	{
 		return reinterpret_cast<UpdateCameraPositionFn>(0x007CCF80);
 	}
 
+	// Returns the native custom-magnification entry point.
 	SetCustomMagnificationFn GetSetCustomMagnification()
 	{
 		return reinterpret_cast<SetCustomMagnificationFn>(0x007CD6E0);
 	}
 
 	template <typename Function>
+	// Invokes a callback with the active 3D view and releases the acquired interface.
 	bool WithView3D(Function&& function)
 	{
 		cISC4AppPtr pSC4App;
@@ -93,6 +112,7 @@ namespace
 	}
 
 	template <typename Function>
+	// Invokes a callback with the renderer associated with the active 3D view.
 	bool WithRenderer(Function&& function)
 	{
 		return WithView3D([&](cISC4View3DWin* view3D) {
@@ -105,31 +125,37 @@ namespace
 		});
 	}
 
+	// Reads one float from a native address used by the supported executable.
 	float ReadMemoryFloat(uintptr_t address)
 	{
 		return *reinterpret_cast<float*>(address);
 	}
 
+	// Converts radians to degrees for diagnostics.
 	float RadToDeg(float radians)
 	{
 		return radians * (180.0f / SC4CameraController::kPi);
 	}
 
+	// Returns the Euclidean length of a three-dimensional vector.
 	float GetVectorLength(float x, float y, float z)
 	{
 		return std::sqrt((x * x) + (y * y) + (z * z));
 	}
 
+	// Returns the Euclidean length of a vector projected onto the XZ plane.
 	float GetHorizontalLength(float x, float z)
 	{
 		return std::sqrt((x * x) + (z * z));
 	}
 
+	// Returns whether a city extent is finite and large enough for bounds checks.
 	bool IsUsableCityExtent(float value)
 	{
 		return std::isfinite(value) && value > 1.0f;
 	}
 
+	// Returns whether a coordinate falls inside a usable city extent.
 	bool IsInsideCityExtent(float value, float extent)
 	{
 		return IsUsableCityExtent(extent)
@@ -138,6 +164,7 @@ namespace
 			&& value <= extent;
 	}
 
+	// Clamps a finite coordinate to a usable city extent.
 	float ClampToCityExtent(float value, float extent)
 	{
 		if (!IsUsableCityExtent(extent) || !std::isfinite(value)) {
@@ -147,6 +174,7 @@ namespace
 		return std::clamp(value, 0.0f, extent);
 	}
 
+	// Clamps a requested target delta and returns whether bounds changed it.
 	bool ClampPanDeltaToCityBounds(
 		const SC4CameraControlLayout& cameraControl,
 		float& deltaX,
@@ -170,6 +198,7 @@ namespace
 		return requestedTargetX != clampedTargetX || requestedTargetZ != clampedTargetZ;
 	}
 
+	// Returns yaw offset from the nearest 90-degree rotation.
 	float GetNearestQuarterTurnOffset(float yaw)
 	{
 		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
@@ -178,6 +207,7 @@ namespace
 		return yaw - nearestQuarterTurn;
 	}
 
+	// Returns yaw offset from the nearest native yaw-bucket anchor.
 	float GetNativeYawAnchorOffset(float yaw)
 	{
 		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
@@ -187,6 +217,7 @@ namespace
 		return yaw - nearestNativeBucket;
 	}
 
+	// Wraps a native rotation index into the four valid quarter turns.
 	int32_t WrapRotation(int32_t rotation)
 	{
 		rotation %= 4;
@@ -197,6 +228,7 @@ namespace
 		return rotation;
 	}
 
+// Rebases yaw into the configured native bucket and adjusts the rotation index.
 	int32_t RebalanceYawAndRotation(float& yaw, int32_t& rotation)
 	{
 		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
@@ -217,6 +249,7 @@ namespace
 		return quarterTurns;
 	}
 
+// Returns the nearest native-bucket offset and updates the rotation index.
 	int32_t SnapYawToNearestNativeAngle(float yaw, int32_t& rotation)
 	{
 		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
@@ -226,6 +259,7 @@ namespace
 		return quarterTurns;
 	}
 
+	// Formats a pointer value for diagnostic output.
 	std::string FormatPointer(const void* value)
 	{
 		std::ostringstream stream;
@@ -233,6 +267,7 @@ namespace
 		return stream.str();
 	}
 
+// Maps expected city extents to a diagnostic tile-size label.
 	const char* ClassifyCityTileSize(float sizeX, float sizeZ)
 	{
 		const float size = (std::max)(sizeX, sizeZ);
@@ -255,6 +290,7 @@ namespace
 		return "Unknown";
 	}
 
+	// Formats a native three-dimensional vector for diagnostic output.
 	std::string FormatVector(const cS3DVector3& value)
 	{
 		return "X:" + std::to_string(value.fX)
@@ -262,6 +298,7 @@ namespace
 			+ " Z:" + std::to_string(value.fZ);
 	}
 
+	// Formats a native four-float value for diagnostic output.
 	std::string FormatFloat4(const SC4Float4& value)
 	{
 		return "X:" + std::to_string(value.fX)
@@ -270,6 +307,7 @@ namespace
 			+ " W:" + std::to_string(value.fW);
 	}
 
+	// Formats a contiguous float sequence for diagnostic output.
 	std::string FormatFloatArray(const float* values, size_t count)
 	{
 		std::string result;
@@ -285,6 +323,7 @@ namespace
 		return result;
 	}
 
+	// Reads and formats a native float table for diagnostic output.
 	std::string FormatMemoryFloatTable(uintptr_t address, size_t count)
 	{
 		std::string result;
@@ -301,6 +340,7 @@ namespace
 	}
 }
 
+// Initializes Modern Camera state before an active native camera is available.
 SC4CameraController::SC4CameraController()
 	: currentPitch(kDefaultPitch),
 	  currentYaw(kDefaultYaw),
@@ -328,6 +368,7 @@ SC4CameraController::SC4CameraController()
 {
 }
 
+// Clears retained camera state and writes baseline values to native angle tables.
 void SC4CameraController::Reset()
 {
 	RestoreNativeAngleTables();
@@ -348,16 +389,19 @@ void SC4CameraController::Reset()
 	nativeCameraState = {};
 }
 
+// Reports whether a native camera state can be restored.
 bool SC4CameraController::HasNativeCameraState() const
 {
 	return nativeCameraStateCaptured;
 }
 
+// Exposes the native camera state captured before Modern Camera changed it.
 const SC4NativeCameraState& SC4CameraController::GetNativeCameraState() const
 {
 	return nativeCameraState;
 }
 
+// Captures one native camera snapshot and preserves the first captured state.
 bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControlLayout& cameraControl)
 {
 	if (nativeCameraStateCaptured) {
@@ -400,6 +444,7 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 	return true;
 }
 
+// Captures the first available native camera state for a later restoration.
 bool SC4CameraController::CaptureNativeCameraState(const char* source)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
@@ -424,6 +469,7 @@ bool SC4CameraController::CaptureNativeCameraState(const char* source)
 	});
 }
 
+// Restores the captured native state and clears it after a successful refresh.
 bool SC4CameraController::RestoreNativeCameraState(const char* source)
 {
 	if (!nativeCameraStateCaptured) {
@@ -519,6 +565,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 	});
 }
 
+// Temporarily applies baseline camera state before SC4 generates a save preview.
 bool SC4CameraController::BeginSavePreviewNormalization()
 {
 	if (savePreviewNormalizationActive) {
@@ -591,6 +638,7 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 	});
 }
 
+// Restores Modern Camera state retained by save-preview normalization.
 void SC4CameraController::EndSavePreviewNormalization()
 {
 	if (!savePreviewNormalizationActive) {
@@ -625,6 +673,7 @@ void SC4CameraController::EndSavePreviewNormalization()
 		restored ? "Save Preview: restored free-camera state." : "Save Preview: renderer unavailable after save; global tables restored.");
 }
 
+// Ends save-preview normalization without restoring the retained camera state.
 void SC4CameraController::AbandonSavePreviewNormalization()
 {
 	if (!savePreviewNormalizationActive) {
@@ -635,11 +684,13 @@ void SC4CameraController::AbandonSavePreviewNormalization()
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Save Preview: city is closing; retained native camera tables.");
 }
 
+// Reports whether a save-preview normalization is awaiting completion.
 bool SC4CameraController::IsSavePreviewNormalizationActive() const
 {
 	return savePreviewNormalizationActive;
 }
 
+// Captures native target fields and scale before mouse rotation begins.
 bool SC4CameraController::BeginRotationGesture()
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
@@ -664,6 +715,7 @@ bool SC4CameraController::BeginRotationGesture()
 	});
 }
 
+// Releases the target fields retained for an active rotation gesture.
 void SC4CameraController::EndRotationGesture()
 {
 	if (rotationGestureActive) {
@@ -674,6 +726,7 @@ void SC4CameraController::EndRotationGesture()
 	rotationOrthoScale = 0.0f;
 }
 
+// Applies a bounded mouse-rotation delta and refreshes native camera state.
 bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
@@ -768,6 +821,7 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 	});
 }
 
+// Clamps a native scroll request to city extents and reports a blocked request.
 bool SC4CameraController::AdjustScrollForCityBounds(
 	float directionAngle,
 	float speed,
@@ -884,6 +938,7 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 	});
 }
 
+// Saves Modern Camera orientation and switches to the nearest Classic angle.
 bool SC4CameraController::BeginClassicAngleHold(const char* source)
 {
 	if (classicAngleHoldActive) {
@@ -958,6 +1013,7 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 	});
 }
 
+// Restores Modern Camera orientation saved by temporary Classic-angle mode.
 bool SC4CameraController::EndClassicAngleHold(const char* source)
 {
 	if (!classicAngleHoldActive) {
@@ -1025,6 +1081,7 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 	});
 }
 
+// Re-centers an invalid native target so camera input starts within city bounds.
 bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* source)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
@@ -1108,6 +1165,7 @@ bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* so
 	});
 }
 
+// Converts a Windows wheel delta into a fractional native zoom request.
 bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 {
 	if (wheelDelta == 0) {
@@ -1118,6 +1176,7 @@ bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 	return ZoomByNotches(static_cast<float>(wheelDelta) / 120.0f, changed);
 }
 
+// Applies continuous custom magnification while preserving Modern Camera angles.
 bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 {
 	changed = false;
@@ -1214,6 +1273,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 	});
 }
 
+// Requests a complete redraw through the active SC4 renderer.
 bool SC4CameraController::ForceFullRedraw()
 {
 	return WithRenderer([](cISC43DRender* renderer) {
@@ -1221,6 +1281,7 @@ bool SC4CameraController::ForceFullRedraw()
 	});
 }
 
+// Logs available renderer and camera diagnostics, returning false when no renderer is available.
 bool SC4CameraController::DumpCameraInfo(const char* reason) const
 {
 	Logger& log = Logger::GetInstance();
@@ -1387,6 +1448,7 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 	return dumped;
 }
 
+// Displays the temporary cursor-text confirmation after a camera dump.
 bool SC4CameraController::ShowCameraDumpConfirmation() const
 {
 	return WithView3D([](cISC4View3DWin* view3D) {
@@ -1402,6 +1464,7 @@ bool SC4CameraController::ShowCameraDumpConfirmation() const
 	});
 }
 
+// Removes the cursor-text confirmation created after a camera dump.
 bool SC4CameraController::ClearCameraDumpConfirmation() const
 {
 	return WithView3D([](cISC4View3DWin* view3D) {
@@ -1409,6 +1472,7 @@ bool SC4CameraController::ClearCameraDumpConfirmation() const
 	});
 }
 
+// Obtains the active native camera-control structure from the renderer.
 SC4CameraControlLayout* SC4CameraController::GetActiveCameraControl()
 {
 	SC4CameraControlLayout* cameraControl = nullptr;
@@ -1421,6 +1485,7 @@ SC4CameraControlLayout* SC4CameraController::GetActiveCameraControl()
 	return cameraControl;
 }
 
+// Normalizes angles and invokes SC4's native camera-update routine.
 bool SC4CameraController::Refresh(SC4CameraControlLayout& cameraControl)
 {
 	auto updateCameraPosition = GetUpdateCameraPosition();
@@ -1434,11 +1499,13 @@ bool SC4CameraController::Refresh(SC4CameraControlLayout& cameraControl)
 	return updateCameraPosition(&cameraControl, kCameraUpdateMode);
 }
 
+// Clamps pitch to the Modern Camera range.
 float SC4CameraController::SanitizePitch(float pitch)
 {
 	return std::clamp(pitch, kMinPitch, kMaxPitch);
 }
 
+// Normalizes yaw to one full rotation centered on zero.
 float SC4CameraController::SanitizeYaw(float yaw)
 {
 	float normalizedYaw = std::fmod(yaw, 2.0f * kPi);
@@ -1453,6 +1520,7 @@ float SC4CameraController::SanitizeYaw(float yaw)
 	return normalizedYaw;
 }
 
+// Initializes tracked angles from native state once per camera reset.
 void SC4CameraController::SyncAngles(const SC4CameraControlLayout& cameraControl)
 {
 	if (anglesInitialized) {
@@ -1464,6 +1532,7 @@ void SC4CameraController::SyncAngles(const SC4CameraControlLayout& cameraControl
 	anglesInitialized = true;
 }
 
+// Restores target fields captured before the active rotation gesture.
 void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraControl) const
 {
 	if (!rotationGestureActive) {
@@ -1475,6 +1544,7 @@ void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraCo
 	cameraControl.viewTargetVelocity = {};
 }
 
+// Writes the plugin's baseline pitch and yaw values to the native tables.
 void SC4CameraController::RestoreNativeAngleTables()
 {
 	for (size_t i = 0; i < kZoomCount; i++) {
@@ -1487,6 +1557,7 @@ void SC4CameraController::RestoreNativeAngleTables()
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Camera Reset: restored native global pitch/yaw tables.");
 }
 
+// Writes one bounded pitch value into every native pitch-table entry.
 void SC4CameraController::ApplyPitchOverride(float pitch)
 {
 	pitch = SanitizePitch(pitch);
@@ -1497,6 +1568,7 @@ void SC4CameraController::ApplyPitchOverride(float pitch)
 	}
 }
 
+// Writes one normalized yaw value into every native yaw-table entry.
 void SC4CameraController::ApplyYawOverride(float yaw)
 {
 	yaw = SanitizeYaw(yaw);
@@ -1509,6 +1581,7 @@ void SC4CameraController::ApplyYawOverride(float yaw)
 	}
 }
 
+// Temporarily makes a native address writable, stores one float, and attempts to restore protection.
 void SC4CameraController::OverwriteMemoryFloat(uintptr_t address, float value)
 {
 	DWORD oldProtect = 0;

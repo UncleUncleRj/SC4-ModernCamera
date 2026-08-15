@@ -5,6 +5,7 @@
 
 namespace
 {
+	// Reads the executable file version stored in its Windows version resource.
 	uint64_t GetAssemblyVersion(HMODULE hModule)
 	{
 		wchar_t versionFile[MAX_PATH]{};
@@ -42,6 +43,7 @@ namespace
 		return 0;
 	}
 
+	// Detects the SC4 executable revision from its file version or fallback sentinel.
 	uint16_t DetermineGameVersion()
 	{
 		const uint64_t fileVersion = GetAssemblyVersion(nullptr);
@@ -74,6 +76,7 @@ namespace
 	}
 }
 
+// Returns the cached SC4 executable revision detected for this process.
 uint16_t SC4VersionDetection::GetGameVersion()
 {
 	static const uint16_t gameVersion = DetermineGameVersion();
@@ -81,6 +84,7 @@ uint16_t SC4VersionDetection::GetGameVersion()
 	return gameVersion;
 }
 
+// Returns whether version detection reports the supported revision 641.
 bool SC4VersionDetection::IsDigitalDistributionVersion()
 {
 	return GetGameVersion() == 641;

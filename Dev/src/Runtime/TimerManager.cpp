@@ -1,5 +1,6 @@
 #include "TimerManager.h"
 
+// Starts a previously inactive runtime timer and retains its Win32 ID.
 bool TimerManager::Start(RuntimeTimer timer, UINT delayMs, TIMERPROC callback)
 {
 	const size_t index = ToIndex(timer);
@@ -11,6 +12,7 @@ bool TimerManager::Start(RuntimeTimer timer, UINT delayMs, TIMERPROC callback)
 	return mTimerIDs[index] != 0;
 }
 
+// Stops an active timer and clears its retained ID.
 void TimerManager::Stop(RuntimeTimer timer)
 {
 	UINT_PTR& timerID = mTimerIDs[ToIndex(timer)];
@@ -20,11 +22,13 @@ void TimerManager::Stop(RuntimeTimer timer)
 	}
 }
 
+// Returns whether the selected timer slot currently has an ID.
 bool TimerManager::IsActive(RuntimeTimer timer) const
 {
 	return mTimerIDs[ToIndex(timer)] != 0;
 }
 
+// Matches a callback ID against the selected active timer slot.
 bool TimerManager::IsCurrent(RuntimeTimer timer, UINT_PTR timerID) const
 {
 	return timerID != 0 && mTimerIDs[ToIndex(timer)] == timerID;

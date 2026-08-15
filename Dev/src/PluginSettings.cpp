@@ -11,6 +11,7 @@
 
 namespace
 {
+	// Reads a complete text file and returns an empty string when it cannot be opened.
 	std::string ReadTextFile(const std::filesystem::path& path)
 	{
 		std::ifstream stream(path, std::ios::in | std::ios::binary);
@@ -24,6 +25,7 @@ namespace
 		return text.str();
 	}
 
+	// Extracts one quoted JSON string value for the supplied key.
 	bool TryReadString(const std::string& json, const char* key, std::string& value)
 	{
 		const std::regex expression(std::string("\\\"") + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
@@ -37,6 +39,7 @@ namespace
 		return true;
 	}
 
+	// Extracts one JSON boolean value for the supplied key.
 	bool TryReadBool(const std::string& json, const char* key, bool& value)
 	{
 		const std::regex expression(std::string("\\\"") + key + "\\\"\\s*:\\s*(true|false)");
@@ -50,6 +53,7 @@ namespace
 		return true;
 	}
 
+	// Extracts one finite decimal JSON value for the supplied key.
 	bool TryReadFloat(const std::string& json, const char* key, float& value)
 	{
 		const std::regex expression(std::string("\\\"") + key + "\\\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)");
@@ -70,11 +74,13 @@ namespace
 		}
 	}
 
+	// Converts the camera mode to the persisted string representation.
 	const char* ToString(CameraMode value)
 	{
 		return value == CameraMode::Classic ? "Classic" : "Modern";
 	}
 
+	// Converts redraw aggression to the persisted string representation.
 	const char* ToString(RedrawAggression value)
 	{
 		switch (value)
@@ -86,6 +92,7 @@ namespace
 		}
 	}
 
+	// Converts debug verbosity to the persisted string representation.
 	const char* ToString(DebugLogging value)
 	{
 		switch (value)
@@ -97,11 +104,13 @@ namespace
 	}
 }
 
+// Initializes settings with the same values used for a fresh install.
 PluginSettings::PluginSettings()
 {
 	RestoreDefaults();
 }
 
+// Restores the supported fresh-install values without persisting them.
 void PluginSettings::RestoreDefaults()
 {
 	cameraMode = CameraMode::Modern;
@@ -114,6 +123,7 @@ void PluginSettings::RestoreDefaults()
 	debugLogging = DebugLogging::Normal;
 }
 
+// Loads known fields, retaining defaults for fields that are absent or unreadable.
 bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 {
 	path = settingsPath;
@@ -171,6 +181,7 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	return true;
 }
 
+// Serializes the current settings to the path most recently supplied to Load.
 bool PluginSettings::Save() const
 {
 	if (path.empty())
@@ -230,22 +241,26 @@ bool PluginSettings::Save() const
 	return true;
 }
 
+// Returns whether the stored version differs from the current plugin version.
 bool PluginSettings::NeedsVersionNotice() const
 {
 	return installedVersion != PluginVersion::String;
 }
 
+// Records the current plugin version and saves the updated settings document.
 bool PluginSettings::AcknowledgeCurrentVersion()
 {
 	installedVersion = PluginVersion::String;
 	return Save();
 }
 
+// Returns the path retained for future Save calls.
 const std::filesystem::path& PluginSettings::GetPath() const
 {
 	return path;
 }
 
+// Returns the version value currently retained by this settings object.
 const std::string& PluginSettings::GetInstalledVersion() const
 {
 	return installedVersion;

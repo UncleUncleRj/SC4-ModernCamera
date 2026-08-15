@@ -37,94 +37,94 @@
 #include <string>
 
 // Game lifecycle message identifiers
-// These are custom numeric message IDs used to detect high-level SimCity 4
-// lifecycle events (city initialization, shutdown, and pre-save). Values are
-// chosen to be large, project-specific constants to avoid colliding with
-// standard Windows messages or other mods/plugins.
+// Reverse-engineered SimCity 4 message IDs for post-city initialization,
+// pre-city shutdown, and pre-save. The plugin subscribes to these fixed IDs;
+// it does not assign their values.
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
 static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 
-// Internal GZ window/class identifiers
-// These constants identify internal game window/class types used when
-// querying or matching runtime objects. They come from reverse-engineering
-// of the game's internals and must match the values the game expects.
+// Reverse-engineered GZ window IDs used to resolve the SC4 application and 3D
+// view, and to recognize input targeting the full 3D surface.
 static constexpr uint32_t kGZWin_WinSC4App = 0x6104489A;
 static constexpr uint32_t kGZWin_SC4View3DWin = 0x9A47B417;
 static constexpr uint32_t kGZWin_SC4View3DSurface = 0x6A5E44B6;
 
-// Virtual table indices for important overridden methods
-// These indices locate specific virtual functions in the game's vtable so the
-// plugin can install hooks. The numeric indices were determined by inspecting
-// the game's binary layout and may vary between game builds.
+// cISC4View3DWin vtable slots used to install the SetScrolling and MinimizeUI
+// hooks. They are valid only for the supported game executable and GZCOM layout.
 static constexpr size_t kView3DWinSetScrollingVTableIndex = 33;
 static constexpr size_t kView3DWinMinimizeUIVTableIndex = 55;
 
-// Input & camera tuning constants
-// Mouse rotation sensitivity controls how aggressively mouse deltas are
-// converted into camera rotation. This small value gives a smooth feel when
-// applied to raw mouse movement.
+// Multiplier applied to mouse movement before the user rotation-sensitivity setting.
 static constexpr float kMouseRotationSensitivity = 0.005f;
 
-// Key used to dump camera info for debugging; chosen to be non-invasive
-// (F8) so it doesn't conflict with common editing keys.
+// F8 key used along with Ctrl+Alt to dump camera information.
 static constexpr UINT kDumpCameraInfoKey = VK_F8;
 
-// Probing limits for detecting native UI elements in the game's corner
-// regions. These bounds are conservative to avoid touching UI areas that
-// should remain interactive while still covering common layouts.
+// Bounds of the lower-left diagnostic click area for native-UI toggle activity.
 static constexpr int32_t kNativeUICornerProbeMaxX = 260;
 static constexpr int32_t kNativeUICornerProbeMaxBottomOffset = 360;
 
-// Timing and redraw intervals (in milliseconds)
-// These timings balance responsiveness with CPU/GPU usage. Shorter delays
-// increase responsiveness but use more resources; the values below were
-// chosen experimentally to feel responsive while limiting overhead.
-static constexpr UINT kPanIdleRedrawDelayMs = 1000;
-static constexpr UINT kKeyboardPanTickMs = 33; // ~30Hz for keyboard pan updates
-static constexpr float kKeyboardPanNativeSpeed = 0.25f;
-static constexpr float kKeyboardPanBoostMultiplier = 2.0f;
-static constexpr UINT kZoomIdleRedrawDelayMs = 1500;
-static constexpr UINT kHighPeriodicRedrawDelayMs = 1000;
-static constexpr UINT kExtremePeriodicRedrawDelayMs = 100;
-static constexpr UINT kCameraDumpConfirmationDelayMs = 2500; // hold UI confirmation visible
-static constexpr UINT kNativeToolClearEscDelayMs = 50; // small debounce window for ESC
-static constexpr UINT kModernCameraFocusRestoreDelayMs = 150; // small delay to restore focus
+// Input and redraw constants. Names ending in Ms are durations in milliseconds.
+static constexpr UINT kPanIdleRedrawDelayMs = 1000; // Delay before redrawing after rotation ends.
+static constexpr UINT kKeyboardPanTickMs = 33; // Interval for held-key panning updates.
+static constexpr float kKeyboardPanNativeSpeed = 0.25f; // Base speed before settings and Shift boost.
+static constexpr float kKeyboardPanBoostMultiplier = 2.0f; // Shift multiplier for keyboard-pan speed.
+static constexpr UINT kZoomIdleRedrawDelayMs = 1500; // Delay before redrawing after mouse-wheel zoom.
+static constexpr UINT kHighPeriodicRedrawDelayMs = 1000; // Repeat interval for High redraw aggression.
+static constexpr UINT kExtremePeriodicRedrawDelayMs = 100; // Repeat interval for Extreme redraw aggression.
+static constexpr UINT kCameraDumpConfirmationDelayMs = 2500; // Lifetime of the dump confirmation.
+static constexpr UINT kNativeToolClearEscDelayMs = 50; // Delay before the Escape tap clears a native tool.
+static constexpr UINT kModernCameraFocusRestoreDelayMs = 150; // Delay before restoring 3D-view focus.
 
-// ModernCamera window ID allocation range
-// The plugin uses a contiguous range of window IDs so it can allocate unique
-// IDs for any windows it creates. The range is deliberately chosen inside a
-// high, project-specific block to reduce risk of collision with other mods.
+// Inclusive ID range recognized as Modern Camera UI by IsModernCameraWindowID.
 static constexpr uint32_t kModernCameraWindowIDMin = 0x3D0C0700;
 static constexpr uint32_t kModernCameraWindowIDMax = 0x3D0C09FF;
 
 // Global State
+// True between the post-city-init and pre-city-shutdown notifications.
 bool g_IsCityLoaded = false;
+// True when Modern Camera input and camera behavior are active.
 bool g_IsModernCamEnabled = true;
+// True when SimCity 4's native UI has been minimized.
 bool g_IsNativeUIHidden = false;
+// Native MinimizeUI method signature captured by the vtable hook.
 using MinimizeUIFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool minimize);
+// Native SetScrolling method signature captured by the vtable hook.
 using SetScrollingFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool scrolling, float x, float z);
+// Owns the native UI-minimize vtable replacement.
 VTableHook g_MinimizeUIHook;
+// Owns the native scrolling vtable replacement.
 VTableHook g_SetScrollingHook;
 
 enum class View3DToolClearReason : uint8_t
 {
+    // Modern Camera has become active and must clear a native tool.
     ModernCameraEnabled,
+    // The WASD setting changed and native movement state must be reset.
     WASDMovementChanged,
+    // Classic camera has become active and must receive native input cleanly.
     ClassicCameraEnabled,
 };
 
+// Reads the current physical state for a virtual key through Win32.
 bool ReadPhysicalKeyState(int key)
 {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
 // Cinematic Camera State
+// Prevents the scrolling hook from treating keyboard pan as unrelated native input.
 bool g_IsApplyingKeyboardPan = false;
+// Tracks observed keys and their Modern Camera ownership.
 KeyStateManager g_KeyStateManager(ReadPhysicalKeyState);
+// WASD virtual keys eligible for panning when the corresponding setting is enabled.
 static constexpr std::array<WPARAM, 4> kWASDKeyboardPanKeys = { 'W', 'A', 'S', 'D' };
+// Arrow-key virtual keys eligible for Modern Camera panning.
 static constexpr std::array<WPARAM, 4> kArrowKeyboardPanKeys = { VK_UP, VK_LEFT, VK_DOWN, VK_RIGHT };
+// Alt virtual keys that activate the temporary Classic-angle state.
 static constexpr std::array<WPARAM, 3> kClassicAngleKeys = { VK_MENU, VK_LMENU, VK_RMENU };
+// Complete movement-key set used to query and release Modern Camera pan ownership.
 static constexpr std::array<WPARAM, 8> kKeyboardPanKeys = {
     'W',
     'A',
@@ -135,18 +135,30 @@ static constexpr std::array<WPARAM, 8> kKeyboardPanKeys = {
     VK_DOWN,
     VK_RIGHT,
 };
+// Last canvas mouse position used to compute rotation deltas.
 POINT g_LastMousePos = { 0, 0 };
+// Window that owns mouse capture during a Modern Camera rotation gesture.
 HWND g_CapturedMouseWindow = NULL;
+// Last valid SC4 canvas window observed by the WinProc filter.
 HWND g_CanvasWindow = NULL;
+// Low-level hook that observes keyboard state while Modern Camera is active.
 HHOOK g_KeyboardHook = NULL;
+// Owns Modern Camera state and direct native camera operations.
 SC4CameraController g_CameraController;
+// Persisted settings currently applied to the plugin.
 PluginSettings g_Settings;
+// Owns plugin-created SC4 windows and UI callbacks.
 SC4WindowManager g_WindowManager;
 
+// Owns all Win32 timers started by the Modern Camera runtime.
 TimerManager g_TimerManager;
+// Limits deferred focus restoration to Modern Camera when true.
 bool g_View3DFocusRestoreRequiresModern = true;
+// Diagnostic reason logged when deferred 3D-view focus is restored.
 const char* g_View3DFocusRestoreContext = "View3D focus restore";
+// Director callback that attaches the canvas WinProc filter.
 std::function<void()> g_RegisterCanvasWinProcFilterCallback;
+// Director callback that detaches the canvas WinProc filter.
 std::function<void()> g_UnregisterCanvasWinProcFilterCallback;
 
 // Executes a delayed city redraw.
@@ -190,6 +202,7 @@ bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimiz
 // Limits native scrolling to the city bounds before forwarding it.
 bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z);
 
+// Result of locating the native window under a wheel-input point.
 struct NativeWheelHitTest
 {
     bool resolved = false;
@@ -499,9 +512,9 @@ void ScheduleView3DFocusRestore(bool requireModern, const char* context)
     g_View3DFocusRestoreRequiresModern = requireModern;
     g_View3DFocusRestoreContext = context ? context : "View3D focus restore";
     if (!g_TimerManager.Start(
-            RuntimeTimer::ModernCameraFocusRestore,
-            kModernCameraFocusRestoreDelayMs,
-            ModernCameraFocusRestoreTimerProc)) {
+        RuntimeTimer::ModernCameraFocusRestore,
+        kModernCameraFocusRestoreDelayMs,
+        ModernCameraFocusRestoreTimerProc)) {
         Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start 3D view focus restore timer.");
     }
 }
@@ -538,9 +551,9 @@ void ScheduleNativeToolClearEsc()
 {
     KillNativeToolClearEscTimer();
     if (!g_TimerManager.Start(
-            RuntimeTimer::NativeToolClearEsc,
-            kNativeToolClearEscDelayMs,
-            NativeToolClearEscTimerProc)) {
+        RuntimeTimer::NativeToolClearEsc,
+        kNativeToolClearEscDelayMs,
+        NativeToolClearEscTimerProc)) {
         Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start native tool clear Esc timer.");
     }
 }
@@ -557,8 +570,8 @@ void ClearNativeToolWithQueryThenEsc()
         ScheduleView3DFocusRestore(
             g_IsModernCamEnabled,
             g_IsModernCamEnabled
-                ? "Modern camera native tool clear focus restore"
-                : "Classic camera native tool clear focus restore");
+            ? "Modern camera native tool clear focus restore"
+            : "Classic camera native tool clear focus restore");
     }
 }
 
@@ -810,7 +823,7 @@ bool IsMiddleMouseRotationActive()
     return IsKeyOwnedBy(VK_MBUTTON, KeyOwner::ModernCameraRotation);
 }
 
-// Returns whether a key represents either Alt virtual-key variant.
+// Returns whether a key represents the generic, left, or right Alt virtual key.
 bool IsClassicAngleVirtualKey(WPARAM key)
 {
     return key == VK_MENU || key == VK_LMENU || key == VK_RMENU;
@@ -1009,8 +1022,8 @@ VOID CALLBACK NativeToolClearEscTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
         ScheduleView3DFocusRestore(
             g_IsModernCamEnabled,
             g_IsModernCamEnabled
-                ? "Modern camera native tool clear focus restore"
-                : "Classic camera native tool clear focus restore");
+            ? "Modern camera native tool clear focus restore"
+            : "Classic camera native tool clear focus restore");
     }
 }
 
@@ -1050,161 +1063,161 @@ POINT MakePointFromLParam(LPARAM lParam)
 // Logs a canvas mouse-button event and its coordinates.
 void LogMouseButtonEvent(const char* name, const POINT& point)
 {
-	Logger::GetInstance().WriteLine(
-		LogLevel::Verbose,
-		std::string("Canvas WinProc Filter: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
+    Logger::GetInstance().WriteLine(
+        LogLevel::Verbose,
+        std::string("Canvas WinProc Filter: ") + name + " at X:" + std::to_string(point.x) + " Y:" + std::to_string(point.y));
 }
 
 // Returns whether a click falls in the native-UI toggle probe area.
 bool IsNativeUICornerProbeClick(const POINT& point)
 {
-	cISC4AppPtr app;
-	cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
-	cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
-	if (!parentWindow) {
-		return false;
-	}
+    cISC4AppPtr app;
+    cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
+    cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+    if (!parentWindow) {
+        return false;
+    }
 
-	const int32_t bottomOffset = parentWindow->GetH() - point.y;
-	return point.x >= 0
-		&& point.x < kNativeUICornerProbeMaxX
-		&& bottomOffset >= 0
-		&& bottomOffset < kNativeUICornerProbeMaxBottomOffset;
+    const int32_t bottomOffset = parentWindow->GetH() - point.y;
+    return point.x >= 0
+        && point.x < kNativeUICornerProbeMaxX
+        && bottomOffset >= 0
+        && bottomOffset < kNativeUICornerProbeMaxBottomOffset;
 }
 
 // Mirrors native-UI visibility to the Modern Camera menu button.
 void SyncMenuButtonToNativeUI(bool nativeUILooksVisible, const char* reason)
 {
-	g_IsNativeUIHidden = !nativeUILooksVisible;
-	g_WindowManager.SetMenuButtonVisible(nativeUILooksVisible);
-	Logger::GetInstance().WriteLine(
-		LogLevel::Info,
-		std::string("Menu Button UI: ") + reason
-		+ " NativeUI:" + (nativeUILooksVisible ? "UIVisible" : "UIHidden")
-		+ " CameraButton:" + (nativeUILooksVisible ? "showing" : "hiding"));
+    g_IsNativeUIHidden = !nativeUILooksVisible;
+    g_WindowManager.SetMenuButtonVisible(nativeUILooksVisible);
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        std::string("Menu Button UI: ") + reason
+        + " NativeUI:" + (nativeUILooksVisible ? "UIVisible" : "UIHidden")
+        + " CameraButton:" + (nativeUILooksVisible ? "showing" : "hiding"));
 }
 
 // Retrieves the 3D view used to install native UI hooks.
 cISC4View3DWin* GetView3DWinForNativeUIHook()
 {
-	cISC4AppPtr app;
-	cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
-	cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
-	if (!parentWindow) {
-		return nullptr;
-	}
+    cISC4AppPtr app;
+    cIGZWin* mainWindow = app ? app->GetMainWindow() : nullptr;
+    cIGZWin* parentWindow = mainWindow ? mainWindow->GetChildWindowFromID(kGZWin_WinSC4App) : nullptr;
+    if (!parentWindow) {
+        return nullptr;
+    }
 
-	cISC4View3DWin* view3D = nullptr;
-	if (!parentWindow->GetChildAs(
-		kGZWin_SC4View3DWin,
-		kGZIID_cISC4View3DWin,
-		reinterpret_cast<void**>(&view3D))) {
-		return nullptr;
-	}
+    cISC4View3DWin* view3D = nullptr;
+    if (!parentWindow->GetChildAs(
+        kGZWin_SC4View3DWin,
+        kGZIID_cISC4View3DWin,
+        reinterpret_cast<void**>(&view3D))) {
+        return nullptr;
+    }
 
-	return view3D;
+    return view3D;
 }
 
 // Formats a pointer value as hexadecimal for hook diagnostics.
 std::string FormatPointerValue(const void* value)
 {
-	std::ostringstream stream;
-	stream << "0x" << std::uppercase << std::hex << reinterpret_cast<uintptr_t>(value);
-	return stream.str();
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << reinterpret_cast<uintptr_t>(value);
+    return stream.str();
 }
 
 // Installs the hook that tracks native UI minimization.
 void InstallMinimizeUIHook()
 {
-	if (g_MinimizeUIHook.IsInstalled()) {
-		return;
-	}
+    if (g_MinimizeUIHook.IsInstalled()) {
+        return;
+    }
 
-	cISC4View3DWin* view3D = GetView3DWinForNativeUIHook();
-	if (!view3D) {
-		Logger::GetInstance().WriteLine(LogLevel::Warning, "Native UI MinimizeUI hook: could not find cISC4View3DWin.");
-		return;
-	}
+    cISC4View3DWin* view3D = GetView3DWinForNativeUIHook();
+    if (!view3D) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Native UI MinimizeUI hook: could not find cISC4View3DWin.");
+        return;
+    }
 
-	void** vtable = *reinterpret_cast<void***>(view3D);
-	if (g_MinimizeUIHook.Install(
-		vtable,
-		kView3DWinMinimizeUIVTableIndex,
-		reinterpret_cast<void*>(&HookedMinimizeUI))) {
-		Logger::GetInstance().WriteLine(
-			LogLevel::Info,
-			std::string("Native UI MinimizeUI hook installed. VTable:")
-			+ FormatPointerValue(vtable)
-			+ " Slot:" + std::to_string(kView3DWinMinimizeUIVTableIndex)
-			+ " Original:" + FormatPointerValue(g_MinimizeUIHook.GetOriginal()));
-	}
-	else {
-		Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: failed to patch vtable slot.");
-	}
+    void** vtable = *reinterpret_cast<void***>(view3D);
+    if (g_MinimizeUIHook.Install(
+        vtable,
+        kView3DWinMinimizeUIVTableIndex,
+        reinterpret_cast<void*>(&HookedMinimizeUI))) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string("Native UI MinimizeUI hook installed. VTable:")
+            + FormatPointerValue(vtable)
+            + " Slot:" + std::to_string(kView3DWinMinimizeUIVTableIndex)
+            + " Original:" + FormatPointerValue(g_MinimizeUIHook.GetOriginal()));
+    }
+    else {
+        Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: failed to patch vtable slot.");
+    }
 
-	view3D->Release();
+    view3D->Release();
 }
 
 // Installs the hook that constrains native scrolling to city bounds.
 void InstallSetScrollingHook()
 {
-	if (g_SetScrollingHook.IsInstalled()) {
-		return;
-	}
+    if (g_SetScrollingHook.IsInstalled()) {
+        return;
+    }
 
-	cISC4View3DWin* view3D = GetView3DWinForNativeUIHook();
-	if (!view3D) {
-		Logger::GetInstance().WriteLine(LogLevel::Warning, "View3D SetScrolling hook: could not find cISC4View3DWin.");
-		return;
-	}
+    cISC4View3DWin* view3D = GetView3DWinForNativeUIHook();
+    if (!view3D) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "View3D SetScrolling hook: could not find cISC4View3DWin.");
+        return;
+    }
 
-	void** vtable = *reinterpret_cast<void***>(view3D);
-	if (g_SetScrollingHook.Install(
-		vtable,
-		kView3DWinSetScrollingVTableIndex,
-		reinterpret_cast<void*>(&HookedSetScrolling))) {
-		Logger::GetInstance().WriteLine(
-			LogLevel::Info,
-			std::string("View3D SetScrolling hook installed. VTable:")
-			+ FormatPointerValue(vtable)
-			+ " Slot:" + std::to_string(kView3DWinSetScrollingVTableIndex)
-			+ " Original:" + FormatPointerValue(g_SetScrollingHook.GetOriginal()));
-	}
-	else {
-		Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: failed to patch vtable slot.");
-	}
+    void** vtable = *reinterpret_cast<void***>(view3D);
+    if (g_SetScrollingHook.Install(
+        vtable,
+        kView3DWinSetScrollingVTableIndex,
+        reinterpret_cast<void*>(&HookedSetScrolling))) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string("View3D SetScrolling hook installed. VTable:")
+            + FormatPointerValue(vtable)
+            + " Slot:" + std::to_string(kView3DWinSetScrollingVTableIndex)
+            + " Original:" + FormatPointerValue(g_SetScrollingHook.GetOriginal()));
+    }
+    else {
+        Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: failed to patch vtable slot.");
+    }
 
-	view3D->Release();
+    view3D->Release();
 }
 
 // Restores the original native UI minimization vtable entry.
 void UninstallMinimizeUIHook()
 {
-	if (!g_MinimizeUIHook.IsInstalled()) {
-		return;
-	}
+    if (!g_MinimizeUIHook.IsInstalled()) {
+        return;
+    }
 
-	if (g_MinimizeUIHook.Uninstall()) {
-		Logger::GetInstance().WriteLine(LogLevel::Info, "Native UI MinimizeUI hook uninstalled.");
-	}
-	else {
-		Logger::GetInstance().WriteLine(LogLevel::Warning, "Native UI MinimizeUI hook: slot changed before uninstall.");
-	}
+    if (g_MinimizeUIHook.Uninstall()) {
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Native UI MinimizeUI hook uninstalled.");
+    }
+    else {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Native UI MinimizeUI hook: slot changed before uninstall.");
+    }
 }
 
 // Restores the original native scrolling vtable entry.
 void UninstallSetScrollingHook()
 {
-	if (!g_SetScrollingHook.IsInstalled()) {
-		return;
-	}
+    if (!g_SetScrollingHook.IsInstalled()) {
+        return;
+    }
 
-	if (g_SetScrollingHook.Uninstall()) {
-		Logger::GetInstance().WriteLine(LogLevel::Info, "View3D SetScrolling hook uninstalled.");
-	}
-	else {
-		Logger::GetInstance().WriteLine(LogLevel::Warning, "View3D SetScrolling hook: slot changed before uninstall.");
-	}
+    if (g_SetScrollingHook.Uninstall()) {
+        Logger::GetInstance().WriteLine(LogLevel::Info, "View3D SetScrolling hook uninstalled.");
+    }
+    else {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "View3D SetScrolling hook: slot changed before uninstall.");
+    }
 }
 
 // Invokes the director callback that registers the canvas message filter.
@@ -1232,101 +1245,101 @@ void UnregisterCanvasWinProcFilterForModernCamera()
 // Mirrors native UI minimization changes to the Modern Camera menu button.
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize)
 {
-	(void)edx;
+    (void)edx;
 
-	MinimizeUIFunction original = reinterpret_cast<MinimizeUIFunction>(g_MinimizeUIHook.GetOriginal());
-	if (!original) {
-		Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: original function pointer was null.");
-		return false;
-	}
+    MinimizeUIFunction original = reinterpret_cast<MinimizeUIFunction>(g_MinimizeUIHook.GetOriginal());
+    if (!original) {
+        Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: original function pointer was null.");
+        return false;
+    }
 
-	const bool previousHidden = g_IsNativeUIHidden;
-	const bool result = original(view3D, minimize);
+    const bool previousHidden = g_IsNativeUIHidden;
+    const bool result = original(view3D, minimize);
 
-	if (g_IsCityLoaded) {
-		SyncMenuButtonToNativeUI(
-			!minimize,
-			minimize
-				? "native MinimizeUI(true) observed; hiding camera settings button."
-				: "native MinimizeUI(false) observed; showing camera settings button.");
-	}
-	else {
-		g_IsNativeUIHidden = minimize;
-	}
+    if (g_IsCityLoaded) {
+        SyncMenuButtonToNativeUI(
+            !minimize,
+            minimize
+            ? "native MinimizeUI(true) observed; hiding camera settings button."
+            : "native MinimizeUI(false) observed; showing camera settings button.");
+    }
+    else {
+        g_IsNativeUIHidden = minimize;
+    }
 
-	Logger::GetInstance().WriteLine(
-		LogLevel::Info,
-		std::string("Native UI MinimizeUI hook: Minimize:")
-		+ (minimize ? "true" : "false")
-		+ " PreviousTrackedState:" + (previousHidden ? "UIHidden" : "UIVisible")
-		+ " NewTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
-		+ " StateChanged:" + (previousHidden != g_IsNativeUIHidden ? "true" : "false")
-		+ " Result:" + (result ? "true" : "false"));
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        std::string("Native UI MinimizeUI hook: Minimize:")
+        + (minimize ? "true" : "false")
+        + " PreviousTrackedState:" + (previousHidden ? "UIHidden" : "UIVisible")
+        + " NewTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
+        + " StateChanged:" + (previousHidden != g_IsNativeUIHidden ? "true" : "false")
+        + " Result:" + (result ? "true" : "false"));
 
-	return result;
+    return result;
 }
 
 // Enforces city bounds before forwarding native camera scrolling.
 bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z)
 {
-	(void)edx;
+    (void)edx;
 
-	SetScrollingFunction original = reinterpret_cast<SetScrollingFunction>(g_SetScrollingHook.GetOriginal());
-	if (!original) {
-		Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: original function pointer was null.");
-		return false;
-	}
+    SetScrollingFunction original = reinterpret_cast<SetScrollingFunction>(g_SetScrollingHook.GetOriginal());
+    if (!original) {
+        Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: original function pointer was null.");
+        return false;
+    }
 
-	const char* source = g_IsApplyingKeyboardPan
-		? "keyboard SetScrolling"
-		: (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
-	float adjustedX = x;
-	bool blockedByBounds = false;
-	if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
-		const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
-		if (!boundsChecked || blockedByBounds) {
-			const bool stopped = original(view3D, false, 0.0f, 0.0f);
-			Logger::GetInstance().WriteLine(
-				boundsChecked ? LogLevel::Verbose : LogLevel::Warning,
-				std::string(boundsChecked
-					? "View3D SetScrolling blocked at city bounds. Source:"
-					: "View3D SetScrolling bounds preflight failed; stopping scroll. Source:")
-				+ source
-				+ " X:" + std::to_string(x)
-				+ " Z:" + std::to_string(z)
-				+ " StopResult:" + (stopped ? "true" : "false"));
-			return stopped;
-		}
-	}
+    const char* source = g_IsApplyingKeyboardPan
+        ? "keyboard SetScrolling"
+        : (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
+    float adjustedX = x;
+    bool blockedByBounds = false;
+    if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
+        const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(x, z, adjustedX, blockedByBounds, source);
+        if (!boundsChecked || blockedByBounds) {
+            const bool stopped = original(view3D, false, 0.0f, 0.0f);
+            Logger::GetInstance().WriteLine(
+                boundsChecked ? LogLevel::Verbose : LogLevel::Warning,
+                std::string(boundsChecked
+                    ? "View3D SetScrolling blocked at city bounds. Source:"
+                    : "View3D SetScrolling bounds preflight failed; stopping scroll. Source:")
+                + source
+                + " X:" + std::to_string(x)
+                + " Z:" + std::to_string(z)
+                + " StopResult:" + (stopped ? "true" : "false"));
+            return stopped;
+        }
+    }
 
-	const bool result = original(view3D, scrolling, adjustedX, z);
-	Logger::GetInstance().WriteLine(
-		LogLevel::Verbose,
-		std::string("View3D SetScrolling observed. Source:")
-		+ (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
-		+ " Scrolling:" + (scrolling ? "true" : "false")
-		+ " X:" + std::to_string(x)
-		+ " AdjustedX:" + std::to_string(adjustedX)
-		+ " Z:" + std::to_string(z)
-		+ " Result:" + (result ? "true" : "false"));
+    const bool result = original(view3D, scrolling, adjustedX, z);
+    Logger::GetInstance().WriteLine(
+        LogLevel::Verbose,
+        std::string("View3D SetScrolling observed. Source:")
+        + (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
+        + " Scrolling:" + (scrolling ? "true" : "false")
+        + " X:" + std::to_string(x)
+        + " AdjustedX:" + std::to_string(adjustedX)
+        + " Z:" + std::to_string(z)
+        + " Result:" + (result ? "true" : "false"));
 
-	return result;
+    return result;
 }
 
 // Records native-UI toggle-zone clicks while the hook observes the result.
 void HandleNativeUICornerClick(const POINT& point)
 {
-	if (!IsNativeUICornerProbeClick(point)) {
-		return;
-	}
+    if (!IsNativeUICornerProbeClick(point)) {
+        return;
+    }
 
-	Logger::GetInstance().WriteLine(
-		LogLevel::Info,
-		std::string("Native UI trigger zone click observed; waiting for native MinimizeUI(bool) state change. ")
-		+ "ClickX:" + std::to_string(point.x)
-		+ " ClickY:" + std::to_string(point.y)
-		+ " CurrentTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
-		+ " HookInstalled:" + (g_MinimizeUIHook.IsInstalled() ? "true" : "false"));
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        std::string("Native UI trigger zone click observed; waiting for native MinimizeUI(bool) state change. ")
+        + "ClickX:" + std::to_string(point.x)
+        + " ClickY:" + std::to_string(point.y)
+        + " CurrentTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
+        + " HookInstalled:" + (g_MinimizeUIHook.IsInstalled() ? "true" : "false"));
 }
 
 // Stops active input, timers, and optional camera state during a reset.
@@ -2410,13 +2423,13 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             int deltaX = mousePos.x - g_LastMousePos.x;
             int deltaY = mousePos.y - g_LastMousePos.y;
 
-			float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
-			float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
-			if (g_Settings.invertVertical) {
-				pitchDelta = -pitchDelta;
-			}
+            float yawDelta = static_cast<float>(deltaX) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
+            float pitchDelta = static_cast<float>(deltaY) * kMouseRotationSensitivity * g_Settings.rotationSensitivity;
+            if (g_Settings.invertVertical) {
+                pitchDelta = -pitchDelta;
+            }
 
-			g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
+            g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
 
             g_LastMousePos = mousePos;
             handled = true;
@@ -2479,6 +2492,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     return 0;
 }
 
+// Plugin entry point that receives SC4 lifecycle messages and canvas input.
 class cSC4ModernCameraDirector : public cRZMessage2COMDirector, public cIGZWinProcFilterW32
 {
 public:
@@ -2510,7 +2524,7 @@ public:
         return 0x8C4B3A11;
     }
 
-    // Initializes the plugin and subscribes it to required game notifications.
+    // Initializes the plugin and subscribes to game notifications on a supported build.
     bool OnStart(cIGZCOM* pCOM) override
     {
         try {
@@ -2549,7 +2563,7 @@ public:
             ApplyInputSettingsChange,
             ApplyDebugLoggingChange,
             RestoreWorldFocusAfterSettingsClosed,
-        });
+            });
 
         ApplyDebugLoggingChange();
 
@@ -2669,6 +2683,7 @@ private:
 
 // Returns the singleton COM director exported by this plugin DLL.
 cRZCOMDllDirector* RZGetCOMDllDirector() {
+    // Function-local instance retained for the DLL's lifetime.
     static cSC4ModernCameraDirector sDirector;
     return &sDirector;
 }

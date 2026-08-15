@@ -1,20 +1,24 @@
 #include "KeyStateManager.h"
 
+// Stores the callback used when tracked state needs a physical-key fallback.
 KeyStateManager::KeyStateManager(PhysicalKeyStateReader physicalKeyStateReader)
 	: mPhysicalKeyStateReader(physicalKeyStateReader)
 {
 }
 
+// Returns whether the virtual key is representable by the fixed state table.
 bool KeyStateManager::IsTrackable(WPARAM key) const
 {
 	return key < mKeyStates.size();
 }
 
+// Queries the injected physical-key state reader when one is available.
 bool KeyStateManager::IsPhysicalDown(int key) const
 {
 	return mPhysicalKeyStateReader && mPhysicalKeyStateReader(key);
 }
 
+// Records a transition and maintains aggregate Shift, Ctrl, and Alt state.
 void KeyStateManager::Observe(WPARAM key, bool down)
 {
 	if (!IsTrackable(key)) {
@@ -46,6 +50,7 @@ void KeyStateManager::Observe(WPARAM key, bool down)
 	}
 }
 
+// Returns the last observed state for a valid virtual key.
 bool KeyStateManager::IsDown(int key) const
 {
 	return key >= 0
@@ -53,11 +58,13 @@ bool KeyStateManager::IsDown(int key) const
 		&& mKeyStates[static_cast<size_t>(key)].down;
 }
 
+// Uses the physical state only when the observed state is not down.
 bool KeyStateManager::IsDownWithFallback(int key) const
 {
 	return IsDown(key) || IsPhysicalDown(key);
 }
 
+// Rebuilds aggregate modifier state from the physical keyboard.
 void KeyStateManager::RefreshModifiers()
 {
 	mKeyStates[VK_SHIFT].down = IsPhysicalDown(VK_SHIFT)
@@ -71,6 +78,7 @@ void KeyStateManager::RefreshModifiers()
 		|| IsPhysicalDown(VK_RMENU);
 }
 
+// Claims a key when no conflicting Modern Camera feature owns it.
 bool KeyStateManager::Claim(WPARAM key, KeyOwner owner)
 {
 	if (!IsTrackable(key)) {
@@ -86,6 +94,7 @@ bool KeyStateManager::Claim(WPARAM key, KeyOwner owner)
 	return true;
 }
 
+// Releases a key only if the expected feature owns it.
 void KeyStateManager::Release(WPARAM key, KeyOwner owner)
 {
 	if (!IsTrackable(key)) {
@@ -98,16 +107,19 @@ void KeyStateManager::Release(WPARAM key, KeyOwner owner)
 	}
 }
 
+// Reports whether the key has been claimed by the supplied feature.
 bool KeyStateManager::IsOwnedBy(WPARAM key, KeyOwner owner) const
 {
 	return IsTrackable(key) && mKeyStates[key].owner == owner;
 }
 
+// Returns the key owner or None for an out-of-range key.
 KeyOwner KeyStateManager::GetOwner(WPARAM key) const
 {
 	return IsTrackable(key) ? mKeyStates[key].owner : KeyOwner::None;
 }
 
+// Clears observed state and ownership for every virtual-key slot.
 void KeyStateManager::Clear()
 {
 	for (TrackedKeyState& state : mKeyStates) {
@@ -116,6 +128,7 @@ void KeyStateManager::Clear()
 	}
 }
 
+// Returns whether an owned key in the supplied group is still held.
 bool KeyStateManager::AnyDownOwnedBy(const WPARAM* keys, size_t count, KeyOwner owner) const
 {
 	for (size_t index = 0; index < count; ++index) {
@@ -128,6 +141,7 @@ bool KeyStateManager::AnyDownOwnedBy(const WPARAM* keys, size_t count, KeyOwner 
 	return false;
 }
 
+// Returns whether the supplied feature owns any key in the group.
 bool KeyStateManager::AnyOwnedBy(const WPARAM* keys, size_t count, KeyOwner owner) const
 {
 	for (size_t index = 0; index < count; ++index) {
@@ -139,6 +153,7 @@ bool KeyStateManager::AnyOwnedBy(const WPARAM* keys, size_t count, KeyOwner owne
 	return false;
 }
 
+// Releases the supplied feature's ownership of every key in the group.
 void KeyStateManager::ReleaseAll(const WPARAM* keys, size_t count, KeyOwner owner)
 {
 	for (size_t index = 0; index < count; ++index) {

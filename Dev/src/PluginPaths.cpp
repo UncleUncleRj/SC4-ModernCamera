@@ -14,6 +14,7 @@ namespace
 	constexpr const wchar_t* kLogFileName = L"SC4-ModernCamera.log";
 	constexpr const wchar_t* kPreviousLogFileName = L"SC4-ModernCamera.last";
 
+	// Resolves the directory containing the loaded plugin DLL.
 	std::filesystem::path ResolvePluginDirectory()
 	{
 		std::wstring modulePath(512, L'\0');
@@ -40,6 +41,7 @@ namespace
 		}
 	}
 
+	// Moves a legacy file only when the destination has not already been created.
 	void MoveFileIfMissing(
 		const std::filesystem::path& source,
 		const std::filesystem::path& destination)
@@ -64,6 +66,7 @@ namespace
 		}
 	}
 
+// Creates or migrates the writable data directory beneath the plugin directory.
 	std::filesystem::path ResolveDataDirectory()
 	{
 		const std::filesystem::path pluginDirectory = ResolvePluginDirectory();
@@ -99,28 +102,33 @@ namespace
 	}
 }
 
+// Returns the cached plugin directory resolved from the loaded DLL location.
 const std::filesystem::path& PluginPaths::GetPluginDirectory()
 {
 	static const std::filesystem::path directory = ResolvePluginDirectory();
 	return directory;
 }
 
+// Returns the cached writable directory for settings and logs.
 const std::filesystem::path& PluginPaths::GetDataDirectory()
 {
 	static const std::filesystem::path directory = ResolveDataDirectory();
 	return directory;
 }
 
+// Returns the settings-file path in the plugin data directory.
 std::filesystem::path PluginPaths::GetSettingsPath()
 {
 	return GetDataDirectory() / kSettingsFileName;
 }
 
+// Returns the diagnostic-log path in the plugin data directory.
 std::filesystem::path PluginPaths::GetLogPath()
 {
 	return GetDataDirectory() / kLogFileName;
 }
 
+// Returns the separate settings path used by the test UI workflow.
 std::filesystem::path PluginPaths::GetTestSettingsPath()
 {
 	return GetDataDirectory() / L"test.json";
