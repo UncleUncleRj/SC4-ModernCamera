@@ -33,16 +33,35 @@ enum class DebugLogging
 	Verbose
 };
 
-// Loads, validates, and saves the user-configurable plugin settings.
+namespace PluginSettingText
+{
+	// Returns the persisted label for a camera mode.
+	const char* ToString(CameraMode value);
+	// Returns the persisted label for a redraw-aggression level.
+	const char* ToString(RedrawAggression value);
+	// Returns the persisted label for a diagnostics logging level.
+	const char* ToString(DebugLogging value);
+}
+
+// Loads, validates, and saves user-configurable plugin settings.
 class PluginSettings
 {
 public:
-	// Initializes the settings object with the supported default values.
+	// Sensitivity defaults and bounds shared by settings validation and UI sliders.
+	static constexpr float kDefaultSensitivity = 1.0f;
+	static constexpr float kMinimumSensitivity = 0.1f;
+	static constexpr float kMaximumSensitivity = 3.0f;
+	static constexpr float kSensitivityRange = kMaximumSensitivity - kMinimumSensitivity;
+	static constexpr float kMinimumPanSensitivity = 0.25f;
+	static constexpr float kMaximumPanSensitivity = 2.75f;
+	static constexpr float kPanSensitivityRange = kMaximumPanSensitivity - kMinimumPanSensitivity;
+
+	// Initializes this settings object with fresh-install defaults.
 	PluginSettings();
 
-	// Loads known settings from path; when absent, writes defaults and returns that write result.
+	// Loads known settings from path; writes defaults when the file does not exist.
 	bool Load(const std::filesystem::path& path);
-	// Writes the current settings to the path most recently supplied to Load.
+	// Writes the current values to the path most recently supplied to Load.
 	bool Save() const;
 	// Restores supported fresh-install defaults without writing them to disk.
 	void RestoreDefaults();
@@ -52,15 +71,17 @@ public:
 	// Stores the current plugin version as acknowledged and writes the settings file.
 	bool AcknowledgeCurrentVersion();
 
-	// Returns the path most recently supplied to Load.
+	// Returns the path retained for future Save calls.
 	const std::filesystem::path& GetPath() const;
-	// Returns the version string currently retained by this settings object.
+	// Returns the installed-version marker from the last loaded settings document.
 	const std::string& GetInstalledVersion() const;
 
 	// Selects Modern Camera or native Classic camera behavior.
 	CameraMode cameraMode;
-	// Enables WASD keyboard panning when Modern Camera is active.
+	// Enables WASD keyboard panning while Modern Camera is active.
 	bool wasdMovement;
+	// Enables Q and E keyboard rotation while Modern Camera is active.
+	bool qeRotation;
 	// Multiplies mouse-driven yaw and pitch changes.
 	float rotationSensitivity;
 	// Multiplies wheel-driven zoom changes.
@@ -73,6 +94,10 @@ public:
 	RedrawAggression redrawAggression;
 	// Controls the amount of diagnostic log output.
 	DebugLogging debugLogging;
+	// Enables the Ctrl+Alt+F8 camera diagnostics shortcut.
+	bool cameraDumpHotkey;
+	// Shows the version greeting and changelog after a plugin update.
+	bool showChangelogsOnUpdate;
 
 private:
 	// Source file used by Save and version-acknowledgement updates.

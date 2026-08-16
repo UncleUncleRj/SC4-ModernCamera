@@ -1,3 +1,12 @@
+1.5.0:
+- New Menu Layouts
+- Added new camera rotation controls for Modern Camera mode:
+   - Hold Q/E to rotate the camera left/right.
+   - Option to disable camera rotation in menu.
+- New Settings Menu Icon
+- Bug fixes
+- Performance improvements
+
 1.0.4:
 - Hold ALT to lock the camera to the nearest Classic Mode camera angle.
    - NOTE: ALT lock is still experimental, if you lose your camera,

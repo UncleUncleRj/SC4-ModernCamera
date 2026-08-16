@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 
+class cISC43DRender;
+
 // Four-float value retained where the native camera layout exposes one.
 struct SC4Float4
 {
@@ -153,7 +155,7 @@ public:
 
 	// Clears retained state and lets the next camera update resynchronize angles.
 	void Reset();
-	// Captures the current rotation anchor before a middle-mouse gesture begins.
+	// Captures the current rotation anchor before a free-camera rotation gesture begins.
 	bool BeginRotationGesture();
 	// Releases the rotation anchor retained for the current gesture.
 	void EndRotationGesture();
@@ -167,10 +169,22 @@ public:
 		float& adjustedDirectionAngle,
 		bool& blocked,
 		const char* source);
+	// Clamps a scroll request using a renderer already resolved by the caller.
+	bool AdjustScrollForCityBounds(
+		cISC43DRender* renderer,
+		float directionAngle,
+		float speed,
+		float& adjustedDirectionAngle,
+		bool& blocked,
+		const char* source);
 	// Switches to the temporary Classic camera angle while Alt is held.
 	bool BeginClassicAngleHold(const char* source);
 	// Restores Modern Camera angles after the temporary Classic-angle hold.
 	bool EndClassicAngleHold(const char* source);
+	// Returns whether temporary Classic-angle mode is active.
+	bool IsClassicAngleHoldActive() const;
+	// Performs one native Classic camera quarter-turn for an Alt+Q or Alt+E press.
+	bool RotateClassicStep(bool left, const char* source);
 	// Re-centers a native target that falls outside verified city bounds.
 	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
 	// Applies a mouse-wheel delta and reports whether the camera zoom changed.
@@ -203,22 +217,27 @@ public:
 private:
 	// Captures native state once for the supplied active camera control.
 	bool EnsureNativeCameraStateCaptured(const SC4CameraControlLayout& cameraControl);
-	// Returns SC4's currently active camera-control structure, if available.
-	static SC4CameraControlLayout* GetActiveCameraControl();
 	// Refreshes SC4's derived camera state after direct value changes.
 	static bool Refresh(SC4CameraControlLayout& cameraControl);
 	// Clamps invalid pitch values to the supported Modern Camera range.
 	static float SanitizePitch(float pitch);
 	// Normalizes yaw to the range expected by the native camera tables.
 	static float SanitizeYaw(float yaw);
-	// Writes the plugin's baseline pitch and yaw values to native tables.
+	// Writes the plugin's baseline pitch and yaw values to the native tables.
+	static void WriteNativeCameraAngleTables();
+	// Restores the plugin's baseline pitch and yaw tables and records the action.
 	static void RestoreNativeAngleTables();
+	// Restores angle tables captured before save-preview normalization.
+	void RestoreSavedCameraAngleTables();
+	// Restores the camera-control fields saved before save-preview normalization.
+	bool RestoreSavedPreviewCameraState(SC4CameraControlLayout& cameraControl);
+	// Writes pitch and yaw overrides together, then updates the supplied control fields.
+	static void ApplyAngleOverrides(
+		SC4CameraControlLayout& cameraControl,
+		float pitch,
+		float yaw);
 	// Writes a pitch override to the native camera tables.
 	static void ApplyPitchOverride(float pitch);
-	// Writes a yaw override to the native camera tables.
-	static void ApplyYawOverride(float yaw);
-	// Writes one float to a documented native address.
-	static void OverwriteMemoryFloat(uintptr_t address, float value);
 	// Converts wheel notches into a bounded native zoom update.
 	bool ZoomByNotches(float wheelNotches, bool& changed);
 	// Copies native camera angles into Modern Camera's tracked state.

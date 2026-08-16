@@ -101,6 +101,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
@@ -152,11 +153,14 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClInclude Include="src\PluginVersion.h" />
     <ClInclude Include="src\Runtime\TimerManager.h" />
     <ClInclude Include="src\SC4CameraController.h" />
+    <ClInclude Include="src\SC4GameConstants.h" />
     <ClInclude Include="src\SC4VersionDetection.h" />
     <ClInclude Include="src\SC4WindowManager.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="ui\moderncamera-menu-icon.png" />
+    <None Include="ui\moderncamera-menu-icon-on.png" />
+    <None Include="ui\moderncamera-menu-icon-off.png" />
+    <None Include="ui\moderncamera-menu-icon-old.png" />
     <None Include="ui\camera_point.png" />
     <None Include="ui\camicon.png" />
     <None Include="ui\menu-button-stages.png" />

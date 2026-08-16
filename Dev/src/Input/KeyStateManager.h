@@ -12,8 +12,10 @@ enum class KeyOwner : uint8_t
 	None,
 	// The key drives keyboard panning while it remains held.
 	ModernCameraPan,
-	// The middle mouse button owns an active rotation gesture.
+	// The middle mouse button or Q and E own an active free-camera rotation gesture.
 	ModernCameraRotation,
+	// Alt+Q or Alt+E owns a native Classic camera rotation step.
+	ModernCameraClassicRotation,
 	// An Alt key owns the temporary Classic-angle hold.
 	ModernCameraClassicAngle,
 };

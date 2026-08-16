@@ -5,22 +5,20 @@
 #include "PluginPaths.h"
 #include "PluginSettings.h"
 #include "PluginVersion.h"
+#include "SC4GameConstants.h"
 #include "SC4VersionDetection.h"
 #include "cGZMessage.h"
 #include "cGZPersistResourceKey.h"
-#include "cIGZFont.h"
 #include "cIGZString.h"
 #include "cIGZUIScriptService.h"
 #include "cIGZWin.h"
 #include "cIGZWinBtn.h"
-#include "cIGZWinCtrlMgr.h"
 #include "cIGZWinGen.h"
 #include "cIGZWinSlider.h"
 #include "cIGZWinText.h"
 #include "cISC4App.h"
 #include "cRZAutoRefCount.h"
 #include "cRZBaseString.h"
-#include "cRZRect.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -28,16 +26,20 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
+#include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace
 {
-	// Native SC4 application-window identifier used to find the UI parent.
-	constexpr uint32_t kWinSC4AppID = 0x6104489A;
-	// Generated resource and control IDs owned by the Modern Camera UI DAT.
+	// Resource, class, and control IDs declared by the built-in UI DAT. An
+	// external theme supplies the same window and control contract from its own
+	// resource group.
 	constexpr uint32_t kWindowResourceGroup = 0x3D0C0700;
 	constexpr uint32_t kWindowResourceInstance = 0x3D0C0701;
 	constexpr uint32_t kWindowCLSID = 0x3D0C0702;
@@ -60,9 +62,19 @@ namespace
 	constexpr uint32_t kGreetingCloseXButtonID = 0x3D0C0840;
 	constexpr uint32_t kGreetingOKButtonID = 0x3D0C0843;
 	constexpr uint32_t kGreetingViewControlsButtonID = 0x3D0C0844;
+	constexpr uint32_t kGreetingSuppressChangelogsButtonID = 0x3D0C0847;
 	constexpr uint32_t kControlsCloseXButtonID = 0x3D0C0850;
 	constexpr uint32_t kControlsOKButtonID = 0x3D0C0853;
+	// The two menu controls occupy the same top-right button location. One is
+	// shown for Modern mode and the other for Classic mode.
 	constexpr uint32_t kMenuButtonID = 0x3D0C0910;
+	// 0x3D0C0911 through 0x3D0C0913 were used by the layered mode-lip and
+	// prototype text LED controls. Keep those IDs retired.
+	constexpr uint32_t kMenuClassicButtonID = 0x3D0C0914;
+	// 0x3D0C0915 was used by the layered Classic mode lip. Keep it retired.
+	// Vertical boundary between the settings face and the lower mode-switch lip
+	// of the compact menu button.
+	constexpr int32_t kMenuModeLipTop = 56;
 	constexpr uint32_t kSettingsCloseXButtonID = 0x3D0C0920;
 	constexpr uint32_t kSettingsModernButtonID = 0x3D0C0930;
 	constexpr uint32_t kSettingsClassicButtonID = 0x3D0C0931;
@@ -74,6 +86,8 @@ namespace
 	constexpr uint32_t kSettingsInvertOffButtonID = 0x3D0C0937;
 	constexpr uint32_t kSettingsResetCameraButtonID = 0x3D0C0938;
 	constexpr uint32_t kSettingsPanSliderID = 0x3D0C0939;
+	constexpr uint32_t kSettingsQERotationOnButtonID = 0x3D0C093A;
+	constexpr uint32_t kSettingsQERotationOffButtonID = 0x3D0C093B;
 	constexpr uint32_t kSettingsRedrawOffButtonID = 0x3D0C0940;
 	constexpr uint32_t kSettingsRedrawNormalButtonID = 0x3D0C0941;
 	constexpr uint32_t kSettingsRedrawHighButtonID = 0x3D0C0942;
@@ -87,39 +101,178 @@ namespace
 	constexpr uint32_t kAdvancedDebugLoggingOffButtonID = 0x3D0C0968;
 	constexpr uint32_t kAdvancedDebugLoggingNormalButtonID = 0x3D0C0969;
 	constexpr uint32_t kAdvancedDebugLoggingVerboseButtonID = 0x3D0C096A;
-	// Fixed handle returned for the single control-laboratory window.
+	constexpr uint32_t kAdvancedCameraDumpHotkeyOnButtonID = 0x3D0C096C;
+	constexpr uint32_t kAdvancedCameraDumpHotkeyOffButtonID = 0x3D0C096D;
+	constexpr uint32_t kAdvancedShowChangelogsButtonID = 0x3D0C096E;
+	// Fixed handle returned for the one control-laboratory window.
 	constexpr SC4WindowHandle kControlLaboratoryHandle = 1;
 
+	// Stores the selected external theme after its manifest passes the runtime
+	// compatibility checks. The default state represents the built-in UI.
+	struct ThemeState
+	{
+		// True only when the external resource group is valid and active.
+		bool active = false;
+		// Theme name used in diagnostics.
+		std::string name;
+		// Resource group that supplies the themed window scripts.
+		uint32_t resourceGroup = kWindowResourceGroup;
+		// Compatible minor version declared by the theme contract.
+		uint32_t contractMinor = 0;
+	};
+
+	// Active theme selection for windows created during the current city.
+	ThemeState g_Theme;
+
+	// Formats a resource or control identifier for readable diagnostics.
+	std::string FormatHexID(uint32_t id)
+	{
+		std::ostringstream stream;
+		stream << "0x" << std::uppercase << std::hex << id;
+		return stream.str();
+	}
+
+	// Reads a quoted manifest property without requiring a JSON dependency.
+	bool ReadThemeManifestValue(
+		const std::string& json,
+		const char* name,
+		std::string& value)
+	{
+		const std::regex expression(
+			std::string("\"") + name + "\"\\s*:\\s*\"([^\"]+)\"",
+			std::regex::icase);
+		std::smatch match;
+		if (!std::regex_search(json, match, expression))
+		{
+			return false;
+		}
+		value = match[1].str();
+		return true;
+	}
+
+	// Reads resourceGroup from either the quoted or numeric manifest form.
+	bool ReadThemeResourceGroup(const std::string& json, std::string& value)
+	{
+		if (ReadThemeManifestValue(json, "resourceGroup", value))
+		{
+			return true;
+		}
+		const std::regex expression(
+			R"("resourceGroup"\s*:\s*([0-9]+))",
+			std::regex::icase);
+		std::smatch match;
+		if (!std::regex_search(json, match, expression))
+		{
+			return false;
+		}
+		value = match[1].str();
+		return true;
+	}
+
+	// Resets the current selection, then activates a compatible external theme
+	// when theme.json names a non-built-in resource group. Failed validation
+	// leaves the built-in UI selected.
+	void LoadThemeManifest()
+	{
+		g_Theme = {};
+		const std::filesystem::path path = PluginPaths::GetThemeManifestPath();
+		std::ifstream stream(path, std::ios::binary);
+		if (!stream)
+		{
+			return;
+		}
+
+		const std::string json(
+			(std::istreambuf_iterator<char>(stream)),
+			std::istreambuf_iterator<char>());
+		std::string name;
+		std::string contractVersion;
+		std::string resourceGroup;
+		if (!ReadThemeManifestValue(json, "name", name)
+			|| !ReadThemeManifestValue(json, "contractVersion", contractVersion)
+			|| !ReadThemeResourceGroup(json, resourceGroup))
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"UI Theme: theme.json is missing name, contractVersion, or resourceGroup; using built-in UI.");
+			return;
+		}
+
+		const std::regex versionExpression(R"(^\s*(\d+)\.(\d+)\s*$)");
+		std::smatch versionMatch;
+		if (!std::regex_match(contractVersion, versionMatch, versionExpression))
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"UI Theme: incompatible contract version for '" + name
+				+ "' (" + contractVersion + "); using built-in UI.");
+			return;
+		}
+
+		try
+		{
+			const unsigned long contractMajor = std::stoul(versionMatch[1].str());
+			const unsigned long contractMinor = std::stoul(versionMatch[2].str());
+			if (contractMajor != 1 || contractMinor > UINT32_MAX)
+			{
+				Logger::GetInstance().WriteLine(
+					LogLevel::Warning,
+					"UI Theme: incompatible contract version for '" + name
+					+ "' (" + contractVersion + "); using built-in UI.");
+				return;
+			}
+			size_t parsed = 0;
+			const unsigned long group = std::stoul(resourceGroup, &parsed, 0);
+			if (parsed != resourceGroup.size()
+				|| group > UINT32_MAX
+				|| group == kWindowResourceGroup)
+			{
+				throw std::out_of_range("resource group");
+			}
+			g_Theme.active = true;
+			g_Theme.name = name;
+			g_Theme.resourceGroup = static_cast<uint32_t>(group);
+			g_Theme.contractMinor = static_cast<uint32_t>(contractMinor);
+			Logger::GetInstance().WriteLine(
+				LogLevel::Info,
+				"UI Theme: activated '" + name + "' contract " + contractVersion
+				+ " resource group " + resourceGroup + ".");
+		}
+		catch (const std::exception&)
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"UI Theme: invalid contractVersion or resourceGroup for '" + name
+				+ "'; using built-in UI.");
+		}
+	}
+
+	// Control IDs used by the authored control-laboratory resource.
 	constexpr uint32_t kCloseButtonID = 0x3D0C0710;
 	constexpr uint32_t kScrollUpButtonID = 0x3D0C0711;
 	constexpr uint32_t kScrollDownButtonID = 0x3D0C0712;
 	constexpr uint32_t kScrollBarID = 0x3D0C0713;
 	constexpr uint32_t kCloseXButtonID = 0x3D0C0714;
 
-	// GZ command-message type dispatched by native window controls.
+	// GZ command-message type and notification values emitted by native
+	// controls. Their numeric values are part of the SC4 UI protocol.
 	constexpr uint32_t kMessageTypeCommand = 3;
 	constexpr uint32_t kCommandButtonClicked = 0x287259F6;
 	constexpr uint32_t kCommandValueChanged = 0x887113A3;
-	// Native notification-dialog function signature used by the supported executable.
+	// Native notification-dialog signature used by the supported executable.
 	using CreateSC4NotificationDialog = bool(__cdecl*)(cIGZString const& caption, cIGZString const& message);
-	// Native notification-dialog address used by the supported executable.
+	// Native notification-dialog address used by that executable version.
 	constexpr uintptr_t kCreateSC4NotificationDialogAddress = 0x78DD80;
+	// Win32 timer delays. The one-millisecond timers defer window work until
+	// after the current SC4 command dispatch completes.
 	constexpr UINT kVersionNoticeDelayMs = 3000;
 	constexpr UINT kSettingsSliderSaveDelayMs = 200;
 	constexpr UINT kSettingsReopenDelayMs = 1;
 	constexpr UINT kDeferredWindowOpenDelayMs = 1;
-	constexpr float kSensitivityMin = 0.1f;
-	constexpr float kSensitivityRange = 2.9f;
-	constexpr float kPanSensitivityMin = 0.25f;
-	constexpr float kPanSensitivityRange = 2.5f;
-
-	// Manager receiving the pending version-notice timer callback.
+	// Owners of the currently armed one-shot timer callbacks.
 	SC4WindowManager* g_DelayedVersionNoticeManager = nullptr;
-	// Settings window receiving the pending delayed-save timer callback.
 	SettingsWindow* g_DelayedSettingsSaveWindow = nullptr;
-	// Manager receiving the pending settings-reopen timer callback.
 	SC4WindowManager* g_DelayedSettingsReopenManager = nullptr;
-	// Manager receiving the pending deferred-window-open timer callback.
 	SC4WindowManager* g_DelayedWindowOpenManager = nullptr;
 
 	// Forwards the version-notice timer to its owning window manager.
@@ -131,7 +284,7 @@ namespace
 		}
 	}
 
-	// Forwards the settings-save timer to its owning settings window.
+	// Forwards the deferred settings-save timer to its owning settings window.
 	VOID CALLBACK DelayedSettingsSaveTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
 		if (g_DelayedSettingsSaveWindow)
@@ -140,7 +293,7 @@ namespace
 		}
 	}
 
-	// Forwards the settings-reopen timer to its owning window manager.
+	// Reopens the settings window after the current settings command finishes.
 	VOID CALLBACK DelayedSettingsReopenTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
 		if (g_DelayedSettingsReopenManager)
@@ -149,7 +302,7 @@ namespace
 		}
 	}
 
-	// Forwards the deferred-window-open timer to its owning window manager.
+	// Opens a secondary window after the originating button command finishes.
 	VOID CALLBACK DeferredWindowOpenTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
 		if (g_DelayedWindowOpenManager)
@@ -158,16 +311,116 @@ namespace
 		}
 	}
 
-	// Minimal control-interface view used where the SDK exposes no concrete type.
-	// The laboratory only needs AsIGZWin(); it records raw command data separately.
-	class ControlWindowAdapter : public cIGZUnknown
+	// Maps one primary settings slider to its setting, valid range, and logging
+	// labels. This keeps the three sensitivity controls on one code path.
+	struct SensitivitySlider
 	{
-	public:
-		// Returns the control's underlying GZ window interface.
-		virtual cIGZWin* AsIGZWin() = 0;
+		uint32_t controlID;
+		float PluginSettings::* value;
+		float minimum;
+		float range;
+		const char* optionName;
+		const char* changeReason;
+		const char* classicModeName;
 	};
 
-	// Escapes text for the small JSON state document written by the control laboratory.
+	// Metadata for rotation, zoom, and pan sliders in the primary settings UI.
+	constexpr std::array kSensitivitySliders = {
+		SensitivitySlider{
+			kSettingsRotationSliderID,
+			&PluginSettings::rotationSensitivity,
+			PluginSettings::kMinimumSensitivity,
+			PluginSettings::kSensitivityRange,
+			"Rotation Sensitivity",
+			"rotation sensitivity change",
+			"rotation sensitivity" },
+		SensitivitySlider{
+			kSettingsZoomSliderID,
+			&PluginSettings::zoomSensitivity,
+			PluginSettings::kMinimumSensitivity,
+			PluginSettings::kSensitivityRange,
+			"Zoom Sensitivity",
+			"zoom sensitivity change",
+			"zoom sensitivity" },
+		SensitivitySlider{
+			kSettingsPanSliderID,
+			&PluginSettings::panSensitivity,
+			PluginSettings::kMinimumPanSensitivity,
+			PluginSettings::kPanSensitivityRange,
+			"Panning Speed",
+			"panning speed change",
+			"panning speed" },
+	};
+
+	// Returns slider metadata for a settings control, or null when it is not a
+	// sensitivity slider.
+	const SensitivitySlider* FindSensitivitySlider(uint32_t controlID)
+	{
+		for (const SensitivitySlider& slider : kSensitivitySliders)
+		{
+			if (slider.controlID == controlID)
+			{
+				return &slider;
+			}
+		}
+		return nullptr;
+	}
+
+	// Implements the two COM-style interfaces exposed by each native window
+	// procedure and increments the matching reference count on success.
+	bool QueryWindowProcInterface(cIGZWinProc* windowProc, uint32_t riid, void** ppvObj)
+	{
+		if (!ppvObj)
+		{
+			return false;
+		}
+		if (riid == GZIID_cIGZWinProc)
+		{
+			*ppvObj = windowProc;
+		}
+		else if (riid == GZIID_cIGZUnknown)
+		{
+			*ppvObj = static_cast<cIGZUnknown*>(windowProc);
+		}
+		else
+		{
+			*ppvObj = nullptr;
+			return false;
+		}
+
+		windowProc->AddRef();
+		return true;
+	}
+
+	// Increments a non-owning native window-procedure reference count.
+	uint32_t AddWindowProcRef(uint32_t& refCount)
+	{
+		return ++refCount;
+	}
+
+	// Decrements a non-owning native window-procedure reference count without
+	// deleting the C++ wrapper.
+	uint32_t ReleaseWindowProcRef(uint32_t& refCount)
+	{
+		if (refCount > 0)
+		{
+			--refCount;
+		}
+		return refCount;
+	}
+
+	// Stops an armed Win32 timer and clears the stored identifier.
+	void CancelTimer(uintptr_t& timerID)
+	{
+		if (timerID != 0)
+		{
+			KillTimer(NULL, static_cast<UINT_PTR>(timerID));
+			timerID = 0;
+		}
+	}
+
+	// Escapes text for the small JSON state document written by the control
+	// laboratory.
 	std::string EscapeJson(const std::string& value)
 	{
 		std::ostringstream output;
@@ -204,7 +457,8 @@ namespace
 		}
 	}
 
-	// Updates caption text using the text-control interface when available.
+	// Updates text through cIGZWinText when available, otherwise through the
+	// generic window caption API.
 	bool SetTextCaption(cIGZWin* window, const std::string& caption)
 	{
 		if (!window)
@@ -221,7 +475,7 @@ namespace
 		return window->SetCaption(text);
 	}
 
-	// Updates a button caption and makes it visible when the control supports it.
+	// Updates a button caption and enables caption rendering for button controls.
 	bool SetButtonCaption(cIGZWin* window, const char* caption)
 	{
 		if (!window || !caption)
@@ -239,43 +493,7 @@ namespace
 		return window->SetCaption(text);
 	}
 
-	// Converts a camera-mode value to the label used by UI diagnostics.
-	const char* ToCameraModeString(CameraMode value)
-	{
-		return value == CameraMode::Classic ? "Classic" : "Modern";
-	}
-
-	// Converts redraw aggression to the label used by UI diagnostics.
-	const char* ToRedrawAggressionString(RedrawAggression value)
-	{
-		switch (value)
-		{
-		case RedrawAggression::Classic:
-			return "Classic";
-		case RedrawAggression::High:
-			return "High";
-		case RedrawAggression::Extreme:
-			return "Extreme";
-		default:
-			return "Normal";
-		}
-	}
-
-	// Converts debug logging to the label used by UI diagnostics.
-	const char* ToDebugLoggingString(DebugLogging value)
-	{
-		switch (value)
-		{
-		case DebugLogging::Off:
-			return "Off";
-		case DebugLogging::Verbose:
-			return "Verbose";
-		default:
-			return "Normal";
-		}
-	}
-
-	// Converts a boolean setting to the label used by UI diagnostics.
+	// Converts a boolean setting to the label used in UI diagnostics.
 	const char* ToOnOffString(bool value)
 	{
 		return value ? "On" : "Off";
@@ -289,14 +507,15 @@ namespace
 		return stream.str();
 	}
 
-	// Maps a clamped float setting into the native slider's centesimal range.
+	// Maps a clamped setting value to the native slider's centesimal range.
 	int32_t SliderValueFromSetting(float value, float minimum, float range)
 	{
 		const float clamped = std::clamp(value, minimum, minimum + range);
 		return static_cast<int32_t>((clamped * 100.0f) + 0.5f);
 	}
 
-	// Finds a slider in a baked window and applies one float setting to it.
+	// Finds a slider in a baked window and applies the corresponding float
+	// setting without relying on a notification round trip.
 	void SetSliderValueFromSetting(cIGZWin* root, uint32_t sliderID, float value, float minimum, float range)
 	{
 		cRZAutoRefCount<cIGZWinSlider> slider;
@@ -306,7 +525,7 @@ namespace
 		}
 	}
 
-	// Logs one settings transition when its old and new values differ.
+	// Logs one settings transition only when the old and new values differ.
 	void LogOptionChanged(
 		const char* source,
 		const char* option,
@@ -358,6 +577,13 @@ namespace
 		}
 	}
 
+	// Applies one independent on/off state to a toggle-capable baked button.
+	void SetButtonToggle(cIGZWin* root, uint32_t id, bool enabled)
+	{
+		const uint32_t ids[2] = { id, 0 };
+		ApplyButtonChoice(root, enabled ? id : 0, ids, 1);
+	}
+
 	// Enables or disables one baked control and invalidates it for redraw.
 	void SetControlEnabled(cIGZWin* root, uint32_t id, bool enabled)
 	{
@@ -371,6 +597,26 @@ namespace
 		child->InvalidateSelfAndParents();
 	}
 
+	// Shows or hides one baked control and invalidates its parent hierarchy.
+	void SetControlVisible(cIGZWin* root, uint32_t id, bool visible)
+	{
+		cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
+		if (!child)
+		{
+			return;
+		}
+
+		if (visible)
+		{
+			child->ShowWindow();
+		}
+		else
+		{
+			child->HideWindow();
+		}
+		child->InvalidateSelfAndParents();
+	}
+
 	// Enables or disables every control in a supplied baked-control group.
 	void SetControlsEnabled(cIGZWin* root, const uint32_t* ids, size_t count, bool enabled)
 	{
@@ -378,6 +624,101 @@ namespace
 		{
 			SetControlEnabled(root, ids[i], enabled);
 		}
+	}
+
+	// Confirms that an external themed resource exposes every required control
+	// with the expected native type before it is allowed to replace the built-in
+	// window.
+	bool ValidateThemeControls(
+		cIGZWin* root,
+		uint32_t resourceInstanceID,
+		std::string& failure)
+	{
+		std::vector<uint32_t> buttons;
+		std::vector<uint32_t> sliders;
+		switch (resourceInstanceID)
+		{
+		case kGreetingWindowResourceInstance:
+			buttons = {
+				kGreetingCloseXButtonID,
+				kGreetingOKButtonID,
+				kGreetingViewControlsButtonID,
+				kGreetingSuppressChangelogsButtonID,
+			};
+			break;
+		case kControlsWindowResourceInstance:
+			buttons = { kControlsCloseXButtonID, kControlsOKButtonID };
+			break;
+		case kMenuButtonResourceInstance:
+			buttons = {
+				kMenuButtonID,
+				kMenuClassicButtonID,
+			};
+			break;
+		case kSettingsWindowResourceInstance:
+			buttons = {
+				kSettingsCloseXButtonID,
+				kSettingsModernButtonID,
+				kSettingsClassicButtonID,
+				kSettingsWASDOnButtonID,
+				kSettingsWASDOffButtonID,
+				kSettingsQERotationOnButtonID,
+				kSettingsQERotationOffButtonID,
+				kSettingsInvertOnButtonID,
+				kSettingsInvertOffButtonID,
+				kSettingsResetCameraButtonID,
+				kSettingsRestoreDefaultsButtonID,
+				kSettingsAdvancedButtonID,
+				kSettingsReadChangelogButtonID,
+				kSettingsCloseButtonID,
+			};
+			sliders = {
+				kSettingsRotationSliderID,
+				kSettingsZoomSliderID,
+				kSettingsPanSliderID,
+			};
+			break;
+		case kAdvancedWindowResourceInstance:
+			buttons = {
+				kAdvancedCloseXButtonID,
+				kAdvancedCloseButtonID,
+				kSettingsRedrawOffButtonID,
+				kSettingsRedrawNormalButtonID,
+				kSettingsRedrawHighButtonID,
+				kSettingsRedrawAggressiveButtonID,
+				kAdvancedDebugLoggingOffButtonID,
+				kAdvancedDebugLoggingNormalButtonID,
+				kAdvancedDebugLoggingVerboseButtonID,
+				kAdvancedCameraDumpHotkeyOnButtonID,
+				kAdvancedCameraDumpHotkeyOffButtonID,
+				kAdvancedShowChangelogsButtonID,
+			};
+			break;
+		default:
+			return true;
+		}
+
+		for (uint32_t id : buttons)
+		{
+			cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
+			cRZAutoRefCount<cIGZWinBtn> button;
+			if (!child || !child->QueryInterface(GZIID_cIGZWinBtn, button.AsPPVoid()))
+			{
+				failure = "required button " + FormatHexID(id) + " is missing or has the wrong type";
+				return false;
+			}
+		}
+		for (uint32_t id : sliders)
+		{
+			cIGZWin* child = root ? root->GetChildWindowFromIDRecursive(id) : nullptr;
+			cRZAutoRefCount<cIGZWinSlider> slider;
+			if (!child || !child->QueryInterface(GZIID_cIGZWinSlider, slider.AsPPVoid()))
+			{
+				failure = "required slider " + FormatHexID(id) + " is missing or has the wrong type";
+				return false;
+			}
+		}
+		return true;
 	}
 
 	// Returns whether a control ID selects one redraw-aggression option.
@@ -407,54 +748,34 @@ BasicManagedWindow::BasicManagedWindow()
 {
 }
 
-// Releases native resources if the owner destroys this wrapper while it is open.
+// Releases native resources if its owner destroys this wrapper while it is
+// still open.
 BasicManagedWindow::~BasicManagedWindow()
 {
 	Destroy();
 }
 
-// Resolves the window-procedure interface implemented by this wrapper.
+// Resolves the COM-style window-procedure interface implemented by this
+// wrapper.
 bool BasicManagedWindow::QueryInterface(uint32_t riid, void** ppvObj)
 {
-	if (!ppvObj)
-	{
-		return false;
-	}
-	if (riid == GZIID_cIGZWinProc)
-	{
-		*ppvObj = static_cast<cIGZWinProc*>(this);
-	}
-	else if (riid == GZIID_cIGZUnknown)
-	{
-		*ppvObj = static_cast<cIGZUnknown*>(this);
-	}
-	else
-	{
-		*ppvObj = nullptr;
-		return false;
-	}
-
-	AddRef();
-	return true;
+	return QueryWindowProcInterface(this, riid, ppvObj);
 }
 
 // Increments the reference count expected by the native window manager.
 uint32_t BasicManagedWindow::AddRef()
 {
-	return ++refCount;
+	return AddWindowProcRef(refCount);
 }
 
-// Decrements the reference count without transferring object ownership.
+// Decrements the native reference count without transferring C++ ownership.
 uint32_t BasicManagedWindow::Release()
 {
-	if (refCount > 0)
-	{
-		--refCount;
-	}
-	return refCount;
+	return ReleaseWindowProcRef(refCount);
 }
 
-// Creates a native basic window and wires its standard controls.
+// Creates the basic window template, configures its requested content, and
+// centers it in the main application window.
 bool BasicManagedWindow::Create(const SC4BasicWindowOptions& requestedOptions)
 {
 	if (rootWindow)
@@ -469,7 +790,7 @@ bool BasicManagedWindow::Create(const SC4BasicWindowOptions& requestedOptions)
 	{
 		return false;
 	}
-	parentWindow = app->GetMainWindow()->GetChildWindowFromID(kWinSC4AppID);
+	parentWindow = app->GetMainWindow()->GetChildWindowFromID(SC4WindowID::MainApplication);
 	if (!parentWindow)
 	{
 		return false;
@@ -560,7 +881,8 @@ bool BasicManagedWindow::Create(const SC4BasicWindowOptions& requestedOptions)
 	return true;
 }
 
-// Closes the native basic window and releases retained parent and root interfaces.
+// Detaches the native procedure and releases retained root and parent
+// interfaces.
 void BasicManagedWindow::Destroy()
 {
 	if (rootWindow)
@@ -580,7 +902,7 @@ void BasicManagedWindow::Destroy()
 	}
 }
 
-// Sends a close request to the root basic window when it exists.
+// Hides the basic window without releasing its native resource.
 void BasicManagedWindow::Close()
 {
 	if (rootWindow)
@@ -589,7 +911,7 @@ void BasicManagedWindow::Close()
 	}
 }
 
-// Reports whether the root basic window remains visible.
+// Reports whether the basic window remains visible.
 bool BasicManagedWindow::IsVisible() const
 {
 	return rootWindow && rootWindow->IsVisible();
@@ -601,7 +923,7 @@ bool BasicManagedWindow::ContainsPoint(int32_t parentX, int32_t parentY) const
 	return WindowContainsParentPoint(rootWindow, parentX, parentY);
 }
 
-// Handles command messages emitted by the basic window's close controls.
+// Handles the close commands emitted by the basic window's standard controls.
 bool BasicManagedWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 {
 	if (msg.dwMessageType == kMessageTypeCommand
@@ -614,13 +936,14 @@ bool BasicManagedWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 	return false;
 }
 
-// Leaves unhandled low-level GZ messages for the native window path.
+// Leaves low-level GZ messages for the native basic-window path.
 bool BasicManagedWindow::DoWinMsg(cIGZWin*, uint32_t, uint32_t, uint32_t, uint32_t)
 {
 	return false;
 }
 
-// Retains the resource and control identifiers needed to create a baked window.
+// Retains the resource and standard control identifiers needed to open one
+// baked window.
 BakedManagedWindow::BakedManagedWindow(
 	const char* logName,
 	uint32_t resourceInstanceID,
@@ -640,54 +963,34 @@ BakedManagedWindow::BakedManagedWindow(
 {
 }
 
-// Releases the baked resource if its owner destroys the wrapper while it is open.
+// Releases the baked resource if its owner destroys the wrapper while open.
 BakedManagedWindow::~BakedManagedWindow()
 {
 	Destroy();
 }
 
-// Resolves the window-procedure interface implemented by this baked wrapper.
+// Resolves the COM-style window-procedure interface implemented by this baked
+// wrapper.
 bool BakedManagedWindow::QueryInterface(uint32_t riid, void** ppvObj)
 {
-	if (!ppvObj)
-	{
-		return false;
-	}
-	if (riid == GZIID_cIGZWinProc)
-	{
-		*ppvObj = static_cast<cIGZWinProc*>(this);
-	}
-	else if (riid == GZIID_cIGZUnknown)
-	{
-		*ppvObj = static_cast<cIGZUnknown*>(this);
-	}
-	else
-	{
-		*ppvObj = nullptr;
-		return false;
-	}
-
-	AddRef();
-	return true;
+	return QueryWindowProcInterface(this, riid, ppvObj);
 }
 
 // Increments the reference count expected by the native window manager.
 uint32_t BakedManagedWindow::AddRef()
 {
-	return ++refCount;
+	return AddWindowProcRef(refCount);
 }
 
-// Decrements the reference count without transferring object ownership.
+// Decrements the native reference count without transferring C++ ownership.
 uint32_t BakedManagedWindow::Release()
 {
-	if (refCount > 0)
-	{
-		--refCount;
-	}
-	return refCount;
+	return ReleaseWindowProcRef(refCount);
 }
 
-// Instantiates the baked resource, attaches this procedure, and invokes OnCreated.
+// Attempts the selected external theme first and validates its resource,
+// falling back to the built-in UI DAT when that attempt fails. It then attaches
+// this procedure, positions the root, and invokes OnCreated().
 bool BakedManagedWindow::Create()
 {
 	if (rootWindow)
@@ -706,7 +1009,7 @@ bool BakedManagedWindow::Create()
 		return false;
 	}
 
-	parentWindow = app->GetMainWindow()->GetChildWindowFromID(kWinSC4AppID);
+	parentWindow = app->GetMainWindow()->GetChildWindowFromID(SC4WindowID::MainApplication);
 	if (!parentWindow)
 	{
 		Logger::GetInstance().WriteLine(
@@ -717,9 +1020,46 @@ bool BakedManagedWindow::Create()
 	parentWindow->AddRef();
 
 	cIGZUIScriptServicePtr scriptService;
-	const cGZPersistResourceKey key(0x00000000, kWindowResourceGroup, resourceInstanceID);
-	if (!scriptService || !scriptService->CreateWindowFromScript(
-		key, parentWindow, rootCLSID, GZIID_cIGZWin, reinterpret_cast<void**>(&rootWindow)) || !rootWindow)
+	auto createFromGroup = [&](uint32_t group) {
+		const cGZPersistResourceKey key(0x00000000, group, resourceInstanceID);
+		return scriptService
+			&& scriptService->CreateWindowFromScript(
+				key,
+				parentWindow,
+				rootCLSID,
+				GZIID_cIGZWin,
+				reinterpret_cast<void**>(&rootWindow))
+			&& rootWindow;
+	};
+
+	bool created = false;
+	if (g_Theme.active)
+	{
+		created = createFromGroup(g_Theme.resourceGroup);
+		std::string validationFailure;
+		if (created && !ValidateThemeControls(rootWindow, resourceInstanceID, validationFailure))
+		{
+			created = false;
+		}
+		if (!created)
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				std::string("UI Theme: '") + g_Theme.name + "' failed for " + logName
+				+ (validationFailure.empty() ? "." : ": " + validationFailure + ".")
+				+ " Reopening the built-in window.");
+			if (rootWindow)
+			{
+				rootWindow->Release();
+				rootWindow = nullptr;
+			}
+		}
+	}
+	if (!created)
+	{
+		created = createFromGroup(kWindowResourceGroup);
+	}
+	if (!created)
 	{
 		Logger::GetInstance().WriteLine(
 			LogLevel::Error,
@@ -746,7 +1086,8 @@ bool BakedManagedWindow::Create()
 	return true;
 }
 
-// Closes the baked root window and releases retained native interfaces.
+// Detaches the native procedure and releases retained root and parent
+// interfaces for this baked window.
 void BakedManagedWindow::Destroy()
 {
 	if (rootWindow)
@@ -766,7 +1107,7 @@ void BakedManagedWindow::Destroy()
 	}
 }
 
-// Sends a close request to the baked root window when it exists.
+// Hides the baked root window and gives subclasses a close notification.
 void BakedManagedWindow::Close()
 {
 	if (rootWindow)
@@ -776,7 +1117,7 @@ void BakedManagedWindow::Close()
 	}
 }
 
-// Raises the baked root window above sibling windows.
+// Raises the baked root window above its sibling windows.
 void BakedManagedWindow::BringToFront()
 {
 	if (rootWindow)
@@ -786,7 +1127,7 @@ void BakedManagedWindow::BringToFront()
 	}
 }
 
-// Lowers the baked root window behind sibling windows.
+// Lowers the baked root window behind its sibling windows.
 void BakedManagedWindow::SendToBack()
 {
 	if (rootWindow)
@@ -795,7 +1136,7 @@ void BakedManagedWindow::SendToBack()
 	}
 }
 
-// Changes baked root visibility without releasing its native resource.
+// Changes baked-root visibility without releasing its native resource.
 void BakedManagedWindow::SetVisible(bool visible)
 {
 	if (!rootWindow || rootWindow->IsVisible() == visible)
@@ -827,7 +1168,7 @@ bool BakedManagedWindow::ContainsPoint(int32_t parentX, int32_t parentY) const
 	return WindowContainsParentPoint(rootWindow, parentX, parentY);
 }
 
-// Lets a subclass consume GZ commands before standard baked-button handling.
+// Routes GZ command messages to the subclass command handler.
 bool BakedManagedWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 {
 	if (msg.dwMessageType == kMessageTypeCommand)
@@ -837,18 +1178,18 @@ bool BakedManagedWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 	return false;
 }
 
-// Leaves unhandled low-level GZ messages for the native baked-window path.
+// Leaves low-level GZ messages for the native baked-window path.
 bool BakedManagedWindow::DoWinMsg(cIGZWin*, uint32_t, uint32_t, uint32_t, uint32_t)
 {
 	return false;
 }
 
-// Provides a no-op default for subclasses without setup work.
+// Provides a no-op setup hook for subclasses that have no creation work.
 void BakedManagedWindow::OnCreated()
 {
 }
 
-// Provides a no-op default for subclasses without command handling.
+// Handles standard button commands and lets subclasses override the rest.
 bool BakedManagedWindow::OnCommandMessage(cGZMessage& msg)
 {
 	if (msg.dwData1 == kCommandButtonClicked)
@@ -858,7 +1199,7 @@ bool BakedManagedWindow::OnCommandMessage(cGZMessage& msg)
 	return false;
 }
 
-// Closes the baked window for its configured standard button IDs.
+// Closes the baked window for its configured close and confirmation controls.
 bool BakedManagedWindow::OnButtonClick(uint32_t controlID)
 {
 	if (controlID == closeXButtonID || controlID == okButtonID)
@@ -869,7 +1210,7 @@ bool BakedManagedWindow::OnButtonClick(uint32_t controlID)
 	return false;
 }
 
-// Provides a no-op default for subclasses without close handling.
+// Provides a no-op close hook for subclasses that have no close work.
 void BakedManagedWindow::OnClosed()
 {
 }
@@ -880,7 +1221,8 @@ cIGZWin* BakedManagedWindow::GetRootWindow() const
 	return rootWindow;
 }
 
-// Configures the baked resource and standard controls for primary settings.
+// Configures the baked resource, standard controls, and deferred-save state
+// for the primary settings window.
 SettingsWindow::SettingsWindow()
 	: BakedManagedWindow(
 		"Settings UI",
@@ -898,50 +1240,51 @@ SettingsWindow::SettingsWindow()
 {
 }
 
-// Retains the manager used for coordinated window transitions.
+// Retains the manager used for coordinated settings-window transitions.
 void SettingsWindow::SetWindowManager(SC4WindowManager* windowManager)
 {
 	manager = windowManager;
 }
 
-// Retains the mutable settings object mirrored by the controls.
+// Retains the mutable settings object mirrored by the primary controls.
 void SettingsWindow::SetSettings(PluginSettings* pluginSettings)
 {
 	settings = pluginSettings;
 }
 
-// Retains runtime callbacks used after a settings transition.
+// Retains runtime callbacks invoked after a primary-setting transition.
 void SettingsWindow::SetCallbacks(const SC4WindowManagerCallbacks* managerCallbacks)
 {
 	callbacks = managerCallbacks;
 }
 
-// Refreshes visible controls only when the baked root and settings exist.
+// Copies the current settings into an already-created baked settings window.
 void SettingsWindow::RefreshFromSettings()
 {
 	SyncControlsFromSettings();
 }
 
-// Synchronizes controls immediately after the baked settings resource is loaded.
+// Synchronizes controls as soon as the baked settings resource is available.
 void SettingsWindow::OnCreated()
 {
 	SyncControlsFromSettings();
 }
 
-// Applies one selected button to a mutually exclusive control group.
+// Applies one selected button to a mutually exclusive primary-control group.
 void SettingsWindow::ApplyChoice(uint32_t selectedID, const uint32_t* ids, size_t count)
 {
 	ApplyButtonChoice(GetRootWindow(), selectedID, ids, count);
 }
 
-// Applies a boolean setting to its paired baked controls.
+// Maps a boolean setting to its paired On and Off controls.
 void SettingsWindow::ApplyBooleanPair(uint32_t onID, uint32_t offID, bool value)
 {
 	const uint32_t ids[2] = { onID, offID };
 	ApplyChoice(value ? onID : offID, ids, 2);
 }
 
-// Copies every primary setting into the corresponding baked control.
+// Copies all primary settings into their baked controls and disables controls
+// that have no effect while Classic camera mode is selected.
 void SettingsWindow::SyncControlsFromSettings()
 {
 	if (!settings)
@@ -956,30 +1299,36 @@ void SettingsWindow::SyncControlsFromSettings()
 		cameraModeIDs,
 		2);
 	ApplyBooleanPair(kSettingsWASDOnButtonID, kSettingsWASDOffButtonID, settings->wasdMovement);
+	ApplyBooleanPair(
+		kSettingsQERotationOnButtonID,
+		kSettingsQERotationOffButtonID,
+		settings->qeRotation);
 	SetSliderValueFromSetting(
 		GetRootWindow(),
 		kSettingsRotationSliderID,
 		settings->rotationSensitivity,
-		kSensitivityMin,
-		kSensitivityRange);
+		PluginSettings::kMinimumSensitivity,
+		PluginSettings::kSensitivityRange);
 	SetSliderValueFromSetting(
 		GetRootWindow(),
 		kSettingsZoomSliderID,
 		settings->zoomSensitivity,
-		kSensitivityMin,
-		kSensitivityRange);
+		PluginSettings::kMinimumSensitivity,
+		PluginSettings::kSensitivityRange);
 	SetSliderValueFromSetting(
 		GetRootWindow(),
 		kSettingsPanSliderID,
 		settings->panSensitivity,
-		kPanSensitivityMin,
-		kPanSensitivityRange);
+		PluginSettings::kMinimumPanSensitivity,
+		PluginSettings::kPanSensitivityRange);
 	ApplyBooleanPair(kSettingsInvertOnButtonID, kSettingsInvertOffButtonID, settings->invertVertical);
 
 	const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
 	const uint32_t modernOnlyControlIDs[] = {
 		kSettingsWASDOnButtonID,
 		kSettingsWASDOffButtonID,
+		kSettingsQERotationOnButtonID,
+		kSettingsQERotationOffButtonID,
 		kSettingsRotationSliderID,
 		kSettingsZoomSliderID,
 		kSettingsPanSliderID,
@@ -994,7 +1343,8 @@ void SettingsWindow::SyncControlsFromSettings()
 	syncingControls = false;
 }
 
-// Saves now or defers the current settings change, then refreshes visible controls.
+// Logs the current state, then saves it immediately or debounces the write for
+// slider changes. In either case the controls are resynchronized afterward.
 void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediately)
 {
 	if (!settings)
@@ -1004,19 +1354,17 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 	Logger::GetInstance().WriteLine(
 		LogLevel::Info,
 		"Settings UI state: mode="
-		+ std::string(settings->cameraMode == CameraMode::Modern ? "Modern" : "Classic")
+		+ std::string(PluginSettingText::ToString(settings->cameraMode))
 		+ " wasd=" + (settings->wasdMovement ? "true" : "false")
+		+ " qeRotation=" + (settings->qeRotation ? "true" : "false")
 		+ " rotationSensitivity=" + std::to_string(settings->rotationSensitivity)
 		+ " zoomSensitivity=" + std::to_string(settings->zoomSensitivity)
 		+ " panSensitivity=" + std::to_string(settings->panSensitivity)
 		+ " invertVertical=" + (settings->invertVertical ? "true" : "false")
 		+ " redrawAggression="
-		+ (settings->redrawAggression == RedrawAggression::Classic ? "Classic"
-			: settings->redrawAggression == RedrawAggression::High ? "High"
-			: settings->redrawAggression == RedrawAggression::Extreme ? "Extreme"
-			: "Normal")
+		+ PluginSettingText::ToString(settings->redrawAggression)
 		+ " debugLogging="
-		+ ToDebugLoggingString(settings->debugLogging));
+		+ PluginSettingText::ToString(settings->debugLogging));
 
 	if (!saveImmediately)
 	{
@@ -1041,16 +1389,13 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 	SyncControlsFromSettings();
 }
 
-// Debounces a settings write so slider movement does not write every tick.
+// Debounces a settings write so continuous slider movement does not write on
+// every notification.
 void SettingsWindow::ScheduleSettingsSave(const char* reason)
 {
 	delayedSavePending = true;
 	delayedSaveReason = reason ? reason : "change";
-	if (delayedSaveTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(delayedSaveTimerID));
-		delayedSaveTimerID = 0;
-	}
+	CancelTimer(delayedSaveTimerID);
 
 	g_DelayedSettingsSaveWindow = this;
 	delayedSaveTimerID = static_cast<uintptr_t>(
@@ -1064,14 +1409,10 @@ void SettingsWindow::ScheduleSettingsSave(const char* reason)
 	}
 }
 
-// Writes the current settings when a deferred save is pending.
+// Completes the pending debounced save, if this window owns one.
 void SettingsWindow::FlushPendingSettingsSave()
 {
-	if (delayedSaveTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(delayedSaveTimerID));
-		delayedSaveTimerID = 0;
-	}
+	CancelTimer(delayedSaveTimerID);
 	if (g_DelayedSettingsSaveWindow == this)
 	{
 		g_DelayedSettingsSaveWindow = nullptr;
@@ -1107,13 +1448,15 @@ void SettingsWindow::FlushPendingSettingsSave()
 	}
 }
 
-// Consumes the settings-save timer when it belongs to this window.
+// Consumes the delayed settings-save timer for this window.
 void SettingsWindow::OnDelayedSettingsSaveTimer()
 {
 	FlushPendingSettingsSave();
 }
 
-// Converts the current cursor position over a slider to a bounded setting value.
+// Converts the cursor's horizontal position over a slider into a bounded
+// setting value. The existing setting is returned when cursor coordinates are
+// unavailable.
 float SettingsWindow::ReadSliderValueFromCursor(uint32_t sliderID, float fallback, float minimum, float range) const
 {
 	cIGZWin* root = GetRootWindow();
@@ -1140,7 +1483,48 @@ float SettingsWindow::ReadSliderValueFromCursor(uint32_t sliderID, float fallbac
 	return minimum + (ratio * range);
 }
 
-// Handles slider and command messages emitted by primary settings controls.
+// Applies the value-change notification for any registered sensitivity slider.
+// The shared metadata preserves each slider's setting range and diagnostics.
+bool SettingsWindow::ApplySensitivitySliderChange(uint32_t controlID)
+{
+	const SensitivitySlider* slider = FindSensitivitySlider(controlID);
+	if (!slider)
+	{
+		return false;
+	}
+	if (syncingControls)
+	{
+		return true;
+	}
+	if (settings->cameraMode != CameraMode::Modern)
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Verbose,
+			std::string("Settings UI: ignored ")
+			+ slider->classicModeName
+			+ " slider while Classic camera is selected.");
+		return true;
+	}
+
+	float& value = settings->*(slider->value);
+	const float previous = value;
+	value = ReadSliderValueFromCursor(
+		slider->controlID,
+		value,
+		slider->minimum,
+		slider->range);
+	LogOptionChanged(
+		"Settings UI",
+		slider->optionName,
+		FormatSettingFloat(previous),
+		FormatSettingFloat(value),
+		LogLevel::Verbose);
+	ApplySettingsChange(slider->changeReason, false);
+	return true;
+}
+
+// Handles slider value changes before delegating button commands to the baked
+// window implementation.
 bool SettingsWindow::OnCommandMessage(cGZMessage& msg)
 {
 	if (!settings)
@@ -1148,94 +1532,41 @@ bool SettingsWindow::OnCommandMessage(cGZMessage& msg)
 		return BakedManagedWindow::OnCommandMessage(msg);
 	}
 
-	if (msg.dwData1 == kCommandValueChanged)
+	if (msg.dwData1 == kCommandValueChanged
+		&& ApplySensitivitySliderChange(msg.dwData2))
 	{
-		if (syncingControls
-			&& (msg.dwData2 == kSettingsRotationSliderID
-				|| msg.dwData2 == kSettingsZoomSliderID
-				|| msg.dwData2 == kSettingsPanSliderID))
-		{
-			return true;
-		}
-
-		if (msg.dwData2 == kSettingsRotationSliderID)
-		{
-			if (settings->cameraMode != CameraMode::Modern)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored rotation sensitivity slider while Classic camera is selected.");
-				return true;
-			}
-			const float previous = settings->rotationSensitivity;
-			settings->rotationSensitivity = ReadSliderValueFromCursor(
-				kSettingsRotationSliderID,
-				settings->rotationSensitivity,
-				kSensitivityMin,
-				kSensitivityRange);
-			LogOptionChanged(
-				"Settings UI",
-				"Rotation Sensitivity",
-				FormatSettingFloat(previous),
-				FormatSettingFloat(settings->rotationSensitivity),
-				LogLevel::Verbose);
-			ApplySettingsChange("rotation sensitivity change", false);
-			return true;
-		}
-		if (msg.dwData2 == kSettingsZoomSliderID)
-		{
-			if (settings->cameraMode != CameraMode::Modern)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored zoom sensitivity slider while Classic camera is selected.");
-				return true;
-			}
-			const float previous = settings->zoomSensitivity;
-			settings->zoomSensitivity = ReadSliderValueFromCursor(
-				kSettingsZoomSliderID,
-				settings->zoomSensitivity,
-				kSensitivityMin,
-				kSensitivityRange);
-			LogOptionChanged(
-				"Settings UI",
-				"Zoom Sensitivity",
-				FormatSettingFloat(previous),
-				FormatSettingFloat(settings->zoomSensitivity),
-				LogLevel::Verbose);
-			ApplySettingsChange("zoom sensitivity change", false);
-			return true;
-		}
-		if (msg.dwData2 == kSettingsPanSliderID)
-		{
-			if (settings->cameraMode != CameraMode::Modern)
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Verbose,
-					"Settings UI: ignored panning speed slider while Classic camera is selected.");
-				return true;
-			}
-			const float previous = settings->panSensitivity;
-			settings->panSensitivity = ReadSliderValueFromCursor(
-				kSettingsPanSliderID,
-				settings->panSensitivity,
-				kPanSensitivityMin,
-				kPanSensitivityRange);
-			LogOptionChanged(
-				"Settings UI",
-				"Panning Speed",
-				FormatSettingFloat(previous),
-				FormatSettingFloat(settings->panSensitivity),
-				LogLevel::Verbose);
-			ApplySettingsChange("panning speed change", false);
-			return true;
-		}
+		return true;
 	}
 
 	return BakedManagedWindow::OnCommandMessage(msg);
 }
 
-// Handles primary settings buttons and delegates unrecognized controls to the base class.
+// Sets the requested camera mode, persists the change, refreshes every
+// dependent window, then notifies the runtime after the controls agree with
+// the new mode.
+void SettingsWindow::ApplyCameraMode(CameraMode mode)
+{
+	const CameraMode previous = settings->cameraMode;
+	settings->cameraMode = mode;
+	LogOptionChanged(
+		"Settings UI",
+		"Camera Mode",
+		PluginSettingText::ToString(previous),
+		PluginSettingText::ToString(settings->cameraMode));
+	ApplySettingsChange("camera mode change");
+	if (manager)
+	{
+		manager->RefreshSettingsWindows();
+	}
+	if (callbacks && callbacks->OnCameraModeChanged)
+	{
+		callbacks->OnCameraModeChanged(mode == CameraMode::Modern);
+	}
+}
+
+// Applies primary settings controls, including Modern-only WASD, Q/E rotation,
+// sensitivity, and inversion options. Unrecognized controls use the standard
+// baked close handling.
 bool SettingsWindow::OnButtonClick(uint32_t controlID)
 {
 	if (controlID == kSettingsCloseXButtonID || controlID == kSettingsCloseButtonID)
@@ -1250,45 +1581,11 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 		switch (controlID)
 		{
 		case kSettingsModernButtonID:
-		{
-			const CameraMode previous = settings->cameraMode;
-			settings->cameraMode = CameraMode::Modern;
-			LogOptionChanged(
-				"Settings UI",
-				"Camera Mode",
-				ToCameraModeString(previous),
-				ToCameraModeString(settings->cameraMode));
-			ApplySettingsChange("camera mode change");
-			if (manager)
-			{
-				manager->RefreshSettingsWindows();
-			}
-			if (callbacks && callbacks->OnCameraModeChanged)
-			{
-				callbacks->OnCameraModeChanged(true);
-			}
+			ApplyCameraMode(CameraMode::Modern);
 			return true;
-		}
 		case kSettingsClassicButtonID:
-		{
-			const CameraMode previous = settings->cameraMode;
-			settings->cameraMode = CameraMode::Classic;
-			LogOptionChanged(
-				"Settings UI",
-				"Camera Mode",
-				ToCameraModeString(previous),
-				ToCameraModeString(settings->cameraMode));
-			ApplySettingsChange("camera mode change");
-			if (manager)
-			{
-				manager->RefreshSettingsWindows();
-			}
-			if (callbacks && callbacks->OnCameraModeChanged)
-			{
-				callbacks->OnCameraModeChanged(false);
-			}
+			ApplyCameraMode(CameraMode::Classic);
 			return true;
-		}
 		case kSettingsWASDOnButtonID:
 			if (!modernCameraActive)
 			{
@@ -1316,6 +1613,34 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			LogOptionChanged("Settings UI", "WASD Movement", ToOnOffString(settings->wasdMovement), "Off");
 			settings->wasdMovement = false;
 			ApplySettingsChange("WASD movement change");
+			if (callbacks && callbacks->OnInputSettingsChanged)
+			{
+				callbacks->OnInputSettingsChanged();
+			}
+			return true;
+		case kSettingsQERotationOnButtonID:
+			if (!modernCameraActive)
+			{
+				SyncControlsFromSettings();
+				return true;
+			}
+			LogOptionChanged("Settings UI", "Q/E Rotation", ToOnOffString(settings->qeRotation), "On");
+			settings->qeRotation = true;
+			ApplySettingsChange("Q/E rotation change");
+			if (callbacks && callbacks->OnInputSettingsChanged)
+			{
+				callbacks->OnInputSettingsChanged();
+			}
+			return true;
+		case kSettingsQERotationOffButtonID:
+			if (!modernCameraActive)
+			{
+				SyncControlsFromSettings();
+				return true;
+			}
+			LogOptionChanged("Settings UI", "Q/E Rotation", ToOnOffString(settings->qeRotation), "Off");
+			settings->qeRotation = false;
+			ApplySettingsChange("Q/E rotation change");
 			if (callbacks && callbacks->OnInputSettingsChanged)
 			{
 				callbacks->OnInputSettingsChanged();
@@ -1349,23 +1674,31 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 		{
 			const CameraMode previousCameraMode = settings->cameraMode;
 			const bool previousWASD = settings->wasdMovement;
+			const bool previousQERotation = settings->qeRotation;
 			const float previousRotationSensitivity = settings->rotationSensitivity;
 			const float previousZoomSensitivity = settings->zoomSensitivity;
 			const float previousPanSensitivity = settings->panSensitivity;
 			const bool previousInvertVertical = settings->invertVertical;
 			const RedrawAggression previousRedrawAggression = settings->redrawAggression;
 			const DebugLogging previousDebugLogging = settings->debugLogging;
+			const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
+			const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
 			settings->RestoreDefaults();
 			LogOptionChanged(
 				"Settings UI",
 				"Camera Mode",
-				ToCameraModeString(previousCameraMode),
-				ToCameraModeString(settings->cameraMode));
+				PluginSettingText::ToString(previousCameraMode),
+				PluginSettingText::ToString(settings->cameraMode));
 			LogOptionChanged(
 				"Settings UI",
 				"WASD Movement",
 				ToOnOffString(previousWASD),
 				ToOnOffString(settings->wasdMovement));
+			LogOptionChanged(
+				"Settings UI",
+				"Q/E Rotation",
+				ToOnOffString(previousQERotation),
+				ToOnOffString(settings->qeRotation));
 			LogOptionChanged(
 				"Settings UI",
 				"Rotation Sensitivity",
@@ -1389,13 +1722,23 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			LogOptionChanged(
 				"Settings UI",
 				"Redraw Aggression",
-				ToRedrawAggressionString(previousRedrawAggression),
-				ToRedrawAggressionString(settings->redrawAggression));
+				PluginSettingText::ToString(previousRedrawAggression),
+				PluginSettingText::ToString(settings->redrawAggression));
 			LogOptionChanged(
 				"Settings UI",
 				"Diagnostics Logging",
-				ToDebugLoggingString(previousDebugLogging),
-				ToDebugLoggingString(settings->debugLogging));
+				PluginSettingText::ToString(previousDebugLogging),
+				PluginSettingText::ToString(settings->debugLogging));
+			LogOptionChanged(
+				"Settings UI",
+				"Camera Dump Hotkey",
+				ToOnOffString(previousCameraDumpHotkey),
+				ToOnOffString(settings->cameraDumpHotkey));
+			LogOptionChanged(
+				"Settings UI",
+				"Show Changelogs on Update",
+				ToOnOffString(previousShowChangelogs),
+				ToOnOffString(settings->showChangelogsOnUpdate));
 			ApplySettingsChange("restore defaults");
 			if (manager)
 			{
@@ -1448,7 +1791,7 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 	return BakedManagedWindow::OnButtonClick(controlID);
 }
 
-// Flushes settings, clears timers, and returns focus handling to the manager.
+// Flushes a pending save and tells the manager that the primary window closed.
 void SettingsWindow::OnClosed()
 {
 	FlushPendingSettingsSave();
@@ -1458,7 +1801,8 @@ void SettingsWindow::OnClosed()
 	}
 }
 
-// Configures the baked resource used by the floating camera menu button.
+// Configures the compact top-right menu resource that opens settings and
+// exposes the camera-mode switch lip.
 MenuButtonWindow::MenuButtonWindow()
 	: BakedManagedWindow(
 		"Menu Button UI",
@@ -1467,41 +1811,119 @@ MenuButtonWindow::MenuButtonWindow()
 		0,
 		0,
 		Placement::TopRightButton),
-	manager(nullptr)
+	manager(nullptr),
+	settings(nullptr)
 {
 }
 
-// Retains the manager that opens and closes the settings window.
+// Retains the manager that owns settings-window and mode-switch actions.
 void MenuButtonWindow::SetWindowManager(SC4WindowManager* windowManager)
 {
 	manager = windowManager;
 }
 
-// Updates the menu button's visual state for the settings-window visibility.
-void MenuButtonWindow::SetSettingsOpen(bool open)
+// Retains the settings used to choose the visible Modern or Classic artwork.
+void MenuButtonWindow::SetSettings(PluginSettings* pluginSettings)
 {
-	cIGZWin* buttonWindow = GetRootWindow()
-		? GetRootWindow()->GetChildWindowFromIDRecursive(kMenuButtonID)
-		: nullptr;
-	cRZAutoRefCount<cIGZWinBtn> button;
-	if (buttonWindow && buttonWindow->QueryInterface(GZIID_cIGZWinBtn, button.AsPPVoid()))
+	settings = pluginSettings;
+}
+
+// Selects the correct menu artwork as soon as the baked resource is created.
+void MenuButtonWindow::OnCreated()
+{
+	RefreshMode();
+}
+
+// Shows the Modern or Classic menu control according to the active camera
+// mode, then refreshes cursor feedback for the visible control.
+void MenuButtonWindow::RefreshMode()
+{
+	const bool modern = settings && settings->cameraMode == CameraMode::Modern;
+	if (modern)
 	{
-		if (open)
-		{
-			button->ToggleOn();
-		}
-		else
-		{
-			button->ToggleOff();
-		}
+		SetControlVisible(GetRootWindow(), kMenuClassicButtonID, false);
+		SetControlVisible(GetRootWindow(), kMenuButtonID, true);
+	}
+	else
+	{
+		SetControlVisible(GetRootWindow(), kMenuButtonID, false);
+		SetControlVisible(GetRootWindow(), kMenuClassicButtonID, true);
+	}
+	RefreshCursor();
+}
+
+// Re-evaluates the current cursor so the active menu control can supply its
+// native hover cursor.
+void MenuButtonWindow::RefreshCursor()
+{
+	POINT cursor{};
+	HWND activeWindow = GetActiveWindow();
+	if (activeWindow
+		&& GetCursorPos(&cursor)
+		&& ScreenToClient(activeWindow, &cursor))
+	{
+		UpdateCursorIfHovered(cursor.x, cursor.y);
 	}
 }
 
-// Toggles settings when the baked camera menu button is pressed.
+// Returns whether the cursor is over the menu and updates the visible mode's
+// native button cursor when it is.
+bool MenuButtonWindow::UpdateCursorIfHovered(int32_t parentX, int32_t parentY)
+{
+	if (!ContainsPoint(parentX, parentY))
+	{
+		return false;
+	}
+
+	cIGZWin* root = GetRootWindow();
+	const uint32_t activeButtonID =
+		settings && settings->cameraMode == CameraMode::Modern
+			? kMenuButtonID
+			: kMenuClassicButtonID;
+	cIGZWin* activeButton = root
+		? root->GetChildWindowFromIDRecursive(activeButtonID)
+		: nullptr;
+	if (activeButton)
+	{
+		activeButton->UpdateCursor();
+	}
+	return true;
+}
+
+// Invalidates the menu after the settings window changes state. The current
+// artwork has no separate open-state visual, so the argument is intentionally
+// unused.
+void MenuButtonWindow::SetSettingsOpen(bool open)
+{
+	(void)open;
+	if (GetRootWindow())
+	{
+		GetRootWindow()->InvalidateSelfAndParents();
+	}
+}
+
+// Opens or closes settings when the button face is clicked. A click in the
+// lower mode lip switches between Modern and Classic camera modes instead.
 bool MenuButtonWindow::OnButtonClick(uint32_t controlID)
 {
-	if (controlID == kMenuButtonID)
+	if (controlID == kMenuButtonID || controlID == kMenuClassicButtonID)
 	{
+		POINT cursor{};
+		HWND activeWindow = GetActiveWindow();
+		cIGZWin* root = GetRootWindow();
+		if (activeWindow
+			&& root
+			&& GetCursorPos(&cursor)
+			&& ScreenToClient(activeWindow, &cursor)
+			&& cursor.y - root->GetT() >= kMenuModeLipTop)
+		{
+			if (manager)
+			{
+				manager->ToggleCameraMode();
+			}
+			return true;
+		}
+
 		const bool opened = manager && manager->ToggleSettingsWindow();
 		SetSettingsOpen(opened);
 		return true;
@@ -1509,7 +1931,7 @@ bool MenuButtonWindow::OnButtonClick(uint32_t controlID)
 	return false;
 }
 
-// Configures the baked resource used by the greeting window.
+// Configures the baked greeting and changelog resource.
 GreetingWindow::GreetingWindow()
 	: BakedManagedWindow(
 		"Greeting UI",
@@ -1517,19 +1939,58 @@ GreetingWindow::GreetingWindow()
 		kGreetingWindowCLSID,
 		kGreetingCloseXButtonID,
 		kGreetingOKButtonID),
-	manager(nullptr)
+	manager(nullptr),
+	settings(nullptr)
 {
 }
 
-// Retains the manager that owns greeting-window destinations.
+// Retains the manager used to open the controls reference window.
 void GreetingWindow::SetWindowManager(SC4WindowManager* windowManager)
 {
 	manager = windowManager;
 }
 
-// Opens the requested greeting destination or delegates standard close handling.
+// Retains the settings that hold the automatic-changelog preference.
+void GreetingWindow::SetSettings(PluginSettings* pluginSettings)
+{
+	settings = pluginSettings;
+}
+
+// Synchronizes the changelog preference as soon as the greeting is created.
+void GreetingWindow::OnCreated()
+{
+	RefreshFromSettings();
+}
+
+// Mirrors the automatic-changelog preference in the greeting toggle button.
+void GreetingWindow::RefreshFromSettings()
+{
+	SetButtonToggle(
+		GetRootWindow(),
+		kGreetingSuppressChangelogsButtonID,
+		settings && !settings->showChangelogsOnUpdate);
+}
+
+// Toggles automatic changelogs or opens the controls reference window, then
+// delegates ordinary close actions to the baked base class.
 bool GreetingWindow::OnButtonClick(uint32_t controlID)
 {
+	if (controlID == kGreetingSuppressChangelogsButtonID && settings)
+	{
+		settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
+		if (!settings->Save())
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Changelog UI: failed to save the automatic changelog preference.");
+		}
+		RefreshFromSettings();
+		if (manager)
+		{
+			manager->RefreshSettingsWindows();
+		}
+		return true;
+	}
 	if (controlID == kGreetingViewControlsButtonID)
 	{
 		if (manager)
@@ -1541,7 +2002,7 @@ bool GreetingWindow::OnButtonClick(uint32_t controlID)
 	return BakedManagedWindow::OnButtonClick(controlID);
 }
 
-// Configures the baked resource used by the controls-reference window.
+// Configures the read-only baked reference panel for the camera controls.
 ControlsWindow::ControlsWindow()
 	: BakedManagedWindow(
 		"Controls UI",
@@ -1552,7 +2013,7 @@ ControlsWindow::ControlsWindow()
 {
 }
 
-// Configures the baked resource used by advanced settings.
+// Configures the baked resource and callback storage for advanced settings.
 AdvancedSettingsWindow::AdvancedSettingsWindow()
 	: BakedManagedWindow(
 		"Advanced Settings UI",
@@ -1560,36 +2021,44 @@ AdvancedSettingsWindow::AdvancedSettingsWindow()
 		kAdvancedWindowCLSID,
 		kAdvancedCloseXButtonID,
 		kAdvancedCloseButtonID),
+	manager(nullptr),
 	settings(nullptr),
 	callbacks(nullptr)
 {
 }
 
-// Retains the settings object mirrored by advanced controls.
+// Retains the manager used to refresh related visible windows.
+void AdvancedSettingsWindow::SetWindowManager(SC4WindowManager* windowManager)
+{
+	manager = windowManager;
+}
+
+// Retains the mutable settings object mirrored by advanced controls.
 void AdvancedSettingsWindow::SetSettings(PluginSettings* pluginSettings)
 {
 	settings = pluginSettings;
 }
 
-// Retains runtime callbacks used after advanced setting changes.
+// Retains runtime callbacks for settings that change active behavior.
 void AdvancedSettingsWindow::SetCallbacks(const SC4WindowManagerCallbacks* managerCallbacks)
 {
 	callbacks = managerCallbacks;
 }
 
-// Refreshes advanced controls only when their baked root and settings exist.
+// Copies the current advanced settings into an already-created baked window.
 void AdvancedSettingsWindow::RefreshFromSettings()
 {
 	SyncControlsFromSettings();
 }
 
-// Synchronizes advanced controls immediately after the baked resource is loaded.
+// Synchronizes advanced controls as soon as the baked resource is available.
 void AdvancedSettingsWindow::OnCreated()
 {
 	SyncControlsFromSettings();
 }
 
-// Copies debug-logging settings into the advanced control group.
+// Copies redraw, diagnostics, camera-dump, and changelog preferences into the
+// advanced controls. Redraw choices remain disabled in Classic camera mode.
 void AdvancedSettingsWindow::SyncControlsFromSettings()
 {
 	if (!settings)
@@ -1653,9 +2122,25 @@ void AdvancedSettingsWindow::SyncControlsFromSettings()
 		break;
 	}
 	ApplyButtonChoice(GetRootWindow(), selectedDebugLoggingID, debugLoggingIDs, 3);
+	const uint32_t cameraDumpHotkeyIDs[2] = {
+		kAdvancedCameraDumpHotkeyOnButtonID,
+		kAdvancedCameraDumpHotkeyOffButtonID,
+	};
+	ApplyButtonChoice(
+		GetRootWindow(),
+		settings->cameraDumpHotkey
+			? kAdvancedCameraDumpHotkeyOnButtonID
+			: kAdvancedCameraDumpHotkeyOffButtonID,
+		cameraDumpHotkeyIDs,
+		2);
+	SetButtonToggle(
+		GetRootWindow(),
+		kAdvancedShowChangelogsButtonID,
+		settings->showChangelogsOnUpdate);
 }
 
-// Applies advanced-settings button choices and delegates standard close handling.
+// Applies advanced-option buttons, persists their new values immediately, and
+// notifies the runtime for redraw or logging changes that take effect at once.
 bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 {
 	if (settings)
@@ -1666,14 +2151,22 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 				LogLevel::Verbose,
 				"Advanced Settings UI: ignored Redraw Aggression button while Classic camera is selected.");
 			SyncControlsFromSettings();
+			if (manager)
+			{
+				manager->RefreshSettingsWindows();
+			}
 			return true;
 		}
 
 		bool changed = true;
 		bool redrawChanged = false;
 		bool debugLoggingChanged = false;
+		bool cameraDumpHotkeyChanged = false;
+		bool showChangelogsChanged = false;
 		const RedrawAggression previousRedrawAggression = settings->redrawAggression;
 		const DebugLogging previousDebugLogging = settings->debugLogging;
+		const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
+		const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
 		switch (controlID)
 		{
 		case kSettingsRedrawOffButtonID:
@@ -1704,6 +2197,18 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 			settings->debugLogging = DebugLogging::Verbose;
 			debugLoggingChanged = true;
 			break;
+		case kAdvancedCameraDumpHotkeyOnButtonID:
+			settings->cameraDumpHotkey = true;
+			cameraDumpHotkeyChanged = true;
+			break;
+		case kAdvancedCameraDumpHotkeyOffButtonID:
+			settings->cameraDumpHotkey = false;
+			cameraDumpHotkeyChanged = true;
+			break;
+		case kAdvancedShowChangelogsButtonID:
+			settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
+			showChangelogsChanged = true;
+			break;
 		default:
 			changed = false;
 			break;
@@ -1716,22 +2221,41 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 				LogOptionChanged(
 					"Advanced Settings UI",
 					"Redraw Aggression",
-					ToRedrawAggressionString(previousRedrawAggression),
-					ToRedrawAggressionString(settings->redrawAggression));
+					PluginSettingText::ToString(previousRedrawAggression),
+					PluginSettingText::ToString(settings->redrawAggression));
 			}
 			if (debugLoggingChanged)
 			{
 				LogOptionChanged(
 					"Advanced Settings UI",
 					"Diagnostics Logging",
-					ToDebugLoggingString(previousDebugLogging),
-					ToDebugLoggingString(settings->debugLogging));
+					PluginSettingText::ToString(previousDebugLogging),
+					PluginSettingText::ToString(settings->debugLogging));
+			}
+			if (cameraDumpHotkeyChanged)
+			{
+				LogOptionChanged(
+					"Advanced Settings UI",
+					"Camera Dump Hotkey",
+					ToOnOffString(previousCameraDumpHotkey),
+					ToOnOffString(settings->cameraDumpHotkey));
+			}
+			if (showChangelogsChanged)
+			{
+				LogOptionChanged(
+					"Advanced Settings UI",
+					"Show Changelogs on Update",
+					ToOnOffString(previousShowChangelogs),
+					ToOnOffString(settings->showChangelogsOnUpdate));
 			}
 
-			const char* reason = redrawChanged && debugLoggingChanged
-				? "advanced settings change"
-				: redrawChanged ? "redraw aggression change"
-				: "diagnostics change";
+			const char* reason = redrawChanged
+				? "redraw aggression change"
+				: debugLoggingChanged
+					? "diagnostics logging change"
+					: cameraDumpHotkeyChanged
+						? "camera dump hotkey change"
+						: "changelog preference change";
 			if (!settings->Save())
 			{
 				Logger::GetInstance().WriteLine(
@@ -1745,6 +2269,10 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 					std::string("Advanced Settings UI: saved settings after ") + reason + ".");
 			}
 			SyncControlsFromSettings();
+			if (manager)
+			{
+				manager->RefreshSettingsWindows();
+			}
 			if (redrawChanged && callbacks && callbacks->OnRedrawAggressionChanged)
 			{
 				callbacks->OnRedrawAggressionChanged();
@@ -1760,7 +2288,8 @@ bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
 	return BakedManagedWindow::OnButtonClick(controlID);
 }
 
-// Initializes an empty control laboratory with no retained native interfaces.
+// Initializes an empty control laboratory with no retained native interfaces
+// or recorded control geometry.
 ControlLaboratoryWindow::ControlLaboratoryWindow()
 	: refCount(0), parentWindow(nullptr), rootWindow(nullptr), scrollOffset(0), wheelDeltaRemainder(0),
 	wheelScrollbarDirection(0), wheelScrollbarNotificationHandled(false)
@@ -1773,49 +2302,28 @@ ControlLaboratoryWindow::~ControlLaboratoryWindow()
 	Destroy();
 }
 
-// Resolves the window-procedure interface implemented by the laboratory.
+// Resolves the COM-style window-procedure interface implemented by the
+// laboratory.
 bool ControlLaboratoryWindow::QueryInterface(uint32_t riid, void** ppvObj)
 {
-	if (!ppvObj)
-	{
-		return false;
-	}
-
-	if (riid == GZIID_cIGZWinProc)
-	{
-		*ppvObj = static_cast<cIGZWinProc*>(this);
-	}
-	else if (riid == GZIID_cIGZUnknown)
-	{
-		*ppvObj = static_cast<cIGZUnknown*>(this);
-	}
-	else
-	{
-		*ppvObj = nullptr;
-		return false;
-	}
-
-	AddRef();
-	return true;
+	return QueryWindowProcInterface(this, riid, ppvObj);
 }
 
 // Increments the reference count expected by the native window manager.
 uint32_t ControlLaboratoryWindow::AddRef()
 {
-	return ++refCount;
+	return AddWindowProcRef(refCount);
 }
 
-// Decrements the reference count without transferring object ownership.
+// Decrements the native reference count without transferring C++ ownership.
 uint32_t ControlLaboratoryWindow::Release()
 {
-	if (refCount > 0)
-	{
-		--refCount;
-	}
-	return refCount;
+	return ReleaseWindowProcRef(refCount);
 }
 
-// Creates the laboratory root and then builds its experimental native controls.
+// Creates the authored laboratory resource, records its native controls, and
+// writes the current test-state document. The controls themselves come from
+// the UI DAT, not from cIGZWinCtrlMgr factory calls.
 bool ControlLaboratoryWindow::Create()
 {
 	if (rootWindow)
@@ -1832,7 +2340,7 @@ bool ControlLaboratoryWindow::Create()
 		return false;
 	}
 
-	parentWindow = app->GetMainWindow()->GetChildWindowFromID(kWinSC4AppID);
+	parentWindow = app->GetMainWindow()->GetChildWindowFromID(SC4WindowID::MainApplication);
 	if (!parentWindow)
 	{
 		Logger::GetInstance().WriteLine(LogLevel::Error, "Test UI: SC4 application window was unavailable.");
@@ -1874,7 +2382,8 @@ bool ControlLaboratoryWindow::Create()
 	return true;
 }
 
-// Releases every laboratory control, root window, and retained parent interface.
+// Detaches the native procedure, clears the recorded control layout, and
+// releases the laboratory root and its parent interface.
 void ControlLaboratoryWindow::Destroy()
 {
 	if (!rootWindow)
@@ -1889,13 +2398,6 @@ void ControlLaboratoryWindow::Destroy()
 
 	SetWinProc(rootWindow, nullptr);
 	rootWindow->ChildDeleteAll();
-	for (const ChildControl& control : controls)
-	{
-		if (control.interfacePointer)
-		{
-			control.interfacePointer->Release();
-		}
-	}
 	controls.clear();
 
 	if (parentWindow)
@@ -1929,7 +2431,8 @@ bool ControlLaboratoryWindow::ContainsPoint(int32_t parentX, int32_t parentY) co
 	return WindowContainsParentPoint(rootWindow, parentX, parentY);
 }
 
-// Converts wheel input over the laboratory into content scrolling or arrow activation.
+// Converts wheel input over the laboratory into native scrollbar-arrow
+// actions, preserving partial high-resolution wheel deltas between calls.
 bool ControlLaboratoryWindow::HandleMouseWheel(
 	int32_t wheelDelta, int32_t parentX, int32_t parentY, intptr_t nativeWindowHandle)
 {
@@ -1954,7 +2457,8 @@ bool ControlLaboratoryWindow::HandleMouseWheel(
 	return true;
 }
 
-// Sends a native scrollbar-arrow action for the requested scroll direction.
+// Activates the matching native scrollbar arrow when a window handle is
+// available, otherwise applies the same 40-pixel content step directly.
 void ControlLaboratoryWindow::ActivateScrollbarArrow(int32_t direction, intptr_t nativeWindowHandle)
 {
 	cIGZWin* scrollbar = rootWindow ? rootWindow->GetChildWindowFromID(kScrollBarID) : nullptr;
@@ -1987,29 +2491,12 @@ void ControlLaboratoryWindow::ActivateScrollbarArrow(int32_t direction, intptr_t
 	}
 }
 
-// Retains one laboratory control and records its layout for future scrolling.
-void ControlLaboratoryWindow::AddControl(cIGZWin* window, cIGZUnknown* interfacePointer, uint32_t id,
-	const char* name, int32_t left, int32_t top, int32_t right, int32_t bottom, bool fixed)
-{
-	if (!window || !interfacePointer)
-	{
-		return;
-	}
-
-	window->SetID(id);
-	window->SetArea(left, top, right, bottom);
-	window->SetNotificationTarget(rootWindow);
-	rootWindow->ChildAdd(window);
-	controls.push_back({ window, interfacePointer, id, left, top, right - left, bottom - top, fixed, name });
-}
-
-// Creates each control used to inspect native SC4 control behavior.
+// Finds each control authored in the laboratory UI resource and records its
+// initial geometry, scroll behavior, and diagnostic name.
 bool ControlLaboratoryWindow::BuildControls()
 {
 	// Controls are authored in the UI DAT and instantiated by SC4's own UI
-	// script service. Production windows do not depend on cIGZWinCtrlMgr
-	// programmatic factory methods.
-	// Baked control metadata used while collecting the laboratory layout.
+	// script service.
 	struct ScriptControl { uint32_t id; const char* name; bool fixed; };
 	const ScriptControl scriptControls[] = {
 		{ kCloseButtonID, "close", true },
@@ -2035,15 +2522,10 @@ bool ControlLaboratoryWindow::BuildControls()
 		cIGZWin* child = rootWindow->GetChildWindowFromIDRecursive(spec.id);
 		if (child)
 		{
-			if (spec.id == kScrollUpButtonID || spec.id == kScrollDownButtonID)
-			{
-				child->HideWindow();
-			}
 			const int32_t left = child->GetL();
 			const int32_t top = child->GetT();
 			controls.push_back({
 				child,
-				nullptr,
 				spec.id,
 				left,
 				top,
@@ -2065,171 +2547,10 @@ bool ControlLaboratoryWindow::BuildControls()
 		"Test UI: registered " + std::to_string(controls.size()) + " scripted controls.");
 	ApplyScrollPosition();
 	return !controls.empty();
-
-	cIGZWinCtrlMgrPtr manager;
-	if (!manager)
-	{
-		Logger::GetInstance().WriteLine(LogLevel::Error, "Test UI: control manager was unavailable.");
-		return false;
-	}
-	Logger::GetInstance().WriteLine(LogLevel::Info, "Test UI: control manager acquired.");
-
-	auto addLabel = [&](uint32_t id, const char* caption, int32_t top, uint32_t style = 0, uint32_t color = 0x203050)
-	{
-		cRZBaseString text(caption);
-		cIGZWinText* label = manager->CreateLabel(id, text);
-		if (label)
-		{
-			label->SetFontStyle(style);
-			label->SetTextColor(color);
-			AddControl(label->AsIGZWin(), label, id, caption, 24, top, 490, top + 22);
-		}
-	};
-
-	auto addButton = [&](uint32_t id, const char* name, const char* caption, int32_t left, int32_t top,
-		cIGZWinBtn* button, bool fixed = false)
-	{
-		Logger::GetInstance().WriteLine(LogLevel::Info, std::string("Test UI: adding ") + name + '.');
-		if (button)
-		{
-			button->SetBtnFlag(cIGZWinBtn::BtnFlagShowCaption, true);
-			button->SetBtnFlag(cIGZWinBtn::BtnFlagFill, true);
-			AddControl(button->AsIGZWin(), button, id, name, left, top, left + 180, top + 28, fixed);
-		}
-	};
-
-	addLabel(0x3D0C0720, "SC4-ModernCamera Native UI Control Laboratory", 48, cIGZFont::Style_Bold);
-	Logger::GetInstance().WriteLine(LogLevel::Info, "Test UI: label creation succeeded.");
-	addLabel(0x3D0C0721, "Each interaction is logged and written to Plugins/SC4-ModernCamera/test.json.", 72);
-	addLabel(0x3D0C0722, "BUTTON CONTROLS", 108, cIGZFont::Style_Bold);
-
-	cRZBaseString buttonText("Standard Button");
-	addButton(0x3D0C0730, "standardButton", "Standard Button", 28, 136,
-		manager->CreateButton(0x3D0C0730, buttonText, nullptr, nullptr, 0));
-	cRZBaseString toggleText("Toggle Button");
-	addButton(0x3D0C0731, "toggleButton", "Toggle Button", 250, 136,
-		manager->CreateToggleButton(0x3D0C0731, toggleText, nullptr, nullptr, 0));
-	cRZBaseString fixedText("Fixed Button");
-	addButton(0x3D0C0732, "fixedButton", "Fixed Button", 28, 172,
-		manager->CreateFixedButton(0x3D0C0732, fixedText, nullptr, nullptr, 0));
-	cRZBaseString fixedToggleText("Fixed Toggle");
-	addButton(0x3D0C0733, "fixedToggleButton", "Fixed Toggle", 250, 172,
-		manager->CreateFixedToggleButton(0x3D0C0733, fixedToggleText, nullptr, nullptr, 0));
-	cRZBaseString checkText("Checkbox");
-	addButton(0x3D0C0734, "checkBox", "Checkbox", 28, 208,
-		manager->CreateCheckBox(0x3D0C0734, checkText, nullptr, nullptr, 0));
-	cRZBaseString radioCheckText("Radio Check");
-	addButton(0x3D0C0735, "radioCheck", "Radio Check", 250, 208,
-		manager->CreateRadioCheck(0x3D0C0735, radioCheckText, nullptr, nullptr, 0));
-	cRZBaseString radioOneText("Radio: Choice A");
-	addButton(0x3D0C0736, "radioChoiceA", "Radio: Choice A", 28, 244,
-		manager->CreateRadioButton(0x3D0C0736, radioOneText, nullptr, nullptr, 0));
-	cRZBaseString radioTwoText("Radio: Choice B");
-	addButton(0x3D0C0737, "radioChoiceB", "Radio: Choice B", 250, 244,
-		manager->CreateRadioButton(0x3D0C0737, radioTwoText, nullptr, nullptr, 0));
-
-	addLabel(0x3D0C0740, "VALUE AND TEXT INPUTS", 292, cIGZFont::Style_Bold);
-
-	auto addAdapterControl = [&](uint32_t id, const char* name, void* rawInterface,
-		int32_t left, int32_t top, int32_t right, int32_t bottom, bool fixed = false)
-	{
-		Logger::GetInstance().WriteLine(LogLevel::Info, std::string("Test UI: adding ") + name + '.');
-		ControlWindowAdapter* adapter = reinterpret_cast<ControlWindowAdapter*>(rawInterface);
-		if (adapter)
-		{
-			AddControl(adapter->AsIGZWin(), adapter, id, name, left, top, right, bottom, fixed);
-		}
-	};
-
-	addLabel(0x3D0C0741, "Horizontal Slider (25 / 100)", 322);
-	addAdapterControl(0x3D0C0750, "horizontalSlider", manager->CreateSlider(0x3D0C0750, 0, 0, 100, 25),
-		28, 348, 470, 374);
-	addLabel(0x3D0C0742, "Horizontal Scrollbar (40 / 100)", 390);
-	addAdapterControl(0x3D0C0751, "horizontalScrollbar", manager->CreateScrollbar(0x3D0C0751, 0, 0, 100, 40),
-		28, 416, 470, 442);
-	addLabel(0x3D0C0743, "Spinner (0-10, step 1, value 5)", 458);
-	addAdapterControl(0x3D0C0752, "spinner", manager->CreateSpinner(0x3D0C0752, 0, 0, 10, 1, 5),
-		28, 484, 230, 514);
-	addLabel(0x3D0C0744, "Editable Line Input", 530);
-	void* editableRaw = manager->CreateLineInput(0x3D0C0753, true);
-	addAdapterControl(0x3D0C0753, "editableLineInput", editableRaw, 28, 556, 470, 586);
-	if (cIGZWin* editable = rootWindow->GetChildWindowFromID(0x3D0C0753))
-	{
-		cRZBaseString initialText("Type here");
-		editable->SetCaption(initialText);
-	}
-	addLabel(0x3D0C0745, "Read-only Line Input", 602);
-	void* readOnlyRaw = manager->CreateLineInput(0x3D0C0754, false);
-	addAdapterControl(0x3D0C0754, "readOnlyLineInput", readOnlyRaw, 28, 628, 470, 658);
-	if (cIGZWin* readOnly = rootWindow->GetChildWindowFromID(0x3D0C0754))
-	{
-		cRZBaseString initialText("Read-only sample");
-		readOnly->SetCaption(initialText);
-	}
-	cIGZBuffer* systemBitmap = manager->SystemBMP(0);
-	if (systemBitmap)
-	{
-		addAdapterControl(0x3D0C0756, "bitmapControl",
-			manager->CreateWinBMP(0x3D0C0756, systemBitmap, false), 330, 674, 470, 702);
-		addLabel(0x3D0C0746, "Bitmap Control (system bitmap 0)", 674);
-	}
-	else
-	{
-		addLabel(0x3D0C0746, "Bitmap Control: system bitmap unavailable", 674);
-	}
-	cRZBaseString optionGroupText("Option Group Container");
-	cRZRect optionGroupArea{};
-	optionGroupArea.nX = 0;
-	optionGroupArea.nY = 0;
-	optionGroupArea.nWidth = 440;
-	optionGroupArea.nHeight = 28;
-	addAdapterControl(0x3D0C0755, "optionGroup",
-		manager->CreateOptGrp(0x3D0C0755, optionGroupText, &optionGroupArea), 28, 708, 470, 736);
-
-	addLabel(0x3D0C0760, "TEXT STYLE SAMPLES", 750, cIGZFont::Style_Bold);
-	addLabel(0x3D0C0761, "Regular: The quick brown fox", 780);
-	addLabel(0x3D0C0762, "Bold: The quick brown fox", 808, cIGZFont::Style_Bold);
-	addLabel(0x3D0C0763, "Italic: The quick brown fox", 836, cIGZFont::Style_Italic);
-	addLabel(0x3D0C0764, "Bold Italic: The quick brown fox", 864,
-		cIGZFont::Style_Bold | cIGZFont::Style_Italic);
-	addLabel(0x3D0C0765, "Underline: The quick brown fox", 892, cIGZFont::Style_Underline);
-	addLabel(0x3D0C0766, "Strikethrough: The quick brown fox", 920, cIGZFont::Style_Strikethrough);
-	addLabel(0x3D0C0767, "Shadow: The quick brown fox", 948, cIGZFont::Style_Shadow);
-
-	addLabel(0x3D0C0770, "COLOR SAMPLES", 992, cIGZFont::Style_Bold);
-	addLabel(0x3D0C0771, "Purple", 1022, 0, 0x800080);
-	addLabel(0x3D0C0772, "Red", 1050, 0, 0xFF0000);
-	addLabel(0x3D0C0773, "Green", 1078, 0, 0x008000);
-	addLabel(0x3D0C0774, "Blue", 1106, 0, 0x0000FF);
-	addLabel(0x3D0C0775, "Outlined text", 1134, 0, 0x203050);
-	if (cIGZWin* outlinedWindow = rootWindow->GetChildWindowFromID(0x3D0C0775))
-	{
-		cRZAutoRefCount<cIGZWinText> outlined;
-		if (outlinedWindow->QueryInterface(GZIID_cIGZWinText, outlined.AsPPVoid()))
-		{
-			outlined->SetOutlineUse(true, 0xFFFFFF);
-		}
-	}
-
-	addLabel(0x3D0C0780, "END OF TEST CONTENT", 1180, cIGZFont::Style_Bold);
-
-	cRZBaseString closeText("Close");
-	addButton(kCloseButtonID, "close", "Close", 390, 10,
-		manager->CreateFixedButton(kCloseButtonID, closeText, nullptr, nullptr, 0), true);
-	cRZBaseString upText("Scroll Up");
-	addButton(kScrollUpButtonID, "scrollUp", "Scroll Up", 390, 500,
-		manager->CreateFixedButton(kScrollUpButtonID, upText, nullptr, nullptr, 0), true);
-	cRZBaseString downText("Scroll Down");
-	addButton(kScrollDownButtonID, "scrollDown", "Scroll Down", 390, 534,
-		manager->CreateFixedButton(kScrollDownButtonID, downText, nullptr, nullptr, 0), true);
-	addAdapterControl(kScrollBarID, "verticalScrollbar", manager->CreateScrollbar(kScrollBarID, 1, 0, 600, 0),
-		520, 48, 548, 490, true);
-
-	ApplyScrollPosition();
-	return true;
 }
 
-// Changes the laboratory content offset and reapplies every scrollable position.
+// Changes the laboratory content offset within its supported range and saves
+// the resulting state.
 void ControlLaboratoryWindow::ScrollBy(int32_t delta)
 {
 	scrollOffset = std::clamp(scrollOffset + delta, 0, 600);
@@ -2238,7 +2559,8 @@ void ControlLaboratoryWindow::ScrollBy(int32_t delta)
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Test UI: scroll offset = " + std::to_string(scrollOffset));
 }
 
-// Repositions every scrollable laboratory control from the current content offset.
+// Repositions scrollable controls from the current content offset and hides
+// any controls outside the laboratory's visible content viewport.
 void ControlLaboratoryWindow::ApplyScrollPosition()
 {
 	for (const ChildControl& control : controls)
@@ -2273,7 +2595,8 @@ void ControlLaboratoryWindow::ApplyScrollPosition()
 	rootWindow->InvalidateSelf();
 }
 
-// Returns retained layout data for a laboratory control ID.
+// Returns recorded metadata for a laboratory control ID, or null when the ID
+// does not belong to the authored resource.
 const ControlLaboratoryWindow::ChildControl* ControlLaboratoryWindow::FindControl(uint32_t id) const
 {
 	for (const ChildControl& control : controls)
@@ -2286,7 +2609,8 @@ const ControlLaboratoryWindow::ChildControl* ControlLaboratoryWindow::FindContro
 	return nullptr;
 }
 
-// Captures the latest native event fields for the control that emitted the message.
+// Captures a native control notification in the laboratory diagnostics and
+// persists the updated event state.
 void ControlLaboratoryWindow::RecordEvent(const cGZMessage& msg)
 {
 	const uint32_t controlID = msg.dwData2;
@@ -2329,7 +2653,8 @@ void ControlLaboratoryWindow::RecordEvent(const cGZMessage& msg)
 	SaveTestState();
 }
 
-// Writes the accumulated laboratory event state to its JSON diagnostic file.
+// Writes the current laboratory scroll and event state to test.json using a
+// temporary file before replacing the previous document.
 void ControlLaboratoryWindow::SaveTestState() const
 {
 	const std::filesystem::path path = PluginPaths::GetTestSettingsPath();
@@ -2380,7 +2705,8 @@ void ControlLaboratoryWindow::SaveTestState() const
 	}
 }
 
-// Records laboratory messages and handles control-specific command behavior.
+// Records authored-control notifications and handles the laboratory's close
+// and scroll commands. Other messages remain available to native SC4 code.
 bool ControlLaboratoryWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 {
 	if (FindControl(msg.dwData2))
@@ -2464,17 +2790,21 @@ bool ControlLaboratoryWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 	return false;
 }
 
-// Leaves low-level laboratory messages for the native GZ window path.
+// Leaves low-level GZ messages for the native laboratory-window path.
 bool ControlLaboratoryWindow::DoWinMsg(cIGZWin* pWin, uint32_t messageID, uint32_t data1, uint32_t data2, uint32_t data3)
 {
 	return false;
 }
 
-// Initializes city-scoped window state and queues the version notice when needed.
+// Starts the city UI session: selects a compatible theme, creates the compact
+// menu button, and schedules or suppresses the version greeting according to
+// the persisted changelog preference.
 void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 {
+	LoadThemeManifest();
 	pendingSettings = &settings;
 	menuButtonWindow.SetWindowManager(this);
+	menuButtonWindow.SetSettings(&settings);
 	if (!menuButtonWindow.Create())
 	{
 		Logger::GetInstance().WriteLine(
@@ -2484,15 +2814,21 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 	else
 	{
 		menuButtonWindow.SetVisible(true);
+		menuButtonWindow.RefreshMode();
+	}
+
+	if (settings.NeedsVersionNotice() && !settings.showChangelogsOnUpdate)
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			"Window Manager: automatic changelog suppressed; recording the installed version.");
+		settings.AcknowledgeCurrentVersion();
+		return;
 	}
 
 	if (settings.NeedsVersionNotice())
 	{
-		if (versionNoticeTimerID != 0)
-		{
-			KillTimer(NULL, static_cast<UINT_PTR>(versionNoticeTimerID));
-			versionNoticeTimerID = 0;
-		}
+		CancelTimer(versionNoticeTimerID);
 
 		pendingVersionNoticeSettings = &settings;
 		g_DelayedVersionNoticeManager = this;
@@ -2540,20 +2876,17 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 	}
 }
 
-// Replaces callbacks used to apply changes requested by plugin windows.
+// Replaces the runtime callbacks used after UI-driven settings changes.
 void SC4WindowManager::SetCallbacks(SC4WindowManagerCallbacks managerCallbacks)
 {
 	callbacks = std::move(managerCallbacks);
 }
 
-// Consumes the pending version-notice timer and shows its notice if still needed.
+// Consumes the delayed version-notice timer and opens the greeting when it is
+// still needed.
 void SC4WindowManager::OnVersionNoticeTimer()
 {
-	if (versionNoticeTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(versionNoticeTimerID));
-		versionNoticeTimerID = 0;
-	}
+	CancelTimer(versionNoticeTimerID);
 
 	PluginSettings* settings = pendingVersionNoticeSettings;
 	pendingVersionNoticeSettings = nullptr;
@@ -2571,14 +2904,10 @@ void SC4WindowManager::OnVersionNoticeTimer()
 	}
 }
 
-// Consumes the pending settings-reopen timer and restores the settings window.
+// Recreates the primary settings window after a deferred refresh request.
 void SC4WindowManager::OnSettingsReopenTimer()
 {
-	if (settingsReopenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(settingsReopenTimerID));
-		settingsReopenTimerID = 0;
-	}
+	CancelTimer(settingsReopenTimerID);
 	if (g_DelayedSettingsReopenManager == this)
 	{
 		g_DelayedSettingsReopenManager = nullptr;
@@ -2588,14 +2917,11 @@ void SC4WindowManager::OnSettingsReopenTimer()
 	ShowSettingsWindow();
 }
 
-// Consumes the pending baked-window request and opens its destination.
+// Opens the requested secondary window after the originating button command
+// has returned to SC4's native UI dispatcher.
 void SC4WindowManager::OnDeferredWindowOpenTimer()
 {
-	if (deferredWindowOpenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(deferredWindowOpenTimerID));
-		deferredWindowOpenTimerID = 0;
-	}
+	CancelTimer(deferredWindowOpenTimerID);
 	if (g_DelayedWindowOpenManager == this)
 	{
 		g_DelayedWindowOpenManager = nullptr;
@@ -2623,13 +2949,14 @@ void SC4WindowManager::OnDeferredWindowOpenTimer()
 	}
 }
 
-// Creates a basic managed window with the default caller-facing options.
+// Creates a centered basic window with default options and returns its handle.
 SC4WindowHandle SC4WindowManager::CreateManagedWindow()
 {
 	return CreateManagedWindow(SC4BasicWindowOptions{});
 }
 
-// Creates a basic managed window and retains it under a generated handle.
+// Creates a centered basic window with caller-supplied content and returns an
+// invalid handle if its native resource cannot be created.
 SC4WindowHandle SC4WindowManager::CreateManagedWindow(const SC4BasicWindowOptions& options)
 {
 	auto window = std::make_unique<BasicManagedWindow>();
@@ -2643,7 +2970,7 @@ SC4WindowHandle SC4WindowManager::CreateManagedWindow(const SC4BasicWindowOption
 	return handle;
 }
 
-// Creates the requested supported managed-window template.
+// Opens a supported named window template and returns its stable handle.
 SC4WindowHandle SC4WindowManager::CreateManagedWindow(SC4WindowTemplate windowTemplate)
 {
 	switch (windowTemplate)
@@ -2655,7 +2982,7 @@ SC4WindowHandle SC4WindowManager::CreateManagedWindow(SC4WindowTemplate windowTe
 	}
 }
 
-// Closes and removes the dynamically created window identified by handle.
+// Closes a basic window or destroys the control laboratory selected by handle.
 bool SC4WindowManager::CloseWindow(SC4WindowHandle handle)
 {
 	if (handle == kControlLaboratoryHandle)
@@ -2675,24 +3002,13 @@ bool SC4WindowManager::CloseWindow(SC4WindowHandle handle)
 	return false;
 }
 
-// Stops deferred window work and closes all plugin-owned windows before city teardown.
+// Cancels all pending UI timers, drops city-owned setting pointers, and
+// releases every native window before the city context disappears.
 void SC4WindowManager::OnCityShutdown()
 {
-	if (settingsReopenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(settingsReopenTimerID));
-		settingsReopenTimerID = 0;
-	}
-	if (versionNoticeTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(versionNoticeTimerID));
-		versionNoticeTimerID = 0;
-	}
-	if (deferredWindowOpenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(deferredWindowOpenTimerID));
-		deferredWindowOpenTimerID = 0;
-	}
+	CancelTimer(settingsReopenTimerID);
+	CancelTimer(versionNoticeTimerID);
+	CancelTimer(deferredWindowOpenTimerID);
 	pendingDeferredWindowOpen = DeferredWindowOpen::None;
 	pendingVersionNoticeSettings = nullptr;
 	pendingSettings = nullptr;
@@ -2711,7 +3027,9 @@ void SC4WindowManager::OnCityShutdown()
 	CloseAllWindows();
 }
 
-// Invokes the native SC4 notification dialog for a caller-supplied message.
+// Shows the native SC4 notification dialog on the supported executable. The
+// native Boolean return is not a success indicator, so a completed call is
+// reported as success.
 bool SC4WindowManager::ShowNotification(const char* caption, const char* message) const
 {
 	if (!caption || !message || !SC4VersionDetection::IsDigitalDistributionVersion())
@@ -2728,12 +3046,18 @@ bool SC4WindowManager::ShowNotification(const char* caption, const char* message
 	return true;
 }
 
-// Shows and acknowledges the version notice only when settings require it.
+// Shows the version greeting when needed, or acknowledges the installed
+// version immediately when automatic changelogs are disabled.
 bool SC4WindowManager::ShowVersionNoticeIfNeeded(PluginSettings& settings)
 {
 	if (!settings.NeedsVersionNotice())
 	{
 		return true;
+	}
+
+	if (!settings.showChangelogsOnUpdate)
+	{
+		return settings.AcknowledgeCurrentVersion();
 	}
 
 	if (!ShowGreetingWindow())
@@ -2754,29 +3078,32 @@ bool SC4WindowManager::ShowVersionNoticeIfNeeded(PluginSettings& settings)
 	return true;
 }
 
-// Opens the experimental control laboratory if it is not already visible.
+// Opens the authored native-control laboratory.
 bool SC4WindowManager::ShowControlLaboratory()
 {
 	return controlLaboratory.Create();
 }
 
-// Opens the greeting window and wires its manager callback.
+// Opens the greeting window with the current city settings.
 bool SC4WindowManager::ShowGreetingWindow()
 {
 	greetingWindow.SetWindowManager(this);
+	greetingWindow.SetSettings(pendingSettings);
 	return greetingWindow.Create();
 }
 
-// Opens the compact controls-reference window.
+// Opens the read-only controls reference window.
 bool SC4WindowManager::ShowControlsWindow()
 {
 	return controlsWindow.Create();
 }
 
-// Opens advanced settings after wiring settings and runtime callbacks.
+// Recreates the advanced settings window, then places it above primary
+// settings so both windows retain their expected focus order.
 bool SC4WindowManager::ShowAdvancedSettingsWindow()
 {
 	advancedSettingsWindow.Destroy();
+	advancedSettingsWindow.SetWindowManager(this);
 	advancedSettingsWindow.SetSettings(pendingSettings);
 	advancedSettingsWindow.SetCallbacks(&callbacks);
 	if (!advancedSettingsWindow.Create())
@@ -2790,7 +3117,8 @@ bool SC4WindowManager::ShowAdvancedSettingsWindow()
 	return true;
 }
 
-// Opens primary settings after wiring settings, callbacks, and menu state.
+// Opens the primary settings window and invalidates the menu after its state
+// changes.
 bool SC4WindowManager::ShowSettingsWindow()
 {
 	settingsWindow.SetWindowManager(this);
@@ -2805,7 +3133,7 @@ bool SC4WindowManager::ShowSettingsWindow()
 	return true;
 }
 
-// Closes visible settings or opens them when no settings window is visible.
+// Closes the primary settings window when visible; otherwise opens it.
 bool SC4WindowManager::ToggleSettingsWindow()
 {
 	if (settingsWindow.IsVisible())
@@ -2816,7 +3144,40 @@ bool SC4WindowManager::ToggleSettingsWindow()
 	return ShowSettingsWindow();
 }
 
-// Shows or hides the floating camera button while preserving its resource.
+// Switches between Modern and Classic camera modes from the menu's lower lip,
+// persists the result, refreshes dependent controls, and then notifies the
+// runtime of the completed mode transition.
+void SC4WindowManager::ToggleCameraMode()
+{
+	if (!pendingSettings)
+	{
+		return;
+	}
+
+	const CameraMode previous = pendingSettings->cameraMode;
+	pendingSettings->cameraMode = previous == CameraMode::Modern
+		? CameraMode::Classic
+		: CameraMode::Modern;
+	LogOptionChanged(
+		"Menu Button UI",
+		"Camera Mode",
+		PluginSettingText::ToString(previous),
+		PluginSettingText::ToString(pendingSettings->cameraMode));
+	if (!pendingSettings->Save())
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Menu Button UI: failed to save the camera mode change.");
+	}
+	RefreshSettingsWindows();
+	if (callbacks.OnCameraModeChanged)
+	{
+		callbacks.OnCameraModeChanged(pendingSettings->cameraMode == CameraMode::Modern);
+	}
+	menuButtonWindow.RefreshCursor();
+}
+
+// Shows or hides the compact camera-settings menu button.
 void SC4WindowManager::SetMenuButtonVisible(bool visible)
 {
 	Logger::GetInstance().WriteLine(
@@ -2827,7 +3188,7 @@ void SC4WindowManager::SetMenuButtonVisible(bool visible)
 	menuButtonWindow.SetVisible(visible);
 }
 
-// Synchronizes menu state and returns city-focus restoration to the runtime.
+// Invalidates the menu after primary settings close and notifies the runtime.
 void SC4WindowManager::OnSettingsWindowClosed()
 {
 	menuButtonWindow.SetSettingsOpen(false);
@@ -2837,9 +3198,11 @@ void SC4WindowManager::OnSettingsWindowClosed()
 	}
 }
 
-// Refreshes each visible settings window from its backing settings object.
+// Synchronizes all visible settings-related windows after a shared setting
+// changes, including the menu artwork for the active camera mode.
 void SC4WindowManager::RefreshSettingsWindows()
 {
+	menuButtonWindow.RefreshMode();
 	if (settingsWindow.IsVisible())
 	{
 		settingsWindow.RefreshFromSettings();
@@ -2848,16 +3211,17 @@ void SC4WindowManager::RefreshSettingsWindows()
 	{
 		advancedSettingsWindow.RefreshFromSettings();
 	}
+	if (greetingWindow.IsVisible())
+	{
+		greetingWindow.RefreshFromSettings();
+	}
 }
 
-// Starts a one-shot timer that reopens primary settings after a UI transition.
+// Defers a primary settings-window rebuild until the current UI command has
+// finished. This is used after restoring defaults.
 void SC4WindowManager::ScheduleSettingsWindowReopen()
 {
-	if (settingsReopenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(settingsReopenTimerID));
-		settingsReopenTimerID = 0;
-	}
+	CancelTimer(settingsReopenTimerID);
 
 	g_DelayedSettingsReopenManager = this;
 	settingsReopenTimerID = static_cast<uintptr_t>(
@@ -2870,14 +3234,11 @@ void SC4WindowManager::ScheduleSettingsWindowReopen()
 	}
 }
 
-// Starts a one-shot timer that opens the requested baked-window destination.
+// Defers opening a secondary settings or changelog window until the current
+// SC4 button command has completed.
 void SC4WindowManager::ScheduleDeferredWindowOpen(DeferredWindowOpen window)
 {
-	if (deferredWindowOpenTimerID != 0)
-	{
-		KillTimer(NULL, static_cast<UINT_PTR>(deferredWindowOpenTimerID));
-		deferredWindowOpenTimerID = 0;
-	}
+	CancelTimer(deferredWindowOpenTimerID);
 
 	pendingDeferredWindowOpen = window;
 	g_DelayedWindowOpenManager = this;
@@ -2892,7 +3253,8 @@ void SC4WindowManager::ScheduleDeferredWindowOpen(DeferredWindowOpen window)
 	}
 }
 
-// Closes baked, laboratory, and dynamically created windows in one teardown path.
+// Flushes the pending slider save and releases every window owned by this
+// manager.
 void SC4WindowManager::CloseAllWindows()
 {
 	settingsWindow.OnDelayedSettingsSaveTimer();
@@ -2909,7 +3271,8 @@ void SC4WindowManager::CloseAllWindows()
 	basicWindows.clear();
 }
 
-// Reports whether any plugin window currently owns visible UI space.
+// Reports whether any full window is visible. The passive top-right menu icon
+// is intentionally excluded from this modal-input check.
 bool SC4WindowManager::HasVisibleWindow() const
 {
 	if (controlsWindow.IsVisible())
@@ -2942,9 +3305,14 @@ bool SC4WindowManager::HasVisibleWindow() const
 	return false;
 }
 
-// Tests a parent-window coordinate against every visible plugin-owned window.
-bool SC4WindowManager::IsPointOverVisibleWindow(int32_t parentX, int32_t parentY) const
+// Routes a parent-window hit test through every visible UI surface. The menu
+// is checked first so its active native button can update cursor feedback.
+bool SC4WindowManager::IsPointOverVisibleWindow(int32_t parentX, int32_t parentY)
 {
+	if (menuButtonWindow.UpdateCursorIfHovered(parentX, parentY))
+	{
+		return true;
+	}
 	if (controlsWindow.ContainsPoint(parentX, parentY))
 	{
 		return true;
@@ -2975,7 +3343,7 @@ bool SC4WindowManager::IsPointOverVisibleWindow(int32_t parentX, int32_t parentY
 	return false;
 }
 
-// Sends wheel input to the visible plugin window under the cursor.
+// Lets the control laboratory consume wheel input over its scrollable content.
 bool SC4WindowManager::HandleMouseWheel(
 	int32_t wheelDelta, int32_t parentX, int32_t parentY, intptr_t nativeWindowHandle)
 {

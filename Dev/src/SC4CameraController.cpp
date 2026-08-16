@@ -2,6 +2,7 @@
 
 #include "GZServPtrs.h"
 #include "Logger.h"
+#include "SC4GameConstants.h"
 #include "cIGZWin.h"
 #include "cISC43DRender.h"
 #include "cISC4App.h"
@@ -12,31 +13,51 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <sstream>
 #include <string>
 
 namespace
 {
-	// Native SC4 application-window class identifier.
-	constexpr uint32_t kGZWin_WinSC4App = 0x6104489a;
-	// Native SC4 3D-view window class identifier.
-	constexpr uint32_t kGZWin_SC4View3DWin = 0x9a47b417;
 	// Native update mode used after direct camera-control changes.
 	constexpr uint32_t kCameraUpdateMode = 2;
 	// Cursor-text identifier reserved for the camera-dump confirmation.
 	constexpr uint32_t kCameraDumpCursorTextId = 0x3D0C4D01;
 	// Cursor-text priority that keeps the dump confirmation visible.
 	constexpr uint32_t kCameraDumpCursorTextPriority = 1000;
+	// Native camera-position update entry point for the supported executable.
+	constexpr uintptr_t kUpdateCameraPositionAddress = 0x007CCF80;
+	// Native custom-magnification entry point for the supported executable.
+	constexpr uintptr_t kSetCustomMagnificationAddress = 0x007CD6E0;
 	// Multiplier applied to custom magnification for each wheel notch.
 	constexpr float kMagnificationScalePerWheelNotch = 1.04f;
 	// Lowest custom magnification retained within a native zoom stage.
 	constexpr float kZoomRangeMagnificationMin = 0.5f;
 	// Highest custom magnification retained within a native zoom stage.
 	constexpr float kZoomRangeMagnificationMax = 2.0f;
+	// Absolute lower safety bound for a native custom magnification value.
+	constexpr float kMinimumMagnification = 0.001f;
+	// Absolute upper safety bound for a native custom magnification value.
+	constexpr float kMaximumMagnification = 10.0f;
+	// Smallest valid horizontal camera-basis length for city-bounds calculations.
+	constexpr float kCameraBasisEpsilon = 0.0001f;
+	// Minimum change worth correcting after native rotation adjusts orthographic scale.
+	constexpr float kRotationFitCorrectionEpsilon = 0.0005f;
+	// Smallest native scroll speed used to project a city-bounds probe.
+	constexpr float kMinimumScrollProbeSpeed = 0.05f;
+	// Minimum world-space distance used when SC4 supplies no usable zoom step.
+	constexpr float kMinimumFallbackProbeDistance = 8.0f;
+	// Fraction of orthographic scale used for a fallback city-bounds probe.
+	constexpr float kFallbackProbeScale = 0.02f;
 	// Number of native pitch and yaw table entries.
 	constexpr size_t kZoomCount = 5;
+	// Maximum float writes needed for one combined pitch and yaw table update.
+	constexpr size_t kMaximumAnglePatchCount = (kZoomCount * 4) + 1;
+	// Maximum distinct virtual-memory pages occupied by the angle patches.
+	constexpr size_t kMaximumPatchPageCount = 3;
 	// Native pitch values restored for the five zoom stages.
 	constexpr float kNativePitchByZoom[kZoomCount] = {
 		0.52359879f,
@@ -47,6 +68,8 @@ namespace
 	};
 	// Center of the native yaw bucket used when rebasing quarter turns.
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
+	// Radians in one native camera quarter turn.
+	constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 	// Rebalance before SC4 enters the high-positive end of its native yaw
 	// bucket, where building side meshes begin to disappear. The window is
 	// deliberately wider than 90 degrees: this gives the quarter-turn handoff
@@ -55,7 +78,7 @@ namespace
 	constexpr float kMaxNativeYawOffset = 30.0f * SC4CameraController::kPi / 180.0f;
 	constexpr float kMinNativeYawOffset = -70.0f * SC4CameraController::kPi / 180.0f;
 
-	// Native pitch-table address used by the supported game executable.
+	// First native pitch-table address used by the supported game executable.
 	constexpr uintptr_t kPitchAddress1 = 0x00ABCFD8;
 	// Second native pitch-table address used by the supported game executable.
 	constexpr uintptr_t kPitchAddress2 = 0x00ABACCC;
@@ -66,19 +89,221 @@ namespace
 	// Second native yaw-table address used by the supported game executable.
 	constexpr uintptr_t kYawAddress2 = 0x00ABACB8;
 
+	// Signature of SC4's native routine that rebuilds camera transforms.
 	using UpdateCameraPositionFn = bool(__thiscall*)(SC4CameraControlLayout*, uint32_t);
+	// Signature of SC4's native routine that applies continuous zoom.
 	using SetCustomMagnificationFn = bool(__thiscall*)(SC4CameraControlLayout*, float);
+
+	// One float write deferred until all affected pages are writable.
+	struct MemoryFloatPatch
+	{
+		// Native address that receives the replacement value.
+		uintptr_t address;
+		// Float value written once the containing page is writable.
+		float value;
+	};
+
+	// Original protection and write status for a page touched by a patch batch.
+	struct ProtectedMemoryPage
+	{
+		// Page-aligned address used for the temporary protection change.
+		uintptr_t address = 0;
+		// Original page protection restored after the batch completes.
+		DWORD oldProtect = 0;
+		// Whether VirtualProtect succeeded for this page.
+		bool writable = false;
+		// Whether modified bytes require an instruction-cache flush.
+		bool executable = false;
+		// Whether this batch wrote at least one value into the page.
+		bool modified = false;
+	};
+
+	// Returns whether a page protection allows instruction execution.
+	bool IsExecutableProtection(DWORD protection)
+	{
+		switch (protection & 0xFF) {
+		case PAGE_EXECUTE:
+		case PAGE_EXECUTE_READ:
+		case PAGE_EXECUTE_READWRITE:
+		case PAGE_EXECUTE_WRITECOPY:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	// Caches the operating system page size used to group protection changes.
+	size_t GetSystemPageSize()
+	{
+		static const size_t pageSize = []() {
+			SYSTEM_INFO systemInfo{};
+			GetSystemInfo(&systemInfo);
+			return static_cast<size_t>(systemInfo.dwPageSize);
+		}();
+
+		return pageSize;
+	}
+
+	// Records a failed native-table patch operation with its affected address.
+	void LogMemoryPatchError(const char* message, uintptr_t address)
+	{
+		char hexAddress[32]{};
+		sprintf_s(hexAddress, sizeof(hexAddress), "0x%08X", static_cast<uint32_t>(address));
+		Logger::GetInstance().WriteLine(
+			LogLevel::Error,
+			std::string(message) + " at " + hexAddress);
+	}
+
+	// Applies a bounded set of native float writes with one protection change per page.
+	class MemoryFloatPatchBatch
+	{
+	public:
+		// Adds a changed float value to the fixed-capacity patch batch.
+		void Add(uintptr_t address, float value)
+		{
+			if (std::memcmp(
+				reinterpret_cast<const void*>(address),
+				&value,
+				sizeof(value)) == 0) {
+				return;
+			}
+			if (patchCount >= patches.size()) {
+				LogMemoryPatchError("Camera memory patch batch exceeded its fixed capacity", address);
+				return;
+			}
+
+			patches[patchCount++] = { address, value };
+		}
+
+		// Makes each affected page writable, applies queued values, then restores protection.
+		void Apply()
+		{
+			if (patchCount == 0) {
+				return;
+			}
+
+			const size_t pageSize = GetSystemPageSize();
+			std::array<ProtectedMemoryPage, kMaximumPatchPageCount> pages{};
+			size_t pageCount = 0;
+
+			for (size_t i = 0; i < patchCount; ++i) {
+				const uintptr_t pageAddress = (patches[i].address / pageSize) * pageSize;
+				if (FindPage(pages, pageCount, pageAddress)) {
+					continue;
+				}
+				if (pageCount >= pages.size()) {
+					LogMemoryPatchError("Camera memory patch batch exceeded its page capacity", pageAddress);
+					continue;
+				}
+
+				ProtectedMemoryPage& page = pages[pageCount++];
+				page.address = pageAddress;
+				page.writable = VirtualProtect(
+					reinterpret_cast<void*>(page.address),
+					pageSize,
+					PAGE_EXECUTE_READWRITE,
+					&page.oldProtect) != FALSE;
+				if (!page.writable) {
+					LogMemoryPatchError("VirtualProtect failed for camera memory page", page.address);
+					continue;
+				}
+				page.executable = IsExecutableProtection(page.oldProtect);
+			}
+
+			for (size_t i = 0; i < patchCount; ++i) {
+				const uintptr_t pageAddress = (patches[i].address / pageSize) * pageSize;
+				ProtectedMemoryPage* page = FindPage(pages, pageCount, pageAddress);
+				if (!page || !page->writable) {
+					continue;
+				}
+
+				*reinterpret_cast<float*>(patches[i].address) = patches[i].value;
+				page->modified = true;
+			}
+
+			for (size_t i = 0; i < pageCount; ++i) {
+				const ProtectedMemoryPage& page = pages[i];
+				if (page.writable && page.modified && page.executable) {
+					FlushInstructionCache(
+						GetCurrentProcess(),
+						reinterpret_cast<void*>(page.address),
+						pageSize);
+				}
+			}
+
+			for (size_t i = pageCount; i > 0; --i) {
+				const ProtectedMemoryPage& page = pages[i - 1];
+				if (!page.writable) {
+					continue;
+				}
+
+				DWORD ignored = 0;
+				VirtualProtect(
+					reinterpret_cast<void*>(page.address),
+					pageSize,
+					page.oldProtect,
+					&ignored);
+			}
+		}
+
+	private:
+		// Finds a page already tracked by the current patch batch.
+		static ProtectedMemoryPage* FindPage(
+			std::array<ProtectedMemoryPage, kMaximumPatchPageCount>& pages,
+			size_t pageCount,
+			uintptr_t address)
+		{
+			for (size_t i = 0; i < pageCount; ++i) {
+				if (pages[i].address == address) {
+					return &pages[i];
+				}
+			}
+			return nullptr;
+		}
+
+		// Pending float writes, bounded to the known pitch and yaw table sizes.
+		std::array<MemoryFloatPatch, kMaximumAnglePatchCount> patches{};
+		// Number of populated entries in patches.
+		size_t patchCount = 0;
+	};
+
+	// Adds the two per-zoom native pitch-table writes for one pitch value.
+	void AddPitchOverridePatches(MemoryFloatPatchBatch& patches, float pitch)
+	{
+		for (size_t i = 0; i < kZoomCount; ++i) {
+			patches.Add(kPitchAddress1 + (i * sizeof(float)), pitch);
+			patches.Add(kPitchAddress2 + (i * sizeof(float)), pitch);
+		}
+	}
+
+	// Adds the native yaw instruction and per-zoom yaw-table writes for one yaw value.
+	void AddYawOverridePatches(MemoryFloatPatchBatch& patches, float yaw)
+	{
+		patches.Add(kYawAddress0, yaw);
+		for (size_t i = 0; i < kZoomCount; ++i) {
+			patches.Add(kYawAddress1 + (i * sizeof(float)), yaw);
+			patches.Add(kYawAddress2 + (i * sizeof(float)), yaw);
+		}
+	}
 
 	// Returns the native camera-position update entry point.
 	UpdateCameraPositionFn GetUpdateCameraPosition()
 	{
-		return reinterpret_cast<UpdateCameraPositionFn>(0x007CCF80);
+		return reinterpret_cast<UpdateCameraPositionFn>(kUpdateCameraPositionAddress);
 	}
 
 	// Returns the native custom-magnification entry point.
 	SetCustomMagnificationFn GetSetCustomMagnification()
 	{
-		return reinterpret_cast<SetCustomMagnificationFn>(0x007CD6E0);
+		return reinterpret_cast<SetCustomMagnificationFn>(kSetCustomMagnificationAddress);
+	}
+
+	// Returns the native camera-control structure owned by a renderer, if available.
+	SC4CameraControlLayout* GetCameraControl(cISC43DRender* renderer)
+	{
+		return renderer
+			? reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl())
+			: nullptr;
 	}
 
 	template <typename Function>
@@ -95,13 +320,16 @@ namespace
 			return false;
 		}
 
-		cIGZWin* pParentWin = mainWindow->GetChildWindowFromID(kGZWin_WinSC4App);
+		cIGZWin* pParentWin = mainWindow->GetChildWindowFromID(SC4WindowID::MainApplication);
 		if (!pParentWin) {
 			return false;
 		}
 
 		cISC4View3DWin* pView3D = nullptr;
-		if (!pParentWin->GetChildAs(kGZWin_SC4View3DWin, kGZIID_cISC4View3DWin, reinterpret_cast<void**>(&pView3D))) {
+		if (!pParentWin->GetChildAs(
+			SC4WindowID::View3D,
+			kGZIID_cISC4View3DWin,
+			reinterpret_cast<void**>(&pView3D))) {
 			return false;
 		}
 
@@ -201,7 +429,6 @@ namespace
 	// Returns yaw offset from the nearest 90-degree rotation.
 	float GetNearestQuarterTurnOffset(float yaw)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 		const float nearestQuarterTurn = std::round(yaw / kQuarterTurn) * kQuarterTurn;
 
 		return yaw - nearestQuarterTurn;
@@ -210,7 +437,6 @@ namespace
 	// Returns yaw offset from the nearest native yaw-bucket anchor.
 	float GetNativeYawAnchorOffset(float yaw)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 		const float nearestNativeBucket = kNativeYawAnchor
 			+ (std::round((yaw - kNativeYawAnchor) / kQuarterTurn) * kQuarterTurn);
 
@@ -228,11 +454,9 @@ namespace
 		return rotation;
 	}
 
-// Rebases yaw into the configured native bucket and adjusts the rotation index.
+	// Rebases yaw into the configured native bucket and adjusts the rotation index.
 	int32_t RebalanceYawAndRotation(float& yaw, int32_t& rotation)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
-
 		int32_t quarterTurns = 0;
 
 		while (yaw - kNativeYawAnchor > kMaxNativeYawOffset) {
@@ -249,14 +473,20 @@ namespace
 		return quarterTurns;
 	}
 
-// Returns the nearest native-bucket offset and updates the rotation index.
+	// Returns the nearest native-bucket offset and updates the rotation index.
 	int32_t SnapYawToNearestNativeAngle(float yaw, int32_t& rotation)
 	{
-		constexpr float kQuarterTurn = SC4CameraController::kPi * 0.5f;
 		const int32_t quarterTurns = static_cast<int32_t>(std::lround((yaw - kNativeYawAnchor) / kQuarterTurn));
 
 		rotation = WrapRotation(rotation + quarterTurns);
 		return quarterTurns;
+	}
+
+	// Translates a native vector along the city plane without changing its height.
+	void TranslateXZ(cS3DVector3& vector, float deltaX, float deltaZ)
+	{
+		vector.fX += deltaX;
+		vector.fZ += deltaZ;
 	}
 
 	// Formats a pointer value for diagnostic output.
@@ -267,7 +497,7 @@ namespace
 		return stream.str();
 	}
 
-// Maps expected city extents to a diagnostic tile-size label.
+	// Maps expected city extents to a diagnostic tile-size label.
 	const char* ClassifyCityTileSize(float sizeX, float sizeZ)
 	{
 		const float size = (std::max)(sizeX, sizeZ);
@@ -448,7 +678,7 @@ bool SC4CameraController::EnsureNativeCameraStateCaptured(const SC4CameraControl
 bool SC4CameraController::CaptureNativeCameraState(const char* source)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(
 				LogLevel::Warning,
@@ -482,7 +712,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 
 	const SC4NativeCameraState state = nativeCameraState;
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(
 				LogLevel::Warning,
@@ -497,7 +727,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetZoom failed.");
 			return false;
 		}
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetZoom.");
 			return false;
@@ -507,7 +737,7 @@ bool SC4CameraController::RestoreNativeCameraState(const char* source)
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: renderer SetRotation failed.");
 			return false;
 		}
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Native Camera State Restore: camera control unavailable after SetRotation.");
 			return false;
@@ -573,7 +803,7 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 	}
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: camera control unavailable.");
 			return false;
@@ -592,13 +822,7 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 		savedPreviewViewTarget = cameraControl->viewTargetPosition;
 		savedPreviewBaseTarget = cameraControl->baseTargetForRotation;
 
-		for (size_t i = 0; i < kZoomCount; ++i) {
-			OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
-			OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
-			OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
-			OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
-		}
-		OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+		WriteNativeCameraAngleTables();
 
 		const int32_t nativeZoom = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
 		cameraControl->pitch = kNativePitchByZoom[nativeZoom];
@@ -607,19 +831,8 @@ bool SC4CameraController::BeginSavePreviewNormalization()
 		const bool refreshed = Refresh(*cameraControl);
 		if (!refreshed) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: native camera refresh failed.");
-			for (size_t i = 0; i < kZoomCount; ++i) {
-				OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
-				OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
-				OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
-				OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
-			}
-			OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
-			cameraControl->pitch = savedPreviewPitch;
-			cameraControl->yaw = savedPreviewYaw;
-			cameraControl->viewTargetPosition = savedPreviewViewTarget;
-			cameraControl->baseTargetForRotation = savedPreviewBaseTarget;
-			cameraControl->viewTargetVelocity = {};
-			Refresh(*cameraControl);
+			RestoreSavedCameraAngleTables();
+			RestoreSavedPreviewCameraState(*cameraControl);
 			return false;
 		}
 		renderer->ForceFullRedraw();
@@ -645,26 +858,15 @@ void SC4CameraController::EndSavePreviewNormalization()
 		return;
 	}
 
-	for (size_t i = 0; i < kZoomCount; ++i) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
-	}
-	OverwriteMemoryFloat(kYawAddress0, savedYawInstruction);
+	RestoreSavedCameraAngleTables();
 
 	const bool restored = WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			return false;
 		}
 
-		cameraControl->pitch = savedPreviewPitch;
-		cameraControl->yaw = savedPreviewYaw;
-		cameraControl->viewTargetPosition = savedPreviewViewTarget;
-		cameraControl->baseTargetForRotation = savedPreviewBaseTarget;
-		cameraControl->viewTargetVelocity = {};
-		return Refresh(*cameraControl);
+		return RestoreSavedPreviewCameraState(*cameraControl);
 	});
 
 	savePreviewNormalizationActive = false;
@@ -690,11 +892,11 @@ bool SC4CameraController::IsSavePreviewNormalizationActive() const
 	return savePreviewNormalizationActive;
 }
 
-// Captures native target fields and scale before mouse rotation begins.
+// Captures native target fields and scale before free-camera rotation begins.
 bool SC4CameraController::BeginRotationGesture()
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			return false;
 		}
@@ -726,11 +928,11 @@ void SC4CameraController::EndRotationGesture()
 	rotationOrthoScale = 0.0f;
 }
 
-// Applies a bounded mouse-rotation delta and refreshes native camera state.
+// Applies a bounded rotation delta and refreshes native camera state.
 bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool updateYaw)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control from renderer.");
 			return false;
@@ -764,7 +966,7 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 					return false;
 				}
 
-				cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+				cameraControl = GetCameraControl(renderer);
 				if (!cameraControl) {
 					Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Rotation Rebalance: camera control unavailable after SetRotation.");
 					return false;
@@ -774,14 +976,13 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 			}
 		}
 
-		ApplyPitchOverride(currentPitch);
-
 		if (updateYaw) {
-			ApplyYawOverride(currentYaw);
-			cameraControl->yaw = currentYaw;
+			ApplyAngleOverrides(*cameraControl, currentPitch, currentYaw);
 		}
-
-		cameraControl->pitch = currentPitch;
+		else {
+			ApplyPitchOverride(currentPitch);
+			cameraControl->pitch = currentPitch;
+		}
 
 		bool result = Refresh(*cameraControl);
 		RestoreRotationAnchor(*cameraControl);
@@ -793,23 +994,20 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 			&& cameraControl->orthoScale > 0.0f && cameraControl->customMagnification > 0.0f) {
 			const float fitCorrection = cameraControl->orthoScale / rotationOrthoScale;
 
-			if (std::abs(fitCorrection - 1.0f) > 0.0005f) {
+			if (std::abs(fitCorrection - 1.0f) > kRotationFitCorrectionEpsilon) {
 				const float correctedMagnification = std::clamp(
 					cameraControl->customMagnification * fitCorrection,
-					0.001f,
-					10.0f);
+					kMinimumMagnification,
+					kMaximumMagnification);
 				auto setCustomMagnification = GetSetCustomMagnification();
 
 				if (setCustomMagnification && setCustomMagnification(cameraControl, correctedMagnification)) {
-					cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+					cameraControl = GetCameraControl(renderer);
 					if (!cameraControl) {
 						return false;
 					}
 
-					ApplyPitchOverride(currentPitch);
-					ApplyYawOverride(currentYaw);
-					cameraControl->pitch = currentPitch;
-					cameraControl->yaw = currentYaw;
+					ApplyAngleOverrides(*cameraControl, currentPitch, currentYaw);
 					RestoreRotationAnchor(*cameraControl);
 					result = Refresh(*cameraControl);
 					RestoreRotationAnchor(*cameraControl);
@@ -821,7 +1019,7 @@ bool SC4CameraController::ApplyDelta(float pitchDelta, float yawDelta, bool upda
 	});
 }
 
-// Clamps a native scroll request to city extents and reports a blocked request.
+// Resolves the active renderer and clamps a native scroll request to city extents.
 bool SC4CameraController::AdjustScrollForCityBounds(
 	float directionAngle,
 	float speed,
@@ -832,110 +1030,134 @@ bool SC4CameraController::AdjustScrollForCityBounds(
 	adjustedDirectionAngle = directionAngle;
 	blocked = false;
 
-	if (!std::isfinite(directionAngle)) {
+	return WithRenderer([&](cISC43DRender* renderer) {
+		return AdjustScrollForCityBounds(
+			renderer,
+			directionAngle,
+			speed,
+			adjustedDirectionAngle,
+			blocked,
+			source);
+	});
+}
+
+// Clamps a native scroll request using the renderer already owned by the caller.
+bool SC4CameraController::AdjustScrollForCityBounds(
+	cISC43DRender* renderer,
+	float directionAngle,
+	float speed,
+	float& adjustedDirectionAngle,
+	bool& blocked,
+	const char* source)
+{
+	adjustedDirectionAngle = directionAngle;
+	blocked = false;
+
+	if (!renderer || !std::isfinite(directionAngle)) {
 		return false;
 	}
 
-	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
-		if (!cameraControl) {
-			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for scroll bounds preflight.");
-			return false;
-		}
+	SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+	if (!cameraControl) {
+		Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for scroll bounds preflight.");
+		return false;
+	}
 
-		if (!std::isfinite(cameraControl->viewTargetPosition.fX)
-			|| !std::isfinite(cameraControl->viewTargetPosition.fZ)) {
-			return false;
-		}
+	if (!std::isfinite(cameraControl->viewTargetPosition.fX)
+		|| !std::isfinite(cameraControl->viewTargetPosition.fZ)) {
+		return false;
+	}
 
-		if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
-			blocked = true;
-			Logger::GetInstance().WriteLine(
-				LogLevel::Warning,
-				std::string("Camera Scroll Bounds: unusable city extents; blocking scroll. Source:")
-				+ (source ? source : "unknown")
-				+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
-				+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
-			return true;
-		}
+	if (!IsUsableCityExtent(cameraControl->citySizeX) || !IsUsableCityExtent(cameraControl->citySizeZ)) {
+		blocked = true;
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			std::string("Camera Scroll Bounds: unusable city extents; blocking scroll. Source:")
+			+ (source ? source : "unknown")
+			+ " CitySizeX:" + std::to_string(cameraControl->citySizeX)
+			+ " CitySizeZ:" + std::to_string(cameraControl->citySizeZ));
+		return true;
+	}
 
-		EnsureNativeCameraStateCaptured(*cameraControl);
-		SyncAngles(*cameraControl);
+	EnsureNativeCameraStateCaptured(*cameraControl);
+	SyncAngles(*cameraControl);
 
-		const float rightLength = GetHorizontalLength(
-			cameraControl->cachedViewXformB.fX,
-			cameraControl->cachedViewXformB.fZ);
-		const float forwardLength = GetHorizontalLength(
-			cameraControl->groundRayDirection.fX,
-			cameraControl->groundRayDirection.fZ);
-		if (rightLength <= 0.0001f || forwardLength <= 0.0001f) {
-			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Scroll Bounds: camera basis was invalid.");
-			return false;
-		}
+	const float rightLength = GetHorizontalLength(
+		cameraControl->cachedViewXformB.fX,
+		cameraControl->cachedViewXformB.fZ);
+	const float forwardLength = GetHorizontalLength(
+		cameraControl->groundRayDirection.fX,
+		cameraControl->groundRayDirection.fZ);
+	if (rightLength <= kCameraBasisEpsilon || forwardLength <= kCameraBasisEpsilon) {
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Scroll Bounds: camera basis was invalid.");
+		return false;
+	}
 
-		const float rightX = cameraControl->cachedViewXformB.fX / rightLength;
-		const float rightZ = cameraControl->cachedViewXformB.fZ / rightLength;
-		const float forwardX = cameraControl->groundRayDirection.fX / forwardLength;
-		const float forwardZ = cameraControl->groundRayDirection.fZ / forwardLength;
+	const float rightX = cameraControl->cachedViewXformB.fX / rightLength;
+	const float rightZ = cameraControl->cachedViewXformB.fZ / rightLength;
+	const float forwardX = cameraControl->groundRayDirection.fX / forwardLength;
+	const float forwardZ = cameraControl->groundRayDirection.fZ / forwardLength;
 
-		const float rightSteps = std::cos(directionAngle);
-		const float forwardSteps = -std::sin(directionAngle);
-		const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
-		float probeDistance = cameraControl->zoomStepWorld[zoomIndex] * (std::max)(std::abs(speed), 0.05f);
-		if (!std::isfinite(probeDistance) || probeDistance <= 0.0f) {
-			probeDistance = (std::max)(8.0f, cameraControl->orthoScale * 0.02f);
-		}
+	const float rightSteps = std::cos(directionAngle);
+	const float forwardSteps = -std::sin(directionAngle);
+	const int32_t zoomIndex = std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1));
+	float probeDistance = cameraControl->zoomStepWorld[zoomIndex]
+		* (std::max)(std::abs(speed), kMinimumScrollProbeSpeed);
+	if (!std::isfinite(probeDistance) || probeDistance <= 0.0f) {
+		probeDistance = (std::max)(
+			kMinimumFallbackProbeDistance,
+			cameraControl->orthoScale * kFallbackProbeScale);
+	}
 
-		const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * probeDistance;
-		const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * probeDistance;
-		float deltaX = requestedDeltaX;
-		float deltaZ = requestedDeltaZ;
-		const bool clampedToCityBounds = ClampPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
-		if (!clampedToCityBounds) {
-			return true;
-		}
+	const float requestedDeltaX = ((rightX * rightSteps) + (forwardX * forwardSteps)) * probeDistance;
+	const float requestedDeltaZ = ((rightZ * rightSteps) + (forwardZ * forwardSteps)) * probeDistance;
+	float deltaX = requestedDeltaX;
+	float deltaZ = requestedDeltaZ;
+	const bool clampedToCityBounds = ClampPanDeltaToCityBounds(*cameraControl, deltaX, deltaZ);
+	if (!clampedToCityBounds) {
+		return true;
+	}
 
-		const float requestedDotAdjusted = (requestedDeltaX * deltaX) + (requestedDeltaZ * deltaZ);
-		const float adjustedDistance = GetHorizontalLength(deltaX, deltaZ);
-		if (!std::isfinite(adjustedDistance)
-			|| adjustedDistance <= 0.0001f
-			|| !std::isfinite(requestedDotAdjusted)
-			|| requestedDotAdjusted <= 0.0f) {
-			blocked = true;
-			Logger::GetInstance().WriteLine(
-				LogLevel::Verbose,
-				std::string("Camera Scroll Bounds: blocked outward scroll at city bounds. Source:")
+	const float requestedDotAdjusted = (requestedDeltaX * deltaX) + (requestedDeltaZ * deltaZ);
+	const float adjustedDistance = GetHorizontalLength(deltaX, deltaZ);
+	if (!std::isfinite(adjustedDistance)
+		|| adjustedDistance <= kCameraBasisEpsilon
+		|| !std::isfinite(requestedDotAdjusted)
+		|| requestedDotAdjusted <= 0.0f) {
+		blocked = true;
+		Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+			return std::string("Camera Scroll Bounds: blocked outward scroll at city bounds. Source:")
 				+ (source ? source : "unknown")
 				+ " DirectionAngle:" + std::to_string(directionAngle)
 				+ " Speed:" + std::to_string(speed)
 				+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
 				+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
 				+ " AdjustedDeltaX:" + std::to_string(deltaX)
-				+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
-			return true;
-		}
+				+ " AdjustedDeltaZ:" + std::to_string(deltaZ);
+		});
+		return true;
+	}
 
-		const float adjustedRight = (deltaX * rightX) + (deltaZ * rightZ);
-		const float adjustedForward = (deltaX * forwardX) + (deltaZ * forwardZ);
-		const float adjustedInputLength = GetHorizontalLength(adjustedRight, adjustedForward);
-		if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= 0.0001f) {
-			blocked = true;
-			return true;
-		}
+	const float adjustedRight = (deltaX * rightX) + (deltaZ * rightZ);
+	const float adjustedForward = (deltaX * forwardX) + (deltaZ * forwardZ);
+	const float adjustedInputLength = GetHorizontalLength(adjustedRight, adjustedForward);
+	if (!std::isfinite(adjustedInputLength) || adjustedInputLength <= kCameraBasisEpsilon) {
+		blocked = true;
+		return true;
+	}
 
-		adjustedDirectionAngle = std::atan2(-adjustedForward, adjustedRight);
-		Logger::GetInstance().WriteLine(
-			LogLevel::Verbose,
-			std::string("Camera Scroll Bounds: adjusted native scroll along city edge. Source:")
+	adjustedDirectionAngle = std::atan2(-adjustedForward, adjustedRight);
+	Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+		return std::string("Camera Scroll Bounds: adjusted native scroll along city edge. Source:")
 			+ (source ? source : "unknown")
 			+ " DirectionAngle:" + std::to_string(directionAngle)
 			+ " AdjustedDirectionAngle:" + std::to_string(adjustedDirectionAngle)
 			+ " RequestedDeltaX:" + std::to_string(requestedDeltaX)
 			+ " RequestedDeltaZ:" + std::to_string(requestedDeltaZ)
 			+ " AdjustedDeltaX:" + std::to_string(deltaX)
-			+ " AdjustedDeltaZ:" + std::to_string(deltaZ));
-		return true;
+			+ " AdjustedDeltaZ:" + std::to_string(deltaZ);
 	});
+	return true;
 }
 
 // Saves Modern Camera orientation and switches to the nearest Classic angle.
@@ -946,7 +1168,7 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 	}
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: camera control unavailable.");
 			return false;
@@ -972,16 +1194,13 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold: camera control unavailable after SetRotation.");
 			return false;
 		}
 
-		ApplyPitchOverride(targetPitch);
-		ApplyYawOverride(targetYaw);
-		cameraControl->pitch = targetPitch;
-		cameraControl->yaw = targetYaw;
+		ApplyAngleOverrides(*cameraControl, targetPitch, targetYaw);
 		cameraControl->viewTargetPosition = viewTarget;
 		cameraControl->baseTargetForRotation = baseTarget;
 		cameraControl->viewTargetVelocity = {};
@@ -1013,6 +1232,63 @@ bool SC4CameraController::BeginClassicAngleHold(const char* source)
 	});
 }
 
+// Reports whether temporary Classic-angle mode is currently active.
+bool SC4CameraController::IsClassicAngleHoldActive() const
+{
+	return classicAngleHoldActive;
+}
+
+// Performs one native Classic-camera quarter-turn while preserving the rotation anchor.
+bool SC4CameraController::RotateClassicStep(bool left, const char* source)
+{
+	if (!classicAngleHoldActive) {
+		return false;
+	}
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Q/E: camera control unavailable.");
+			return false;
+		}
+
+		const cS3DVector3 viewTarget = cameraControl->viewTargetPosition;
+		const cS3DVector3 baseTarget = cameraControl->baseTargetForRotation;
+		const bool rotated = left ? renderer->RotateLeft() : renderer->RotateRight();
+		if (!rotated) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				std::string("Classic Angle Q/E: native ")
+				+ (left ? "RotateLeft" : "RotateRight")
+				+ " failed. Source:" + (source ? source : "unknown"));
+			return false;
+		}
+
+		cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Classic Angle Q/E: camera control unavailable after native rotation.");
+			return false;
+		}
+
+		cameraControl->viewTargetPosition = viewTarget;
+		cameraControl->baseTargetForRotation = baseTarget;
+		cameraControl->viewTargetVelocity = {};
+		SyncAngles(*cameraControl);
+		RestoreRotationAnchor(*cameraControl);
+		renderer->ForceFullRedraw();
+
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("Classic Angle Q/E: native ")
+			+ (left ? "RotateLeft" : "RotateRight")
+			+ " completed. Source:" + (source ? source : "unknown")
+			+ " Rotation:" + std::to_string(cameraControl->rotation));
+		return true;
+	});
+}
+
 // Restores Modern Camera orientation saved by temporary Classic-angle mode.
 bool SC4CameraController::EndClassicAngleHold(const char* source)
 {
@@ -1023,7 +1299,7 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 	const float targetPitch = classicAngleHoldPitch;
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: camera control unavailable.");
 			return false;
@@ -1043,16 +1319,13 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Restore: camera control unavailable after SetRotation.");
 			return false;
 		}
 
-		ApplyPitchOverride(targetPitch);
-		ApplyYawOverride(targetYaw);
-		cameraControl->pitch = targetPitch;
-		cameraControl->yaw = targetYaw;
+		ApplyAngleOverrides(*cameraControl, targetPitch, targetYaw);
 		cameraControl->viewTargetPosition = viewTarget;
 		cameraControl->baseTargetForRotation = baseTarget;
 		cameraControl->viewTargetVelocity = {};
@@ -1085,7 +1358,7 @@ bool SC4CameraController::EndClassicAngleHold(const char* source)
 bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* source)
 {
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera recenter: camera control unavailable.");
 			return false;
@@ -1132,17 +1405,12 @@ bool SC4CameraController::EnsureTargetNearCityCenterIfOutOfBounds(const char* so
 		const float deltaX = targetX - cameraControl->viewTargetPosition.fX;
 		const float deltaZ = targetZ - cameraControl->viewTargetPosition.fZ;
 
-		cameraControl->cameraPlaneOrigin.fX += deltaX;
-		cameraControl->cameraPlaneOrigin.fZ += deltaZ;
-		cameraControl->baseTargetForRotation.fX += deltaX;
-		cameraControl->baseTargetForRotation.fZ += deltaZ;
-		cameraControl->cameraPosition.fX += deltaX;
-		cameraControl->cameraPosition.fZ += deltaZ;
-		cameraControl->viewTargetPosition.fX += deltaX;
-		cameraControl->viewTargetPosition.fZ += deltaZ;
+		TranslateXZ(cameraControl->cameraPlaneOrigin, deltaX, deltaZ);
+		TranslateXZ(cameraControl->baseTargetForRotation, deltaX, deltaZ);
+		TranslateXZ(cameraControl->cameraPosition, deltaX, deltaZ);
+		TranslateXZ(cameraControl->viewTargetPosition, deltaX, deltaZ);
 		cameraControl->viewTargetVelocity = {};
-		cameraControl->cameraOffset.fX += deltaX;
-		cameraControl->cameraOffset.fZ += deltaZ;
+		TranslateXZ(cameraControl->cameraOffset, deltaX, deltaZ);
 		cameraControl->pitch = currentPitch;
 		cameraControl->yaw = currentYaw;
 
@@ -1173,7 +1441,7 @@ bool SC4CameraController::ZoomByWheel(int32_t wheelDelta, bool& changed)
 		return false;
 	}
 
-	return ZoomByNotches(static_cast<float>(wheelDelta) / 120.0f, changed);
+	return ZoomByNotches(static_cast<float>(wheelDelta) / static_cast<float>(WHEEL_DELTA), changed);
 }
 
 // Applies continuous custom magnification while preserving Modern Camera angles.
@@ -1182,7 +1450,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 	changed = false;
 
 	return WithRenderer([&](cISC43DRender* renderer) {
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to get SC4 camera control for zoom.");
 			return false;
@@ -1202,19 +1470,23 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 		const float minContinuousZoom = static_cast<float>(minZoom) + std::log2(kZoomRangeMagnificationMin);
 		const float maxContinuousZoom = static_cast<float>(maxZoom) + std::log2(kZoomRangeMagnificationMax);
 
-		targetMagnification = std::clamp(targetMagnification, 0.001f, 10.0f);
+		targetMagnification = std::clamp(
+			targetMagnification,
+			kMinimumMagnification,
+			kMaximumMagnification);
 
-		while (targetMagnification > 2.0f && targetZoom < maxZoom) {
-			targetMagnification *= 0.5f;
+		while (targetMagnification > kZoomRangeMagnificationMax && targetZoom < maxZoom) {
+			targetMagnification *= kZoomRangeMagnificationMin;
 			++targetZoom;
 		}
 
-		while (targetMagnification < 0.5f && targetZoom > minZoom) {
-			targetMagnification *= 2.0f;
+		while (targetMagnification < kZoomRangeMagnificationMin && targetZoom > minZoom) {
+			targetMagnification *= kZoomRangeMagnificationMax;
 			--targetZoom;
 		}
 
-		float targetContinuousZoom = static_cast<float>(targetZoom) + std::log2((std::max)(targetMagnification, 0.001f));
+		float targetContinuousZoom = static_cast<float>(targetZoom)
+			+ std::log2((std::max)(targetMagnification, kMinimumMagnification));
 		targetContinuousZoom = std::clamp(targetContinuousZoom, minContinuousZoom, maxContinuousZoom);
 
 		targetZoom = std::clamp(static_cast<int32_t>(std::lround(targetContinuousZoom)), minZoom, maxZoom);
@@ -1229,7 +1501,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		auto setCustomMagnification = GetSetCustomMagnification();
 
 		if (!cameraControl || !setCustomMagnification) {
@@ -1243,7 +1515,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 			return false;
 		}
 
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			return false;
 		}
@@ -1251,10 +1523,7 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 		// Zoom never owns orientation. Reapply the player's current pitch and yaw
 		// after SC4 changes native zoom stages, which may otherwise reload its
 		// per-stage angle tables.
-		ApplyPitchOverride(currentPitch);
-		ApplyYawOverride(currentYaw);
-		cameraControl->pitch = currentPitch;
-		cameraControl->yaw = currentYaw;
+		ApplyAngleOverrides(*cameraControl, currentPitch, currentYaw);
 		const bool result = Refresh(*cameraControl);
 
 		Logger::GetInstance().WriteLine(
@@ -1309,7 +1578,7 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 			log.WriteLine(LogLevel::Warning, "S3D Camera: null");
 		}
 
-		SC4CameraControlLayout* cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
 		if (!cameraControl) {
 			log.WriteLine(LogLevel::Warning, "Camera Control: null");
 			return true;
@@ -1472,19 +1741,6 @@ bool SC4CameraController::ClearCameraDumpConfirmation() const
 	});
 }
 
-// Obtains the active native camera-control structure from the renderer.
-SC4CameraControlLayout* SC4CameraController::GetActiveCameraControl()
-{
-	SC4CameraControlLayout* cameraControl = nullptr;
-
-	WithRenderer([&](cISC43DRender* renderer) {
-		cameraControl = reinterpret_cast<SC4CameraControlLayout*>(renderer->GetCameraControl());
-		return cameraControl != nullptr;
-	});
-
-	return cameraControl;
-}
-
 // Normalizes angles and invokes SC4's native camera-update routine.
 bool SC4CameraController::Refresh(SC4CameraControlLayout& cameraControl)
 {
@@ -1545,16 +1801,63 @@ void SC4CameraController::RestoreRotationAnchor(SC4CameraControlLayout& cameraCo
 }
 
 // Writes the plugin's baseline pitch and yaw values to the native tables.
+void SC4CameraController::WriteNativeCameraAngleTables()
+{
+	MemoryFloatPatchBatch patches;
+	for (size_t i = 0; i < kZoomCount; i++) {
+		patches.Add(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
+		patches.Add(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
+		patches.Add(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
+		patches.Add(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
+	}
+	patches.Add(kYawAddress0, kDefaultYaw);
+	patches.Apply();
+}
+
+// Restores baseline native tables and records the reset in the diagnostic log.
 void SC4CameraController::RestoreNativeAngleTables()
 {
-	for (size_t i = 0; i < kZoomCount; i++) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), kNativePitchByZoom[i]);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), kNativePitchByZoom[i]);
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), kDefaultYaw);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), kDefaultYaw);
-	}
-	OverwriteMemoryFloat(kYawAddress0, kDefaultYaw);
+	WriteNativeCameraAngleTables();
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Camera Reset: restored native global pitch/yaw tables.");
+}
+
+// Restores the pitch and yaw tables retained before save-preview normalization.
+void SC4CameraController::RestoreSavedCameraAngleTables()
+{
+	MemoryFloatPatchBatch patches;
+	for (size_t i = 0; i < kZoomCount; ++i) {
+		patches.Add(kPitchAddress1 + (i * sizeof(float)), savedPitchTables[0][i]);
+		patches.Add(kPitchAddress2 + (i * sizeof(float)), savedPitchTables[1][i]);
+		patches.Add(kYawAddress1 + (i * sizeof(float)), savedYawTables[0][i]);
+		patches.Add(kYawAddress2 + (i * sizeof(float)), savedYawTables[1][i]);
+	}
+	patches.Add(kYawAddress0, savedYawInstruction);
+	patches.Apply();
+}
+
+// Restores the camera-control fields retained before save-preview normalization.
+bool SC4CameraController::RestoreSavedPreviewCameraState(SC4CameraControlLayout& cameraControl)
+{
+	cameraControl.pitch = savedPreviewPitch;
+	cameraControl.yaw = savedPreviewYaw;
+	cameraControl.viewTargetPosition = savedPreviewViewTarget;
+	cameraControl.baseTargetForRotation = savedPreviewBaseTarget;
+	cameraControl.viewTargetVelocity = {};
+	return Refresh(cameraControl);
+}
+
+// Writes pitch and yaw overrides together, then updates the supplied control fields.
+void SC4CameraController::ApplyAngleOverrides(
+	SC4CameraControlLayout& cameraControl,
+	float pitch,
+	float yaw)
+{
+	MemoryFloatPatchBatch patches;
+	AddPitchOverridePatches(patches, SanitizePitch(pitch));
+	AddYawOverridePatches(patches, SanitizeYaw(yaw));
+	patches.Apply();
+	cameraControl.pitch = pitch;
+	cameraControl.yaw = yaw;
 }
 
 // Writes one bounded pitch value into every native pitch-table entry.
@@ -1562,39 +1865,7 @@ void SC4CameraController::ApplyPitchOverride(float pitch)
 {
 	pitch = SanitizePitch(pitch);
 
-	for (size_t i = 0; i < kZoomCount; i++) {
-		OverwriteMemoryFloat(kPitchAddress1 + (i * sizeof(float)), pitch);
-		OverwriteMemoryFloat(kPitchAddress2 + (i * sizeof(float)), pitch);
-	}
-}
-
-// Writes one normalized yaw value into every native yaw-table entry.
-void SC4CameraController::ApplyYawOverride(float yaw)
-{
-	yaw = SanitizeYaw(yaw);
-
-	OverwriteMemoryFloat(kYawAddress0, yaw);
-
-	for (size_t i = 0; i < kZoomCount; i++) {
-		OverwriteMemoryFloat(kYawAddress1 + (i * sizeof(float)), yaw);
-		OverwriteMemoryFloat(kYawAddress2 + (i * sizeof(float)), yaw);
-	}
-}
-
-// Temporarily makes a native address writable, stores one float, and attempts to restore protection.
-void SC4CameraController::OverwriteMemoryFloat(uintptr_t address, float value)
-{
-	DWORD oldProtect = 0;
-
-	if (VirtualProtect(reinterpret_cast<void*>(address), sizeof(value), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-		*reinterpret_cast<float*>(address) = value;
-
-		DWORD ignored = 0;
-		VirtualProtect(reinterpret_cast<void*>(address), sizeof(value), oldProtect, &ignored);
-	}
-	else {
-		char hexAddr[32];
-		sprintf_s(hexAddr, sizeof(hexAddr), "0x%X", address);
-		Logger::GetInstance().WriteLine(LogLevel::Error, std::string("VirtualProtect failed at ") + hexAddr);
-	}
+	MemoryFloatPatchBatch patches;
+	AddPitchOverridePatches(patches, pitch);
+	patches.Apply();
 }

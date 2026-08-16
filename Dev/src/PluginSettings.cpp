@@ -11,7 +11,7 @@
 
 namespace
 {
-	// Reads a complete text file and returns an empty string when it cannot be opened.
+	// Reads an entire text file and returns an empty string when it cannot be opened.
 	std::string ReadTextFile(const std::filesystem::path& path)
 	{
 		std::ifstream stream(path, std::ios::in | std::ios::binary);
@@ -25,7 +25,7 @@ namespace
 		return text.str();
 	}
 
-	// Extracts one quoted JSON string value for the supplied key.
+	// Extracts one quoted string property from the settings JSON document.
 	bool TryReadString(const std::string& json, const char* key, std::string& value)
 	{
 		const std::regex expression(std::string("\\\"") + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
@@ -39,7 +39,7 @@ namespace
 		return true;
 	}
 
-	// Extracts one JSON boolean value for the supplied key.
+	// Extracts one Boolean property from the settings JSON document.
 	bool TryReadBool(const std::string& json, const char* key, bool& value)
 	{
 		const std::regex expression(std::string("\\\"") + key + "\\\"\\s*:\\s*(true|false)");
@@ -53,7 +53,7 @@ namespace
 		return true;
 	}
 
-	// Extracts one finite decimal JSON value for the supplied key.
+	// Extracts one finite decimal property from the settings JSON document.
 	bool TryReadFloat(const std::string& json, const char* key, float& value)
 	{
 		const std::regex expression(std::string("\\\"") + key + "\\\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)");
@@ -73,34 +73,34 @@ namespace
 			return false;
 		}
 	}
+}
 
-	// Converts the camera mode to the persisted string representation.
-	const char* ToString(CameraMode value)
+// Converts a camera mode to its persisted representation.
+const char* PluginSettingText::ToString(CameraMode value)
+{
+	return value == CameraMode::Classic ? "Classic" : "Modern";
+}
+
+// Converts a redraw-aggression level to its persisted representation.
+const char* PluginSettingText::ToString(RedrawAggression value)
+{
+	switch (value)
 	{
-		return value == CameraMode::Classic ? "Classic" : "Modern";
+	case RedrawAggression::Classic: return "Classic";
+	case RedrawAggression::High: return "High";
+	case RedrawAggression::Extreme: return "Extreme";
+	default: return "Normal";
 	}
+}
 
-	// Converts redraw aggression to the persisted string representation.
-	const char* ToString(RedrawAggression value)
+// Converts a diagnostics logging level to its persisted representation.
+const char* PluginSettingText::ToString(DebugLogging value)
+{
+	switch (value)
 	{
-		switch (value)
-		{
-		case RedrawAggression::Classic: return "Classic";
-		case RedrawAggression::High: return "High";
-		case RedrawAggression::Extreme: return "Extreme";
-		default: return "Normal";
-		}
-	}
-
-	// Converts debug verbosity to the persisted string representation.
-	const char* ToString(DebugLogging value)
-	{
-		switch (value)
-		{
-		case DebugLogging::Off: return "Off";
-		case DebugLogging::Verbose: return "Verbose";
-		default: return "Normal";
-		}
+	case DebugLogging::Off: return "Off";
+	case DebugLogging::Verbose: return "Verbose";
+	default: return "Normal";
 	}
 }
 
@@ -110,20 +110,23 @@ PluginSettings::PluginSettings()
 	RestoreDefaults();
 }
 
-// Restores the supported fresh-install values without persisting them.
+// Restores fresh-install values without writing a settings file.
 void PluginSettings::RestoreDefaults()
 {
 	cameraMode = CameraMode::Modern;
 	wasdMovement = true;
-	rotationSensitivity = 1.0f;
-	zoomSensitivity = 1.0f;
-	panSensitivity = 1.0f;
+	qeRotation = true;
+	rotationSensitivity = kDefaultSensitivity;
+	zoomSensitivity = kDefaultSensitivity;
+	panSensitivity = kDefaultSensitivity;
 	invertVertical = false;
 	redrawAggression = RedrawAggression::Normal;
 	debugLogging = DebugLogging::Normal;
+	cameraDumpHotkey = true;
+	showChangelogsOnUpdate = true;
 }
 
-// Loads known fields, retaining defaults for fields that are absent or unreadable.
+// Loads known fields while retaining defaults for missing or invalid values.
 bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 {
 	path = settingsPath;
@@ -152,6 +155,7 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	}
 
 	TryReadBool(json, "wasdMovement", wasdMovement);
+	TryReadBool(json, "qeRotation", qeRotation);
 	TryReadFloat(json, "rotationSensitivity", rotationSensitivity);
 	TryReadFloat(json, "zoomSensitivity", zoomSensitivity);
 	TryReadFloat(json, "panSensitivity", panSensitivity);
@@ -172,16 +176,18 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		else if (value == "Verbose") debugLogging = DebugLogging::Verbose;
 		else debugLogging = DebugLogging::Normal;
 	}
+	TryReadBool(json, "cameraDumpHotkey", cameraDumpHotkey);
+	TryReadBool(json, "showChangelogsOnUpdate", showChangelogsOnUpdate);
 
-	rotationSensitivity = std::clamp(rotationSensitivity, 0.1f, 3.0f);
-	zoomSensitivity = std::clamp(zoomSensitivity, 0.1f, 3.0f);
-	panSensitivity = std::clamp(panSensitivity, 0.25f, 2.75f);
+	rotationSensitivity = std::clamp(rotationSensitivity, kMinimumSensitivity, kMaximumSensitivity);
+	zoomSensitivity = std::clamp(zoomSensitivity, kMinimumSensitivity, kMaximumSensitivity);
+	panSensitivity = std::clamp(panSensitivity, kMinimumPanSensitivity, kMaximumPanSensitivity);
 
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Loaded settings from " + path.string());
 	return true;
 }
 
-// Serializes the current settings to the path most recently supplied to Load.
+// Serializes the current settings to the path retained by Load.
 bool PluginSettings::Save() const
 {
 	if (path.empty())
@@ -201,18 +207,23 @@ bool PluginSettings::Save() const
 		<< "{\n"
 		<< "  \"installedVersion\": \"" << installedVersion << "\",\n"
 		<< "  \"camera\": {\n"
-		<< "    \"mode\": \"" << ToString(cameraMode) << "\",\n"
+		<< "    \"mode\": \"" << PluginSettingText::ToString(cameraMode) << "\",\n"
 		<< "    \"wasdMovement\": " << (wasdMovement ? "true" : "false") << ",\n"
+		<< "    \"qeRotation\": " << (qeRotation ? "true" : "false") << ",\n"
 		<< "    \"rotationSensitivity\": " << rotationSensitivity << ",\n"
 		<< "    \"zoomSensitivity\": " << zoomSensitivity << ",\n"
 		<< "    \"panSensitivity\": " << panSensitivity << ",\n"
 		<< "    \"invertVertical\": " << (invertVertical ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"rendering\": {\n"
-		<< "    \"redrawAggression\": \"" << ToString(redrawAggression) << "\"\n"
+		<< "    \"redrawAggression\": \"" << PluginSettingText::ToString(redrawAggression) << "\"\n"
 		<< "  },\n"
 		<< "  \"diagnostics\": {\n"
-		<< "    \"logging\": \"" << ToString(debugLogging) << "\"\n"
+		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\",\n"
+		<< "    \"cameraDumpHotkey\": " << (cameraDumpHotkey ? "true" : "false") << "\n"
+		<< "  },\n"
+		<< "  \"ui\": {\n"
+		<< "    \"showChangelogsOnUpdate\": " << (showChangelogsOnUpdate ? "true" : "false") << "\n"
 		<< "  }\n"
 		<< "}\n";
 
@@ -260,7 +271,7 @@ const std::filesystem::path& PluginSettings::GetPath() const
 	return path;
 }
 
-// Returns the version value currently retained by this settings object.
+// Returns the version marker retained from the loaded settings document.
 const std::string& PluginSettings::GetInstalledVersion() const
 {
 	return installedVersion;

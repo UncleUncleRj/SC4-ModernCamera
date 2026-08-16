@@ -1,0 +1,95 @@
+# Generated for SC4-ModernCamera's first-install greeting window
+<LEGACY clsid=GZWinGen iid=IGZWinGen id=0x3D0C0706 area=(0,0,520,320) fillcolor=(228,231,238) caption="SC4-ModernCamera Greeting" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={46a006b0,6bb93cb5} blttype=edge userdata=0 moveable=yes sizeable=no defaultkeys=no closevisible=no gobackvisible=no minmaxvisible=no closedisabled=no gobackdisabled=no minmaxdisabled=no titlebar=no fill=yes outline=no paint=yes sidebar=no gutters=(4,4) winflag_enable=no alphablend=no >
+<CHILDREN>
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0840 area=(490,10,512,30) fillcolor=(204,204,204) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=no winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={46a006b0,144161f9} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=yes tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="Close" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={00000000,ca5c3239} >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0845 area=(18,2,50,34) fillcolor=(0,0,0) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes image={{THEME_GROUP},3d0c0908} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={00000000,ca5c3239} >
+   <LEGACY clsid=GZWinText iid=IGZWinText id=0x3D0C0841 area=(58,4,478,30) fillcolor=(0,0,0) caption="Welcome!" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes font=GenHeader align=leftcenter notify=no wrapped=no opaque=no forecolor=(32,40,80) bkgcolor=(0,0,0) gutters=(2,2) >
+   <LEGACY clsid=GZWinText iid=IGZWinText id=0x3D0C0846 area=(24,50,286,74) fillcolor=(0,0,0) caption="SC4-ModernCamera 1.0.6 Installed!" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes font=GenBodyMedium align=leftcenter notify=no wrapped=no opaque=no forecolor=(32,40,80) bkgcolor=(0,0,0) gutters=(2,2) >
+   <LEGACY clsid=GZWinGen iid=IGZWinGen id=0x3D0C0849 area=(292,42,294,116) fillcolor=(150,160,180) caption="" winflag_visible=yes winflag_enabled=no winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes userdata=0 moveable=no sizeable=no defaultkeys=no closevisible=no gobackvisible=no minmaxvisible=no titlebar=no fill=yes outline=no paint=yes sidebar=no gutters=(0,0) winflag_enable=no alphablend=no >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C084A area=(400,40,484,96) fillcolor=(0,0,0) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes image={{THEME_GROUP},3d0c0909} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={00000000,ca5c3239} >
+   <LEGACY clsid=GZWinText iid=IGZWinText id=0x3D0C084B area=(304,96,496,122) fillcolor=(0,0,0) caption="Use the upper-right camera button for camera options." winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes font=GenBodyLight align=lefttop notify=no wrapped=yes opaque=no forecolor=(72,82,112) bkgcolor=(0,0,0) gutters=(2,2) >
+   <LEGACY clsid=GZWinText iid=IGZWinText id=0x3D0C084C area=(24,112,292,134) fillcolor=(0,0,0) caption="Changelog:" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes font=GenBodyMedium align=leftcenter notify=no wrapped=no opaque=no forecolor=(32,40,80) bkgcolor=(0,0,0) gutters=(2,2) >
+   <LEGACY clsid=GZWinTextEdit iid=IGZWinTextEdit id=0x3D0C0842 area=(24,132,496,258) fillcolor=(242,244,248) caption="1.0.5:
+- Various performance improvements
+
+
+1.0.4:
+- Hold ALT to lock the camera to the nearest Classic Mode camera angle.
+   - NOTE: ALT lock is still experimental, if you lose your camera,
+           goto the Modern Camera menu and click 'RESET CAMERA LOCATION'.
+
+- Re-written input manager for better WASD/Arrow key handling - again.
+- Bug fixes
+
+1.0.3:
+- WASD and Arrow keys are now linked in Modern Camera mode.
+- New setting available:
+   - **Panning speed** - affects WASD/Arrow key movement speed in modern camera mode.
+- Performance improvements
+- Bug fixes
+
+1.0.2:
+- COMPATIBILITY PATCH: Added full support for the SimCity 4 Extra Cheats plugin.
+- BUGFIX: Native SimCity 4 keyboard bindings now function correctly alongside the plugin.
+- BUGFIX: The plugin will now safely abort initialization if it detects an unsupported game version.
+- UI: The Modern Camera settings button now automatically hides when the interface is minimized.
+
+MAJOR RELEASE 1.0:
+- Toolbars and other UI elements (advisor panels, etc) now allow you to use the mouse wheel to scroll in Modern camera mode.
+- Polished the welcome/changelog window and UI image handling.
+- Added persistent JSON settings.
+- Added version-aware first-install notice.
+- Added native SC4 window manager foundation.
+- Added optional smooth WASD camera movement with Shift boost.
+- Added in-game Camera Settings and Advanced Settings windows.
+- Added Classic and Modern camera mode switching from the settings window.
+- Added Modern-only redraw aggression controls: Classic, Normal, High, and Extreme.
+- Added diagnostics logging controls.
+- Added Reset Camera Location.
+- Added plugin data folder: Plugins/SC4-ModernCamera/
+- Added 3D camera movement and rotation controls." transparent winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_mousetrans=no winflag_ignoremouse=no editable=no wrapped=yes hscrollbar=no vscrollbar=yes outline=no opaque=yes caretvisible=no allowinsert=no allowundo=no singleline=no initvalue="1.0.5:
+- Various performance improvements
+
+
+1.0.4:
+- Hold ALT to lock the camera to the nearest Classic Mode camera angle.
+   - NOTE: ALT lock is still experimental, if you lose your camera,
+           goto the Modern Camera menu and click 'RESET CAMERA LOCATION'.
+
+- Re-written input manager for better WASD/Arrow key handling - again.
+- Bug fixes
+
+1.0.3:
+- WASD and Arrow keys are now linked in Modern Camera mode.
+- New setting available:
+   - **Panning speed** - affects WASD/Arrow key movement speed in modern camera mode.
+- Performance improvements
+- Bug fixes
+
+1.0.2:
+- COMPATIBILITY PATCH: Added full support for the SimCity 4 Extra Cheats plugin.
+- BUGFIX: Native SimCity 4 keyboard bindings now function correctly alongside the plugin.
+- BUGFIX: The plugin will now safely abort initialization if it detects an unsupported game version.
+- UI: The Modern Camera settings button now automatically hides when the interface is minimized.
+
+MAJOR RELEASE 1.0:
+- Toolbars and other UI elements (advisor panels, etc) now allow you to use the mouse wheel to scroll in Modern camera mode.
+- Polished the welcome/changelog window and UI image handling.
+- Added persistent JSON settings.
+- Added version-aware first-install notice.
+- Added native SC4 window manager foundation.
+- Added optional smooth WASD camera movement with Shift boost.
+- Added in-game Camera Settings and Advanced Settings windows.
+- Added Classic and Modern camera mode switching from the settings window.
+- Added Modern-only redraw aggression controls: Classic, Normal, High, and Extreme.
+- Added diagnostics logging controls.
+- Added Reset Camera Location.
+- Added plugin data folder: Plugins/SC4-ModernCamera/
+- Added 3D camera movement and rotation controls." colorfontnormal=(32,40,80) colorfontdisabled=(32,40,80) colorfonthilited=(255,255,255) colorfontnormalbkg=(242,244,248) colorfontdisabledbkg=(242,244,248) colorfonthilitedbkg=(0,0,128) caretcolor=(32,40,80) highlightcolor=(0,0,128) outlinecolor=(112,124,152) maxtext=4096 gutters=(5,4) overwrite=no insertindex=0 insertpos=(0,0) caretperiod=1000 maxundo=0 >
+   <LEGACY clsid=GZWinGen iid=IGZWinGen id=0x3D0C084D area=(24,266,496,268) fillcolor=(150,160,180) caption="" winflag_visible=yes winflag_enabled=no winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes userdata=0 moveable=no sizeable=no defaultkeys=no closevisible=no gobackvisible=no minmaxvisible=no titlebar=no fill=yes outline=no paint=yes sidebar=no gutters=(0,0) winflag_enable=no alphablend=no >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0847 area=(190,279,210,301) fillcolor=(204,204,204) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={46a006b0,14416245} font=GenBodyMedium colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=on triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=no tipsdelay=no tipstimeout=no style=radiocheck gutters=(10,3,10,3) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=right btnclicksnd={ca4d1943,8a5c324a} >
+   <LEGACY clsid=GZWinText iid=IGZWinText id=0x3D0C0848 area=(212,276,334,304) fillcolor=(0,0,0) caption="Don't show these again" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=no winflag_acceptfocus=no winflag_mousetrans=yes winflag_ignoremouse=yes font=GenBodyLight align=leftcenter notify=no wrapped=yes opaque=no forecolor=(63,73,103) bkgcolor=(0,0,0) gutters=(2,2) >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0844 area=(24,276,184,304) fillcolor=(204,204,204) caption="View Controls" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=no winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={46a006b0,144161eb} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=yes fill=yes autosize=no wrapcaption=no shiftcaption=yes tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0843 area=(340,276,500,304) fillcolor=(204,204,204) caption="OK" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=no winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={46a006b0,144161eb} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=yes fill=yes autosize=no wrapcaption=no shiftcaption=yes tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
+</CHILDREN>
+</LEGACY>

@@ -107,11 +107,26 @@ public:
 		m_verbosity.store(verbosity, std::memory_order_release);
 	}
 
+	// Returns whether the current verbosity accepts the specified message level.
+	bool IsEnabled(LogLevel level) const {
+		const LogVerbosity verbosity = m_verbosity.load(std::memory_order_acquire);
+		return verbosity != LogVerbosity::Off
+			&& (level != LogLevel::Verbose || verbosity == LogVerbosity::Verbose);
+	}
+
+	// Builds a message only when the current verbosity would write it.
+	template <typename MessageFactory>
+	void WriteLineLazy(LogLevel level, MessageFactory&& createMessage) {
+		if (!IsEnabled(level)) {
+			return;
+		}
+
+		WriteLine(level, std::forward<MessageFactory>(createMessage)());
+	}
+
 	// Queues a timestamped message when asynchronous logging is active, or writes it during startup.
 	void WriteLine(LogLevel level, std::string message) {
-		const LogVerbosity verbosity = m_verbosity.load(std::memory_order_acquire);
-		if (verbosity == LogVerbosity::Off
-			|| (level == LogLevel::Verbose && verbosity != LogVerbosity::Verbose)) {
+		if (!IsEnabled(level)) {
 			return;
 		}
 

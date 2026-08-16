@@ -2,22 +2,42 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <stdexcept>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
 namespace
 {
+	// Current and legacy names used to locate plugin-owned runtime data.
 	constexpr const wchar_t* kPluginDataDirectory = L"SC4-ModernCamera";
 	constexpr const wchar_t* kLegacyPluginDataDirectory = L"SC4-3DMouseCam";
 	constexpr const wchar_t* kSettingsFileName = L"SC4-ModernCamera.json";
+	constexpr const wchar_t* kThemeManifestFileName = L"theme.json";
 	constexpr const wchar_t* kLogFileName = L"SC4-ModernCamera.log";
 	constexpr const wchar_t* kPreviousLogFileName = L"SC4-ModernCamera.last";
+	constexpr const wchar_t* kTestFileName = L"test.json";
+	// Initial buffer size for resolving the module filename, grown when needed.
+	constexpr size_t kInitialModulePathCapacity = 512;
 
-	// Resolves the directory containing the loaded plugin DLL.
+	// Maps a legacy filename to its current destination filename.
+	struct FileMigration
+	{
+		const wchar_t* sourceName;
+		const wchar_t* destinationName;
+	};
+
+	// Legacy settings and log filenames that are migrated without overwriting data.
+	constexpr std::array kLegacyFileMigrations = {
+		FileMigration{ L"SC4-3DMouseCam.json", kSettingsFileName },
+		FileMigration{ L"SC4-3DMouseCam.log", kLogFileName },
+		FileMigration{ L"SC4-3DMouseCam.last", kPreviousLogFileName },
+	};
+
+	// Resolves the directory that contains the loaded plugin DLL.
 	std::filesystem::path ResolvePluginDirectory()
 	{
-		std::wstring modulePath(512, L'\0');
+		std::wstring modulePath(kInitialModulePathCapacity, L'\0');
 
 		for (;;)
 		{
@@ -41,7 +61,7 @@ namespace
 		}
 	}
 
-	// Moves a legacy file only when the destination has not already been created.
+	// Moves one legacy file only when its current destination does not exist.
 	void MoveFileIfMissing(
 		const std::filesystem::path& source,
 		const std::filesystem::path& destination)
@@ -66,7 +86,7 @@ namespace
 		}
 	}
 
-// Creates or migrates the writable data directory beneath the plugin directory.
+	// Creates the writable data directory and migrates known legacy files into it.
 	std::filesystem::path ResolveDataDirectory()
 	{
 		const std::filesystem::path pluginDirectory = ResolvePluginDirectory();
@@ -85,51 +105,61 @@ namespace
 			throw std::runtime_error("Failed to create the SC4-ModernCamera data directory.");
 		}
 
-		MoveFileIfMissing(pluginDirectory / L"SC4-3DMouseCam.json", dataDirectory / kSettingsFileName);
-		MoveFileIfMissing(pluginDirectory / L"SC4-3DMouseCam.log", dataDirectory / kLogFileName);
-		MoveFileIfMissing(pluginDirectory / L"SC4-3DMouseCam.last", dataDirectory / kPreviousLogFileName);
-		MoveFileIfMissing(pluginDirectory / L"test.json", dataDirectory / L"test.json");
+		for (const FileMigration& migration : kLegacyFileMigrations)
+		{
+			MoveFileIfMissing(
+				pluginDirectory / migration.sourceName,
+				dataDirectory / migration.destinationName);
+		}
+		MoveFileIfMissing(pluginDirectory / kTestFileName, dataDirectory / kTestFileName);
 
-		MoveFileIfMissing(dataDirectory / L"SC4-3DMouseCam.json", dataDirectory / kSettingsFileName);
-		MoveFileIfMissing(dataDirectory / L"SC4-3DMouseCam.log", dataDirectory / kLogFileName);
-		MoveFileIfMissing(dataDirectory / L"SC4-3DMouseCam.last", dataDirectory / kPreviousLogFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"SC4-3DMouseCam.json", dataDirectory / kSettingsFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"SC4-3DMouseCam.log", dataDirectory / kLogFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"SC4-3DMouseCam.last", dataDirectory / kPreviousLogFileName);
-		MoveFileIfMissing(legacyDataDirectory / L"test.json", dataDirectory / L"test.json");
+		for (const FileMigration& migration : kLegacyFileMigrations)
+		{
+			MoveFileIfMissing(
+				dataDirectory / migration.sourceName,
+				dataDirectory / migration.destinationName);
+		}
+
+		for (const FileMigration& migration : kLegacyFileMigrations)
+		{
+			MoveFileIfMissing(
+				legacyDataDirectory / migration.sourceName,
+				dataDirectory / migration.destinationName);
+		}
+		MoveFileIfMissing(legacyDataDirectory / kTestFileName, dataDirectory / kTestFileName);
 
 		return dataDirectory;
 	}
 }
 
-// Returns the cached plugin directory resolved from the loaded DLL location.
 const std::filesystem::path& PluginPaths::GetPluginDirectory()
 {
 	static const std::filesystem::path directory = ResolvePluginDirectory();
 	return directory;
 }
 
-// Returns the cached writable directory for settings and logs.
 const std::filesystem::path& PluginPaths::GetDataDirectory()
 {
 	static const std::filesystem::path directory = ResolveDataDirectory();
 	return directory;
 }
 
-// Returns the settings-file path in the plugin data directory.
 std::filesystem::path PluginPaths::GetSettingsPath()
 {
 	return GetDataDirectory() / kSettingsFileName;
 }
 
-// Returns the diagnostic-log path in the plugin data directory.
+std::filesystem::path PluginPaths::GetThemeManifestPath()
+{
+	return GetDataDirectory() / kThemeManifestFileName;
+}
+
 std::filesystem::path PluginPaths::GetLogPath()
 {
 	return GetDataDirectory() / kLogFileName;
 }
 
-// Returns the separate settings path used by the test UI workflow.
 std::filesystem::path PluginPaths::GetTestSettingsPath()
 {
-	return GetDataDirectory() / L"test.json";
+	return GetDataDirectory() / kTestFileName;
 }

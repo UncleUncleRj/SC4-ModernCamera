@@ -12,9 +12,9 @@
 #include <vector>
 
 class cGZMessage;
-class cIGZUnknown;
 class cIGZWin;
 class PluginSettings;
+enum class CameraMode;
 
 // Runtime actions invoked when a plugin window changes camera settings or focus.
 struct SC4WindowManagerCallbacks
@@ -235,6 +235,10 @@ protected:
 private:
 	// Synchronizes every visible control with the supplied settings object.
 	void SyncControlsFromSettings();
+	// Converts a changed sensitivity slider position into its matching setting value.
+	bool ApplySensitivitySliderChange(uint32_t controlID);
+	// Applies a camera mode selected by the primary settings window.
+	void ApplyCameraMode(CameraMode mode);
 	// Selects the matching on or off control for a boolean value.
 	void ApplyBooleanPair(uint32_t onID, uint32_t offID, bool value);
 	// Selects one control from a mutually exclusive control group.
@@ -272,16 +276,28 @@ public:
 	MenuButtonWindow();
 	// Supplies the manager used to open and close settings.
 	void SetWindowManager(class SC4WindowManager* manager);
+	// Supplies the settings object that determines the current camera-mode presentation.
+	void SetSettings(PluginSettings* settings);
 	// Updates the menu-button state to match settings visibility.
 	void SetSettingsOpen(bool open);
+	// Selects the Modern or Classic resource that represents the current camera mode.
+	void RefreshMode();
+	// Applies the native cursor appropriate for the menu button's current region.
+	void RefreshCursor();
+	// Refreshes the cursor when the supplied coordinate lies over the menu button.
+	bool UpdateCursorIfHovered(int32_t parentX, int32_t parentY);
 
 protected:
+	// Synchronizes the mode resource when the baked menu button is created.
+	void OnCreated() override;
 	// Opens or closes settings when the menu button is pressed.
 	bool OnButtonClick(uint32_t controlID) override;
 
 private:
 	// Manager that owns settings-window visibility and callbacks.
 	SC4WindowManager* manager;
+	// Settings object used to decide which mode artwork is visible.
+	PluginSettings* settings;
 };
 
 // Baked welcome dialog that routes users to plugin information and settings.
@@ -292,14 +308,22 @@ public:
 	GreetingWindow();
 	// Supplies the manager that opens the selected greeting destination.
 	void SetWindowManager(class SC4WindowManager* manager);
+	// Supplies the settings object changed by the greeting's update-notice control.
+	void SetSettings(PluginSettings* settings);
+	// Synchronizes greeting controls with the supplied settings.
+	void RefreshFromSettings();
 
 protected:
+	// Synchronizes greeting controls after its baked resource is created.
+	void OnCreated() override;
 	// Handles greeting buttons such as changelog and settings.
 	bool OnButtonClick(uint32_t controlID) override;
 
 private:
 	// Manager that owns the target baked windows.
 	SC4WindowManager* manager;
+	// Settings object used by the update-changelog preference control.
+	PluginSettings* settings;
 };
 
 // Baked reference window describing Modern Camera controls.
@@ -316,6 +340,8 @@ class AdvancedSettingsWindow final : public BakedManagedWindow
 public:
 	// Creates the baked advanced-settings window.
 	AdvancedSettingsWindow();
+	// Supplies the manager used for advanced settings transitions.
+	void SetWindowManager(class SC4WindowManager* manager);
 	// Supplies the settings object mirrored by advanced controls.
 	void SetSettings(PluginSettings* settings);
 	// Supplies callbacks used after an advanced setting changes.
@@ -333,6 +359,8 @@ private:
 	// Synchronizes advanced controls with their backing settings values.
 	void SyncControlsFromSettings();
 
+	// Manager coordinating settings-window state during advanced transitions.
+	SC4WindowManager* manager;
 	// Settings object read and changed by advanced controls.
 	PluginSettings* settings;
 	// Runtime callbacks used to apply advanced setting changes.
@@ -376,8 +404,6 @@ private:
 	{
 		// Native child window placed in the laboratory.
 		cIGZWin* window;
-		// Interface retained for the child control's native type.
-		cIGZUnknown* interfacePointer;
 		// Resource or generated identifier assigned to the child control.
 		uint32_t id;
 		// Unscrolled left position in parent-window pixels.
@@ -413,9 +439,6 @@ private:
 
 	// Creates and lays out the laboratory's native controls.
 	bool BuildControls();
-	// Retains one child control and records its unscrolled layout data.
-	void AddControl(cIGZWin* window, cIGZUnknown* interfacePointer, uint32_t id,
-		const char* name, int32_t left, int32_t top, int32_t right, int32_t bottom, bool fixed = false);
 	// Changes the content scroll offset by the requested number of pixels.
 	void ScrollBy(int32_t delta);
 	// Activates the native scrollbar arrow represented by direction.
@@ -492,6 +515,8 @@ public:
 	bool ShowSettingsWindow();
 	// Opens settings when closed or closes it when already visible.
 	bool ToggleSettingsWindow();
+	// Switches between Modern and Classic camera modes from the floating menu button.
+	void ToggleCameraMode();
 	// Shows or hides the floating camera menu button.
 	void SetMenuButtonVisible(bool visible);
 	// Synchronizes dependent windows and invokes the settings-close callback.
@@ -507,7 +532,7 @@ public:
 	// Returns whether any plugin-owned window is visible.
 	bool HasVisibleWindow() const;
 	// Returns whether a parent-window coordinate is over a visible plugin window.
-	bool IsPointOverVisibleWindow(int32_t parentX, int32_t parentY) const;
+	bool IsPointOverVisibleWindow(int32_t parentX, int32_t parentY);
 	// Routes wheel input to the visible plugin window under the pointer.
 	bool HandleMouseWheel(
 		int32_t wheelDelta, int32_t parentX, int32_t parentY, intptr_t nativeWindowHandle);

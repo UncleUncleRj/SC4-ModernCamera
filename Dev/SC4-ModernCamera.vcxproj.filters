@@ -107,6 +107,9 @@
     <ClInclude Include="src\SC4CameraController.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\SC4GameConstants.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\SC4VersionDetection.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -115,7 +118,13 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="ui\moderncamera-menu-icon.png">
+    <None Include="ui\moderncamera-menu-icon-on.png">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="ui\moderncamera-menu-icon-off.png">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="ui\moderncamera-menu-icon-old.png">
       <Filter>Resource Files</Filter>
     </None>
     <None Include="ui\camera_point.png">
