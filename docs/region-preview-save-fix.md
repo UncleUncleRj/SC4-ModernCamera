@@ -61,7 +61,9 @@ When pre-save is received, the controller:
 5. Refreshes the camera and requests a redraw.
 6. Holds native state throughout SC4's internal save and preview generation.
 
-There is no known post-save notification, so restoration is lifecycle-driven:
+There is no known post-save notification, so restoration is lifecycle-driven.
+This refers to save completion, not the framework `PreAppShutdown()` callback,
+which runs only during application teardown and is used to stop the logger:
 
 - After a normal save, the first subsequent keyboard or mouse interaction restores
   free-camera state and custom tables before processing that interaction.

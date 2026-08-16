@@ -56,7 +56,8 @@ When Classic camera mode is selected, the Advanced Settings redraw group shows C
 
 WASD Movement is a Modern camera feature. When Modern camera and WASD Movement are enabled:
 
-- W/A/S/D key input is consumed before the game can process its default actions.
+- W/A/S/D key input is consumed only while the city view has keyboard focus and
+  Ctrl, Alt, and the Windows keys are up.
 - movement is timer-driven, not key-repeat driven, so it starts while held and stops immediately on key release;
 - Shift + WASD applies the configured boost multiplier;
 - the panning speed slider applies to WASD movement;
@@ -64,11 +65,16 @@ WASD Movement is a Modern camera feature. When Modern camera and WASD Movement a
 - movement is disabled while right-click scrolling is active;
 - movement remains active during M3 camera maneuvering and zoom.
 
+Holding Ctrl, Alt, or either Windows key stops any held Modern Camera movement
+and returns W/A/S/D and arrow keys to SC4 for native shortcuts. Plain Alt still
+has its separate Modern Camera classic-angle function when the city view has
+keyboard focus and Ctrl or a Windows key is not held.
+
 When WASD Movement is off, or Classic camera is active, the plugin stops consuming W/A/S/D and returns those keys to the game.
 
 When WASD Movement is re-enabled while Modern camera is active, the plugin clears the current native view tool before consuming WASD again. This prevents a tool selected through SC4's native W/A/S/D shortcuts from staying active while Modern camera movement starts.
 
-SC4's standard arrow-key panning remains available independently of the WASD Movement setting. In Modern camera mode, arrow-key panning and WASD Movement use the same internal `SetScrolling` path so panning speed, Shift boost, focus gating, and map-boundary handling stay consistent.
+SC4's standard arrow-key panning remains available independently of the WASD Movement setting. In Modern camera mode, arrow-key panning and WASD Movement use the same internal `SetScrolling` path so panning speed, Shift boost, focus gating, modifier pass-through, and map-boundary handling stay consistent.
 
 ## Slider Saves
 

@@ -62,6 +62,8 @@ This produces all desired view types without a forced zoom/pitch curve:
 ### Alt hold
 
 - Works only in Modern camera mode.
+- Requires city-view keyboard focus and is not captured while Ctrl or either
+  Windows key is held.
 - Temporarily snaps the camera to the nearest native Classic pitch, yaw, and
   discrete rotation while Alt is held.
 - Preserves the current view target, zoom stage, and continuous magnification
@@ -79,6 +81,9 @@ This produces all desired view types without a forced zoom/pitch curve:
 - Uses the same playable-map boundary rules as the other Modern camera movement paths.
 - Does not engage during right-click scrolling.
 - Remains active during M3 camera maneuvering and zoom.
+- Captures W/A/S/D only while the city view has keyboard focus and Ctrl, Alt,
+  and the Windows keys are up. When one of those shortcut modifiers is held,
+  Modern Camera stops any held movement and leaves the key for SC4.
 
 ## Rotation Pivot and Anchor
 
@@ -141,13 +146,15 @@ healthy and broken states before assigning unverified meanings to fields.
   Classic angle, keeps pitch locked while held, and applies any held-rotation
   delta back onto the saved Modern orientation when released.
 - Optional WASD movement consumes game W/A/S/D input only while Modern camera mode
-  and WASD Movement are enabled. Movement is smooth while held, stops on key
-  release, supports Shift boost, uses the panning speed setting, and respects
-  the same map bounds as other camera movement.
+  and WASD Movement are enabled, the city view has keyboard focus, and no Ctrl,
+  Alt, or Windows-key shortcut modifier is held. Movement is smooth while held,
+  stops on key release, supports Shift boost, uses the panning speed setting,
+  and respects the same map bounds as other camera movement. A shortcut modifier
+  stops any held Modern Camera movement and returns the movement key to SC4.
 - SC4's standard arrow-key panning remains available independently of the WASD
   Movement setting. In Modern camera mode, WASD movement and arrow-key panning
   share the same internal `SetScrolling` path so focus gating, panning speed,
-  Shift boost, and map-boundary handling stay consistent.
+  Shift boost, modifier pass-through, and map-boundary handling stay consistent.
 - Native yaw uses a `[-70 degrees, +30 degrees]` hysteresis window. Building
   side meshes were observed disappearing when an exact 90-degree window mapped
   a healthy low-end orientation directly onto the opposite high-end boundary.

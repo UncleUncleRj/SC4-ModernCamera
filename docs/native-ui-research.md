@@ -288,7 +288,9 @@ Buttons also emit additional state messages ending in F7, F8, and F9. These diag
 
 Only `DoWinProcMessage` should perform event handling. Forwarding both `DoWinMsg` and `DoWinProcMessage` created duplicate interaction records.
 
-Every laboratory interaction is written to the normal plugin log and serialized into `Plugins/SC4-ModernCamera/test.json`.
+Every laboratory interaction is serialized into `Plugins/SC4-ModernCamera/test.json`.
+Its normal plugin-log record is emitted only when Diagnostics Logging permits
+info-level output.
 
 ## Scrollbar handling
 
@@ -397,9 +399,15 @@ Runtime files are located in the `SC4-ModernCamera` subfolder beside the plugin 
 
 - `SC4-ModernCamera.json`: persistent user settings and installed-version marker.
 - `test.json`: control-laboratory event/state output.
-- `SC4-ModernCamera.log`: plugin log.
+- `SC4-ModernCamera.log`: current plugin log.
+- `SC4-ModernCamera.last`: previous plugin log retained when startup rotates the
+  current log.
 
 These files are generated at runtime and are not build artifacts. Legacy root-level files are migrated into the subfolder before the logger or settings system opens them. The DLL and companion UI DAT remain in the Plugins root.
+
+After the framework lifecycle hook is registered, the logger moves file output
+off the game thread. The startup and shutdown rules are documented in
+[runtime-lifecycle.md](runtime-lifecycle.md).
 
 ## Production-window recommendations
 
