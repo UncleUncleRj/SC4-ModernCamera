@@ -16,7 +16,10 @@ GREETING_INSTANCE_ID = 0x3D0C0705
 CONTROLS_INSTANCE_ID = 0x3D0C0707
 MENU_ICON_ON_INSTANCE_ID = 0x3D0C0900
 MENU_ICON_OFF_INSTANCE_ID = 0x3D0C090A
-# 0x3D0C090B and 0x3D0C090C were used by the layered lip prototype.
+MENU_ICON_ON_SOURCE_NAME = "menu_glyphs_very_small.png"
+MENU_ICON_OFF_SOURCE_NAME = "menu_glyphs_red_very_small.png"
+MENU_MODE_TOGGLE_HIT_TARGET_INSTANCE_ID = 0x3D0C090B
+# 0x3D0C090C was used by the layered lip prototype.
 CHOICE_BUTTON_IMAGE_INSTANCE_ID = 0x3D0C0907
 CAM_ICON_INSTANCE_ID = 0x3D0C0908
 CAMERA_POINT_INSTANCE_ID = 0x3D0C0909
@@ -324,9 +327,9 @@ def build_menu_icon_fsh_from_png(png_path: Path, image_id: bytes) -> bytes:
     if width % 4 != 0:
         raise RuntimeError(f"{png_path} must contain four equal horizontal button states")
     state_width = width // 4
-    if state_width != 64 or height != 76:
+    if state_width != 55 or height != 58:
         raise RuntimeError(
-            f"{png_path} must be a 256x76 Disabled/Normal/Clicked/Hovered strip"
+            f"{png_path} must be a 220x58 Disabled/Normal/Clicked/Hovered strip"
         )
 
     output_state_width = 60
@@ -402,6 +405,12 @@ def build_menu_icon_fsh_from_png(png_path: Path, image_id: bytes) -> bytes:
             output_pixels.extend(output_rows[state])
 
     return build_fsh_dxt3(output_width, output_height, output_pixels, image_id)
+
+
+def build_menu_mode_toggle_hit_target_fsh() -> bytes:
+    # Four transparent 60x72 button states let the light's native hit target
+    # receive mouse input without drawing over the menu glyph.
+    return build_fsh_dxt3(240, 72, [(0, 0, 0, 0)] * (240 * 72), b"MODCMTGT")
 
 
 def escape_ui_caption(text: str) -> str:
@@ -492,8 +501,9 @@ def build_menu_button_script() -> bytes:
     script = """# Generated for SC4-ModernCamera's floating settings menu button
 <LEGACY clsid=GZWinGen iid=IGZWinGen id=0x3D0C0902 area=(0,0,60,72) fillcolor=(0,0,0) caption="SC4-ModernCamera Menu Button" winflag_visible=yes winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=no winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=no winflag_mousetrans=no winflag_ignoremouse=no userdata=0 moveable=no sizeable=no defaultkeys=no closevisible=no gobackvisible=no minmaxvisible=no titlebar=no fill=no outline=no paint=no sidebar=no gutters=(0,0) winflag_enable=no alphablend=no >
 <CHILDREN>
-   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0910 area=(0,0,60,72) fillcolor=(0,0,0) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={3d0c0700,3d0c0900} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=yes tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="Camera settings / lower light switches mode" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
-   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0914 area=(0,0,60,72) fillcolor=(0,0,0) caption="" winflag_visible=no winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={3d0c0700,3d0c090a} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=yes tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="Camera settings / lower light switches mode" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0910 area=(0,0,60,72) fillcolor=(0,0,0) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={3d0c0700,3d0c0900} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0914 area=(0,0,60,72) fillcolor=(0,0,0) caption="" winflag_visible=no winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={3d0c0700,3d0c090a} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=yes autosize=no wrapcaption=no shiftcaption=no tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0911 area=(40,46,60,72) fillcolor=(0,0,0) caption="" winflag_visible=yes winflag_enabled=yes winflag_moveable=no winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=yes winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={3d0c0700,3d0c090b} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=off triggerondown=off showcaption=no fill=no autosize=no wrapcaption=no shiftcaption=no tips=no tipsdelay=no tipstimeout=no style=standard gutters=(0,0,0,0) tiptext="" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
 </CHILDREN>
 </LEGACY>
 """
@@ -628,7 +638,7 @@ def build(source: Path, destination: Path) -> None:
         )
         resources.append((UI_SCRIPT_TYPE_ID, PLUGIN_GROUP_ID, DIAGNOSTICS_INSTANCE_ID, build_diagnostics_script()))
 
-    menu_icon_on_source = source.with_name("moderncamera-menu-icon-on.png")
+    menu_icon_on_source = source.with_name(MENU_ICON_ON_SOURCE_NAME)
     if menu_icon_on_source.exists():
         resources.append(
             (
@@ -639,7 +649,7 @@ def build(source: Path, destination: Path) -> None:
             )
         )
 
-    menu_icon_off_source = source.with_name("moderncamera-menu-icon-off.png")
+    menu_icon_off_source = source.with_name(MENU_ICON_OFF_SOURCE_NAME)
     if menu_icon_off_source.exists():
         resources.append(
             (
@@ -649,6 +659,15 @@ def build(source: Path, destination: Path) -> None:
                 build_menu_icon_fsh_from_png(menu_icon_off_source, b"MODCMIOF"),
             )
         )
+
+    resources.append(
+        (
+            UI_IMAGE_TYPE_ID,
+            PLUGIN_GROUP_ID,
+            MENU_MODE_TOGGLE_HIT_TARGET_INSTANCE_ID,
+            build_menu_mode_toggle_hit_target_fsh(),
+        )
+    )
 
     choice_button_source = source.with_name("menu-button-stages.png")
     if choice_button_source.exists():

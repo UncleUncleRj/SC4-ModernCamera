@@ -152,9 +152,9 @@ DXT3 data is 16 bytes per 4-by-4 pixel block:
 ```
 
 The Modern and Classic menu sources are
-`Dev/ui/moderncamera-menu-icon-on.png` and
-`Dev/ui/moderncamera-menu-icon-off.png`. Each source is a 256-by-76 strip of
-four 64-by-76 states in Disabled, Normal, Clicked, Hovered order. The builder
+`Dev/ui/menu_glyphs_very_small.png` (green) and
+`Dev/ui/menu_glyphs_red_very_small.png` (red). Each source is a 220-by-58 strip
+of four 55-by-58 states in Disabled, Normal, Clicked, Hovered order. The builder
 resamples each state to 60 by 72 with premultiplied-alpha bilinear filtering
 and aligns every state's alpha-weighted center to the Normal frame before
 packaging a 240-by-72 strip. This removes frame-to-frame movement baked into a

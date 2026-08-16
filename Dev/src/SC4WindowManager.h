@@ -282,9 +282,9 @@ public:
 	void SetSettingsOpen(bool open);
 	// Selects the Modern or Classic resource that represents the current camera mode.
 	void RefreshMode();
-	// Applies the native cursor appropriate for the menu button's current region.
+	// Applies the menu button's hover cursor for its current region.
 	void RefreshCursor();
-	// Refreshes the cursor when the supplied coordinate lies over the menu button.
+	// Updates the native cursor when the supplied coordinate lies over the menu button.
 	bool UpdateCursorIfHovered(int32_t parentX, int32_t parentY);
 
 protected:
@@ -294,6 +294,8 @@ protected:
 	bool OnButtonClick(uint32_t controlID) override;
 
 private:
+	// Updates the visible Modern or Classic button's native cursor directly.
+	void UpdateActiveButtonCursor();
 	// Manager that owns settings-window visibility and callbacks.
 	SC4WindowManager* manager;
 	// Settings object used to decide which mode artwork is visible.

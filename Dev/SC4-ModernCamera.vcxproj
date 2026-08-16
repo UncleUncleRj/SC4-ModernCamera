@@ -158,8 +158,8 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClInclude Include="src\SC4WindowManager.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="ui\moderncamera-menu-icon-on.png" />
-    <None Include="ui\moderncamera-menu-icon-off.png" />
+    <None Include="ui\menu_glyphs_very_small.png" />
+    <None Include="ui\menu_glyphs_red_very_small.png" />
     <None Include="ui\moderncamera-menu-icon-old.png" />
     <None Include="ui\camera_point.png" />
     <None Include="ui\camicon.png" />

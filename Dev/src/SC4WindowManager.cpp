@@ -68,13 +68,19 @@ namespace
 	// The two menu controls occupy the same top-right button location. One is
 	// shown for Modern mode and the other for Classic mode.
 	constexpr uint32_t kMenuButtonID = 0x3D0C0910;
-	// 0x3D0C0911 through 0x3D0C0913 were used by the layered mode-lip and
-	// prototype text LED controls. Keep those IDs retired.
+	// This transparent child control covers the lower-right mode light and its
+	// backing rectangle, keeping its mouse states separate from the menu glyph.
+	constexpr uint32_t kMenuModeToggleButtonID = 0x3D0C0911;
+	// 0x3D0C0912 and 0x3D0C0913 were used by prototype text LED controls. Keep
+	// those IDs retired.
 	constexpr uint32_t kMenuClassicButtonID = 0x3D0C0914;
 	// 0x3D0C0915 was used by the layered Classic mode lip. Keep it retired.
-	// Vertical boundary between the settings face and the lower mode-switch lip
-	// of the compact menu button.
-	constexpr int32_t kMenuModeLipTop = 56;
+	// The lower-right LED and its visible backing rectangle are the menu's
+	// camera-mode switch. The rest of the button opens Camera Settings.
+	constexpr int32_t kMenuModeToggleLeft = 40;
+	constexpr int32_t kMenuModeToggleTop = 46;
+	constexpr int32_t kMenuModeToggleRight = 60;
+	constexpr int32_t kMenuModeToggleBottom = 72;
 	constexpr uint32_t kSettingsCloseXButtonID = 0x3D0C0920;
 	constexpr uint32_t kSettingsModernButtonID = 0x3D0C0930;
 	constexpr uint32_t kSettingsClassicButtonID = 0x3D0C0931;
@@ -739,6 +745,23 @@ namespace
 			&& parentX < window->GetR()
 			&& parentY >= window->GetT()
 			&& parentY < window->GetB();
+	}
+
+	// Returns whether a parent-window point lands on the compact menu's
+	// lower-right camera-mode indicator.
+	bool IsMenuModeTogglePoint(cIGZWin* window, int32_t parentX, int32_t parentY)
+	{
+		if (!window)
+		{
+			return false;
+		}
+
+		const int32_t localX = parentX - window->GetL();
+		const int32_t localY = parentY - window->GetT();
+		return localX >= kMenuModeToggleLeft
+			&& localX < kMenuModeToggleRight
+			&& localY >= kMenuModeToggleTop
+			&& localY < kMenuModeToggleBottom;
 	}
 }
 
@@ -1802,7 +1825,7 @@ void SettingsWindow::OnClosed()
 }
 
 // Configures the compact top-right menu resource that opens settings and
-// exposes the camera-mode switch lip.
+// exposes the camera-mode switch indicator.
 MenuButtonWindow::MenuButtonWindow()
 	: BakedManagedWindow(
 		"Menu Button UI",
@@ -1866,15 +1889,9 @@ void MenuButtonWindow::RefreshCursor()
 	}
 }
 
-// Returns whether the cursor is over the menu and updates the visible mode's
-// native button cursor when it is.
-bool MenuButtonWindow::UpdateCursorIfHovered(int32_t parentX, int32_t parentY)
+// Updates the visible Modern or Classic menu button's native cursor directly.
+void MenuButtonWindow::UpdateActiveButtonCursor()
 {
-	if (!ContainsPoint(parentX, parentY))
-	{
-		return false;
-	}
-
 	cIGZWin* root = GetRootWindow();
 	const uint32_t activeButtonID =
 		settings && settings->cameraMode == CameraMode::Modern
@@ -1887,6 +1904,18 @@ bool MenuButtonWindow::UpdateCursorIfHovered(int32_t parentX, int32_t parentY)
 	{
 		activeButton->UpdateCursor();
 	}
+}
+
+// Returns whether the cursor is over the menu and updates its native cursor
+// when it is.
+bool MenuButtonWindow::UpdateCursorIfHovered(int32_t parentX, int32_t parentY)
+{
+	if (!ContainsPoint(parentX, parentY))
+	{
+		return false;
+	}
+
+	UpdateActiveButtonCursor();
 	return true;
 }
 
@@ -1902,10 +1931,20 @@ void MenuButtonWindow::SetSettingsOpen(bool open)
 	}
 }
 
-// Opens or closes settings when the button face is clicked. A click in the
-// lower mode lip switches between Modern and Classic camera modes instead.
+// Opens or closes settings when the button face is clicked. The separate
+// lower-right LED control switches camera modes without affecting the glyph.
 bool MenuButtonWindow::OnButtonClick(uint32_t controlID)
 {
+	if (controlID == kMenuModeToggleButtonID)
+	{
+		if (manager)
+		{
+			manager->ToggleCameraMode();
+		}
+		UpdateActiveButtonCursor();
+		return true;
+	}
+
 	if (controlID == kMenuButtonID || controlID == kMenuClassicButtonID)
 	{
 		POINT cursor{};
@@ -1913,19 +1952,22 @@ bool MenuButtonWindow::OnButtonClick(uint32_t controlID)
 		cIGZWin* root = GetRootWindow();
 		if (activeWindow
 			&& root
+			&& !root->GetChildWindowFromIDRecursive(kMenuModeToggleButtonID)
 			&& GetCursorPos(&cursor)
 			&& ScreenToClient(activeWindow, &cursor)
-			&& cursor.y - root->GetT() >= kMenuModeLipTop)
+			&& IsMenuModeTogglePoint(root, cursor.x, cursor.y))
 		{
 			if (manager)
 			{
 				manager->ToggleCameraMode();
 			}
+			UpdateActiveButtonCursor();
 			return true;
 		}
 
 		const bool opened = manager && manager->ToggleSettingsWindow();
 		SetSettingsOpen(opened);
+		UpdateActiveButtonCursor();
 		return true;
 	}
 	return false;

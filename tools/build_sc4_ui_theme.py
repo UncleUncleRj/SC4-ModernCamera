@@ -22,11 +22,11 @@ SCRIPT_RESOURCES = {
     "advanced-settings.txt": (base.DIAGNOSTICS_INSTANCE_ID, 0x3D0C0906),
 }
 IMAGE_RESOURCES = {
-    "moderncamera-menu-icon-on.png": (
+    base.MENU_ICON_ON_SOURCE_NAME: (
         base.MENU_ICON_ON_INSTANCE_ID,
         lambda path: base.build_menu_icon_fsh_from_png(path, b"MODCMION"),
     ),
-    "moderncamera-menu-icon-off.png": (
+    base.MENU_ICON_OFF_SOURCE_NAME: (
         base.MENU_ICON_OFF_INSTANCE_ID,
         lambda path: base.build_menu_icon_fsh_from_png(path, b"MODCMIOF"),
     ),
@@ -42,6 +42,9 @@ IMAGE_RESOURCES = {
         base.CAMERA_POINT_INSTANCE_ID,
         lambda path: base.build_button_strip_fsh_from_png(path, b"MODCMARW"),
     ),
+}
+GENERATED_IMAGE_RESOURCES = {
+    base.MENU_MODE_TOGGLE_HIT_TARGET_INSTANCE_ID: base.build_menu_mode_toggle_hit_target_fsh,
 }
 REQUIRED_CONTROLS = {
     "greeting.txt": {
@@ -125,7 +128,9 @@ def parse_controls(script: str) -> tuple[dict[int, str], list[int]]:
 
 def validate(theme_dir: Path) -> tuple[dict[str, object], int]:
     manifest, group = read_manifest(theme_dir)
-    available_images = {instance_id for instance_id, _ in IMAGE_RESOURCES.values()}
+    available_images = {
+        instance_id for instance_id, _ in IMAGE_RESOURCES.values()
+    } | set(GENERATED_IMAGE_RESOURCES)
     errors: list[str] = []
     for filename, (_, root_id) in SCRIPT_RESOURCES.items():
         path = theme_dir / "ui" / filename
@@ -216,6 +221,15 @@ def build(theme_dir: Path, destination: Path) -> None:
                 group,
                 instance_id,
                 encoder(theme_dir / "images" / filename),
+            )
+        )
+    for instance_id, build_image in GENERATED_IMAGE_RESOURCES.items():
+        resources.append(
+            (
+                base.UI_IMAGE_TYPE_ID,
+                group,
+                instance_id,
+                build_image(),
             )
         )
     write_dbpf(resources, destination)
