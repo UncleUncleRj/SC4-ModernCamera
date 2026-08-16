@@ -2390,6 +2390,10 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
 
         log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MBUTTONDOWN (Middle Mouse Down)");
+        if (!hWnd) {
+            log.WriteLine(LogLevel::Warning, "Middle mouse camera rotation ignored because the canvas window is unavailable.");
+            break;
+        }
         if (!ClaimKey(VK_MBUTTON, KeyOwner::ModernCameraRotation)) {
             log.WriteLine(LogLevel::Verbose, "Middle mouse camera rotation ignored because MButton is owned by another feature.");
             break;
@@ -2446,7 +2450,10 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
 
         POINT cursor = MakePointFromLParam(lParam);
-        if (!ScreenToClient(hWnd, &cursor)) {
+        if (!hWnd) {
+            log.WriteLine(LogLevel::Warning, "Mouse wheel hit-test: canvas window is unavailable; using camera zoom.");
+        }
+        else if (!ScreenToClient(hWnd, &cursor)) {
             log.WriteLine(LogLevel::Warning, "Mouse wheel hit-test: failed to convert screen coordinates; using camera zoom.");
         }
         else {
@@ -2498,7 +2505,8 @@ class cSC4ModernCameraDirector : public cRZMessage2COMDirector, public cIGZWinPr
 public:
     // Initializes the COM director and exposes canvas-filter callbacks.
     cSC4ModernCameraDirector()
-        : mpCanvasW32(nullptr)
+        : mpCanvasW32(nullptr),
+          m_FrameworkHookRegistered(false)
     {
         AddRef();
         g_RegisterCanvasWinProcFilterCallback = [this]() { RegisterCanvasWinProcFilter(); };
@@ -2567,6 +2575,31 @@ public:
 
         ApplyDebugLoggingChange();
 
+        if (!mpFrameWork) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Error,
+                "Framework lifecycle hook is unavailable because cIGZFrameWork is null.");
+        }
+        else if (!m_FrameworkHookRegistered) {
+            m_FrameworkHookRegistered = mpFrameWork->AddHook(static_cast<cIGZFrameWorkHooks*>(this));
+            Logger::GetInstance().WriteLine(
+                m_FrameworkHookRegistered ? LogLevel::Info : LogLevel::Error,
+                m_FrameworkHookRegistered
+                    ? "Registered framework lifecycle hook."
+                    : "Failed to register framework lifecycle hook.");
+        }
+
+        if (m_FrameworkHookRegistered) {
+            Logger& logger = Logger::GetInstance();
+            logger.WriteLine(LogLevel::Info, "Starting asynchronous logger.");
+            if (logger.StartAsync()) {
+                logger.WriteLine(LogLevel::Info, "Asynchronous logger started.");
+            }
+            else {
+                logger.WriteLine(LogLevel::Error, "Failed to start asynchronous logger; continuing with synchronous logging.");
+            }
+        }
+
         Logger::GetInstance().WriteLine(
             LogLevel::Info,
             std::string("Modern Camera Enabled: ") + (g_IsModernCamEnabled ? "true" : "false")
@@ -2576,6 +2609,29 @@ public:
             Logger::GetInstance().WriteLine(LogLevel::Error, "Failed to subscribe to the required notifications.");
         }
 
+        return true;
+    }
+
+    // Prevents the DLL from unloading while the asynchronous logger can still execute plugin code.
+    bool CanUnloadNow() override
+    {
+        return Logger::GetInstance().CanUnloadNow()
+            && cRZMessage2COMDirector::CanUnloadNow();
+    }
+
+    // Stops and drains the asynchronous logger before application services are torn down.
+    bool PreAppShutdown() override
+    {
+        Logger& logger = Logger::GetInstance();
+        logger.WriteLine(LogLevel::Info, "Framework lifecycle: PreAppShutdown. Stopping asynchronous logger.");
+        logger.Shutdown();
+        return true;
+    }
+
+    // Signals the writer to stop without waiting during an abortive framework shutdown.
+    bool AbortiveQuit() override
+    {
+        Logger::GetInstance().RequestAbortiveStop();
         return true;
     }
 
@@ -2679,6 +2735,8 @@ private:
     }
 
     cIGZCanvasW32* mpCanvasW32;
+    // Records whether this director is subscribed to framework lifecycle callbacks.
+    bool m_FrameworkHookRegistered;
 };
 
 // Returns the singleton COM director exported by this plugin DLL.
