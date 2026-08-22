@@ -94,9 +94,11 @@ public:
     RedrawAggression redrawAggression;
     // Controls the amount of diagnostic log output.
     DebugLogging debugLogging;
-    // Enables the Ctrl+Alt+F8 camera diagnostics shortcut.
-    bool cameraDumpHotkey;
-    // Shows the version greeting and changelog after a plugin update.
+	// Enables the Ctrl+Alt+F8 camera diagnostics shortcut.
+	bool cameraDumpHotkey;
+	// Enables Modern-mode numbered bookmark hotkeys.
+	bool bookmarksEnabled;
+	// Shows the version greeting and changelog after a plugin update.
     bool showChangelogsOnUpdate;
 
 private:

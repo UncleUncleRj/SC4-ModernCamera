@@ -36,6 +36,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+	<ClCompile Include="src\CameraBookmarkStore.cpp">
+	  <Filter>Source Files</Filter>
+	</ClCompile>
     <ClCompile Include="src\Hooks\VTableHook.cpp">
       <Filter>Source Files\Hooks</Filter>
     </ClCompile>
@@ -83,6 +86,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+	<ClInclude Include="src\CameraBookmarkStore.h">
+	  <Filter>Header Files</Filter>
+	</ClInclude>
     <ClInclude Include="src\Hooks\VTableHook.h">
       <Filter>Header Files\Hooks</Filter>
     </ClInclude>

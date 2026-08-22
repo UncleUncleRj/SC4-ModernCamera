@@ -10,6 +10,8 @@ namespace PluginPaths
 	const std::filesystem::path& GetDataDirectory();
 	// Returns the persistent settings-file path.
 	std::filesystem::path GetSettingsPath();
+	// Returns the persistent per-city camera-bookmark data path.
+	std::filesystem::path GetBookmarksPath();
 	// Returns the optional UI theme manifest path.
 	std::filesystem::path GetThemeManifestPath();
 	// Returns the active diagnostic-log path.

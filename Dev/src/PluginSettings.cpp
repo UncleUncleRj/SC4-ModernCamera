@@ -123,6 +123,7 @@ void PluginSettings::RestoreDefaults()
 	redrawAggression = RedrawAggression::Normal;
 	debugLogging = DebugLogging::Normal;
 	cameraDumpHotkey = true;
+	bookmarksEnabled = true;
 	showChangelogsOnUpdate = true;
 }
 
@@ -177,6 +178,7 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		else debugLogging = DebugLogging::Normal;
 	}
 	TryReadBool(json, "cameraDumpHotkey", cameraDumpHotkey);
+	TryReadBool(json, "bookmarksEnabled", bookmarksEnabled);
 	TryReadBool(json, "showChangelogsOnUpdate", showChangelogsOnUpdate);
 
 	rotationSensitivity = std::clamp(rotationSensitivity, kMinimumSensitivity, kMaximumSensitivity);
@@ -221,6 +223,9 @@ bool PluginSettings::Save() const
 		<< "  \"diagnostics\": {\n"
 		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\",\n"
 		<< "    \"cameraDumpHotkey\": " << (cameraDumpHotkey ? "true" : "false") << "\n"
+		<< "  },\n"
+		<< "  \"bookmarks\": {\n"
+		<< "    \"bookmarksEnabled\": " << (bookmarksEnabled ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"ui\": {\n"
 		<< "    \"showChangelogsOnUpdate\": " << (showChangelogsOnUpdate ? "true" : "false") << "\n"

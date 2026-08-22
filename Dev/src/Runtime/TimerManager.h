@@ -15,6 +15,8 @@ enum class RuntimeTimer : size_t
 	KeyboardPan,
 	// One-shot timer that hides the camera-dump confirmation.
 	CameraDumpConfirmation,
+	// One-shot timer that hides the camera-bookmark confirmation.
+	BookmarkConfirmation,
 	// One-shot Escape input that clears a native View3D tool.
 	NativeToolClearEsc,
 	// One-shot restoration of 3D-view focus after a UI transition.

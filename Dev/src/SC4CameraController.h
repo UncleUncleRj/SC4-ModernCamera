@@ -197,6 +197,15 @@ public:
 	bool ShowCameraDumpConfirmation() const;
 	// Clears the temporary camera-dump confirmation UI.
 	bool ClearCameraDumpConfirmation() const;
+	/// <summary>
+	/// Shows a temporary confirmation after a bookmark save or recall.
+	/// </summary>
+	/// <param name="saved">True for a save acknowledgement; false for a recall acknowledgement.</param>
+	/// <param name="slot">Zero-based bookmark slot that completed the command.</param>
+	/// <returns>True when SC4 accepted the cursor-text entry.</returns>
+	bool ShowCameraBookmarkConfirmation(bool saved, uint32_t slot) const;
+	// Clears the temporary bookmark confirmation UI.
+	bool ClearCameraBookmarkConfirmation() const;
 	// Returns whether a restorable native camera state has been captured.
 	bool HasNativeCameraState() const;
 	// Returns the native camera snapshot retained by this controller.
@@ -205,6 +214,11 @@ public:
 	bool CaptureNativeCameraState(const char* source);
 	// Restores the previously captured native camera state.
 	bool RestoreNativeCameraState(const char* source);
+	// Captures the active view without changing the controller's native-reset snapshot.
+	bool CaptureCurrentCameraState(SC4NativeCameraState& state, const char* source) const;
+	// Restores a saved full view. Its target is clamped to current city bounds,
+	// with each dependent world-space camera value translated by the same delta.
+	bool RestoreCameraState(SC4NativeCameraState state, const char* source);
 	// Normalizes camera state before SC4 creates a save-preview image.
 	bool BeginSavePreviewNormalization();
 	// Restores Modern Camera state after a save-preview normalization.

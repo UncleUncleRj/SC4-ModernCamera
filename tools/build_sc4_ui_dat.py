@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import struct
 import sys
+from typing import Optional
 import zlib
 
 
@@ -42,6 +43,39 @@ CHOICE_BUTTON_IDS = (
     "0x3D0C0969",
     "0x3D0C096A",
 )
+
+
+def get_build_inputs(source: Path) -> list[Path]:
+    """Return every existing file whose content can change the built DAT."""
+    changelog_source = source.parents[2] / "docs" / "changelog.md"
+    version_header = source.parents[1] / "src" / "PluginVersion.h"
+    candidates = [
+        Path(__file__),
+        source,
+        source.with_name("SC4-ModernCamera-BasicUI.txt"),
+        source.with_name(MENU_ICON_ON_SOURCE_NAME),
+        source.with_name(MENU_ICON_OFF_SOURCE_NAME),
+        source.with_name("menu-button-stages.png"),
+        source.with_name("camicon.png"),
+        source.with_name("camera_point.png"),
+    ]
+    if changelog_source.is_file():
+        candidates.extend((changelog_source, version_header))
+    return [path for path in candidates if path.is_file()]
+
+
+def get_build_reason(source: Path, destination: Path) -> Optional[str]:
+    """Return why the DAT must be rebuilt, or None when it is current."""
+    if not destination.is_file():
+        return "output file is missing"
+    if not source.is_file():
+        return f"source file is missing: {source}"
+
+    destination_time = destination.stat().st_mtime_ns
+    for input_path in get_build_inputs(source):
+        if input_path.stat().st_mtime_ns > destination_time:
+            return f"input is newer: {input_path}"
+    return None
 
 
 def rgb_to_565(r: int, g: int, b: int) -> int:
@@ -550,6 +584,14 @@ def build_settings_script(version_header: Path) -> bytes:
 </CHILDREN>
 </LEGACY>
 """
+    bookmark_hotkeys_button = """
+   <LEGACY clsid=GZWinBtn iid=IGZWinBtn id=0x3D0C0954 area=(220,408,340,436) fillcolor=(204,204,204) caption="Bookmark Hotkeys" winflag_visible=yes winflag_enabled=yes winflag_moveable=yes winflag_sizeable=no winflag_sortable=no winflag_pbuff=yes winflag_pbufftrans=no winflag_pbufferase=yes winflag_pbuffvid=no winflag_alphablend=yes winflag_acceptfocus=yes winflag_mousetrans=no winflag_ignoremouse=no image={46a006b0,144161eb} font=GenButton colorfontnormal=(63,73,103) colorfontdisabled=(102,102,102) colorfonthilited=(63,73,103) toggle=on triggerondown=off showcaption=yes fill=yes autosize=no wrapcaption=no shiftcaption=yes tips=yes tipsdelay=no tipstimeout=no style=toggle gutters=(0,0,0,0) tiptext="Toggle 1-8 recall and Ctrl+1-8 save in Modern mode" tipoffsets=(0,0) tipflag=0x01000000 align=center btnclicksnd={ca47efd9,4a5c31d7} >
+"""
+    script = script.replace(
+        "id=0x3D0C0951 area=(220,408,472,436)",
+        "id=0x3D0C0951 area=(352,408,472,436)",
+    )
+    script = script.replace("</CHILDREN>", bookmark_hotkeys_button + "</CHILDREN>")
     return apply_choice_button_image(script.replace("{VERSION}", version)).encode("utf-8")
 
 
@@ -728,4 +770,11 @@ def build(source: Path, destination: Path) -> None:
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         raise SystemExit("usage: build_sc4_ui_dat.py SOURCE DESTINATION")
-    build(Path(sys.argv[1]), Path(sys.argv[2]))
+    source = Path(sys.argv[1])
+    destination = Path(sys.argv[2])
+    reason = get_build_reason(source, destination)
+    if reason:
+        print(f"Native UI DAT needs generation ({reason}).")
+        build(source, destination)
+    else:
+        print(f"Native UI DAT is up to date; generation skipped: {destination}")

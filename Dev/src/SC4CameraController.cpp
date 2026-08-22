@@ -28,6 +28,10 @@ namespace
 	constexpr uint32_t kCameraDumpCursorTextId = 0x3D0C4D01;
 	// Cursor-text priority that keeps the dump confirmation visible.
 	constexpr uint32_t kCameraDumpCursorTextPriority = 1000;
+	// Cursor-text identifier reserved for bookmark save and recall confirmations.
+	constexpr uint32_t kCameraBookmarkCursorTextId = 0x3D0C4D02;
+	// Cursor-text priority that keeps bookmark confirmations visible.
+	constexpr uint32_t kCameraBookmarkCursorTextPriority = 1000;
 	// Native camera-position update entry point for the supported executable.
 	constexpr uintptr_t kUpdateCameraPositionAddress = 0x007CCF80;
 	// Native custom-magnification entry point for the supported executable.
@@ -696,6 +700,138 @@ bool SC4CameraController::CaptureNativeCameraState(const char* source)
 				+ std::string(source ? source : "unknown"));
 		}
 		return captured;
+	});
+}
+
+// Copies the full restorable camera view without disturbing the baseline state
+// retained for Classic-mode restoration.
+bool SC4CameraController::CaptureCurrentCameraState(
+	SC4NativeCameraState& state,
+	const char* source) const
+{
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Camera Bookmark Capture: camera control unavailable. Source:"
+				+ std::string(source ? source : "unknown"));
+			return false;
+		}
+
+		state = {
+			cameraControl->cameraPlaneOrigin,
+			cameraControl->cameraPosition,
+			cameraControl->viewTargetPosition,
+			cameraControl->baseTargetForRotation,
+			cameraControl->cameraOffset,
+			cameraControl->customMagnification,
+			cameraControl->prevZoom,
+			cameraControl->prevRotation,
+			cameraControl->zoom,
+			cameraControl->rotation,
+			cameraControl->postZoom,
+			cameraControl->postRotation,
+			cameraControl->yaw,
+			cameraControl->pitch,
+			cameraControl->cameraDistance,
+			cameraControl->nearClip,
+			cameraControl->farClip,
+			cameraControl->orthoScale,
+			cameraControl->invOrthoScale,
+		};
+		return true;
+	});
+}
+
+// Restores a view saved by the bookmark store. The persisted input is copied
+// first, so bounds correction is never written back to the bookmark record.
+bool SC4CameraController::RestoreCameraState(SC4NativeCameraState state, const char* source)
+{
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Camera Bookmark Restore: camera control unavailable. Source:"
+				+ std::string(source ? source : "unknown"));
+			return false;
+		}
+
+		const float clampedX = ClampToCityExtent(state.viewTargetPosition.fX, cameraControl->citySizeX);
+		const float clampedZ = ClampToCityExtent(state.viewTargetPosition.fZ, cameraControl->citySizeZ);
+		const float deltaX = clampedX - state.viewTargetPosition.fX;
+		const float deltaZ = clampedZ - state.viewTargetPosition.fZ;
+		if (deltaX != 0.0f || deltaZ != 0.0f) {
+			TranslateXZ(state.cameraPlaneOrigin, deltaX, deltaZ);
+			TranslateXZ(state.baseTargetForRotation, deltaX, deltaZ);
+			TranslateXZ(state.cameraPosition, deltaX, deltaZ);
+			TranslateXZ(state.viewTargetPosition, deltaX, deltaZ);
+			// cameraOffset is part of the native absolute transform cache and
+			// must move with the target to keep the restored view aligned.
+			TranslateXZ(state.cameraOffset, deltaX, deltaZ);
+		}
+
+		if (cameraControl->zoom != state.zoom && !renderer->SetZoom(state.zoom)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmark Restore: renderer SetZoom failed.");
+			return false;
+		}
+		cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmark Restore: camera control unavailable after SetZoom.");
+			return false;
+		}
+
+		if (cameraControl->rotation != state.rotation && !renderer->SetRotation(state.rotation)) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmark Restore: renderer SetRotation failed.");
+			return false;
+		}
+		cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmark Restore: camera control unavailable after SetRotation.");
+			return false;
+		}
+
+		cameraControl->cameraPlaneOrigin = state.cameraPlaneOrigin;
+		cameraControl->baseTargetForRotation = state.baseTargetForRotation;
+		cameraControl->cameraPosition = state.cameraPosition;
+		cameraControl->viewTargetPosition = state.viewTargetPosition;
+		cameraControl->viewTargetVelocity = {};
+		cameraControl->cameraOffset = state.cameraOffset;
+		cameraControl->customMagnification = state.customMagnification;
+		cameraControl->prevZoom = state.prevZoom;
+		cameraControl->prevRotation = state.prevRotation;
+		cameraControl->zoom = state.zoom;
+		cameraControl->rotation = state.rotation;
+		cameraControl->postZoom = state.postZoom;
+		cameraControl->postRotation = state.postRotation;
+		cameraControl->cameraDistance = state.cameraDistance;
+		cameraControl->nearClip = state.nearClip;
+		cameraControl->farClip = state.farClip;
+		cameraControl->orthoScale = state.orthoScale;
+		cameraControl->invOrthoScale = state.invOrthoScale;
+		ApplyAngleOverrides(*cameraControl, state.pitch, state.yaw);
+
+		currentPitch = SanitizePitch(state.pitch);
+		currentYaw = SanitizeYaw(state.yaw);
+		anglesInitialized = true;
+		rotationGestureActive = false;
+		rotationOrthoScale = 0.0f;
+		rotationViewTarget = {};
+		rotationBaseTarget = {};
+
+		const bool refreshed = Refresh(*cameraControl);
+		if (refreshed) {
+			renderer->ForceFullRedraw();
+		}
+		Logger::GetInstance().WriteLine(
+			refreshed ? LogLevel::Info : LogLevel::Warning,
+			std::string("Camera Bookmark Restore: ")
+			+ (refreshed ? "restored" : "refresh failed")
+			+ ". Source:" + (source ? source : "unknown")
+			+ " BoundsCorrectionX:" + std::to_string(deltaX)
+			+ " BoundsCorrectionZ:" + std::to_string(deltaZ));
+		return refreshed;
 	});
 }
 
@@ -1738,6 +1874,56 @@ bool SC4CameraController::ClearCameraDumpConfirmation() const
 {
 	return WithView3D([](cISC4View3DWin* view3D) {
 		return view3D->ClearCursorText(kCameraDumpCursorTextId);
+	});
+}
+
+// Uses static strings because the view can retain cursor-text pointers until
+// the timer clears the acknowledgement.
+bool SC4CameraController::ShowCameraBookmarkConfirmation(bool saved, uint32_t slot) const
+{
+	static constexpr uint32_t kBookmarkSlotCount = 8;
+	if (slot >= kBookmarkSlotCount)
+	{
+		return false;
+	}
+
+	return WithView3D([saved, slot](cISC4View3DWin* view3D) {
+		static cRZBaseString title("SC4-Modern Camera");
+		static cRZBaseString savedBodies[kBookmarkSlotCount] = {
+			"User saved bookmark:  1",
+			"User saved bookmark:  2",
+			"User saved bookmark:  3",
+			"User saved bookmark:  4",
+			"User saved bookmark:  5",
+			"User saved bookmark:  6",
+			"User saved bookmark:  7",
+			"User saved bookmark:  8",
+		};
+		static cRZBaseString recalledBodies[kBookmarkSlotCount] = {
+			"Moved to bookmark:  1",
+			"Moved to bookmark:  2",
+			"Moved to bookmark:  3",
+			"Moved to bookmark:  4",
+			"Moved to bookmark:  5",
+			"Moved to bookmark:  6",
+			"Moved to bookmark:  7",
+			"Moved to bookmark:  8",
+		};
+
+		return view3D->SetCursorText(
+			kCameraBookmarkCursorTextId,
+			kCameraBookmarkCursorTextPriority,
+			&title,
+			saved ? &savedBodies[slot] : &recalledBodies[slot],
+			0);
+	});
+}
+
+// Removes the cursor-text acknowledgement created after a bookmark command.
+bool SC4CameraController::ClearCameraBookmarkConfirmation() const
+{
+	return WithView3D([](cISC4View3DWin* view3D) {
+		return view3D->ClearCursorText(kCameraBookmarkCursorTextId);
 	});
 }
 

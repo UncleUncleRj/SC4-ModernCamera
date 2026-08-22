@@ -102,6 +102,7 @@ namespace
 	constexpr uint32_t kSettingsAdvancedButtonID = 0x3D0C0951;
 	constexpr uint32_t kSettingsReadChangelogButtonID = 0x3D0C0952;
 	constexpr uint32_t kSettingsCloseButtonID = 0x3D0C0953;
+	constexpr uint32_t kSettingsBookmarkHotkeysButtonID = 0x3D0C0954;
 	constexpr uint32_t kAdvancedCloseXButtonID = 0x3D0C0960;
 	constexpr uint32_t kAdvancedCloseButtonID = 0x3D0C0963;
 	constexpr uint32_t kAdvancedDebugLoggingOffButtonID = 0x3D0C0968;
@@ -677,6 +678,7 @@ namespace
 				kSettingsAdvancedButtonID,
 				kSettingsReadChangelogButtonID,
 				kSettingsCloseButtonID,
+				kSettingsBookmarkHotkeysButtonID,
 			};
 			sliders = {
 				kSettingsRotationSliderID,
@@ -1345,6 +1347,7 @@ void SettingsWindow::SyncControlsFromSettings()
 		PluginSettings::kMinimumPanSensitivity,
 		PluginSettings::kPanSensitivityRange);
 	ApplyBooleanPair(kSettingsInvertOnButtonID, kSettingsInvertOffButtonID, settings->invertVertical);
+	SetButtonToggle(GetRootWindow(), kSettingsBookmarkHotkeysButtonID, settings->bookmarksEnabled);
 
 	const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
 	const uint32_t modernOnlyControlIDs[] = {
@@ -1384,6 +1387,7 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 		+ " zoomSensitivity=" + std::to_string(settings->zoomSensitivity)
 		+ " panSensitivity=" + std::to_string(settings->panSensitivity)
 		+ " invertVertical=" + (settings->invertVertical ? "true" : "false")
+		+ " bookmarksEnabled=" + (settings->bookmarksEnabled ? "true" : "false")
 		+ " redrawAggression="
 		+ PluginSettingText::ToString(settings->redrawAggression)
 		+ " debugLogging="
@@ -1693,6 +1697,15 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			settings->invertVertical = false;
 			ApplySettingsChange("invert vertical change");
 			return true;
+		case kSettingsBookmarkHotkeysButtonID:
+			LogOptionChanged(
+				"Settings UI",
+				"Bookmark Hotkeys",
+				ToOnOffString(settings->bookmarksEnabled),
+				ToOnOffString(!settings->bookmarksEnabled));
+			settings->bookmarksEnabled = !settings->bookmarksEnabled;
+			ApplySettingsChange("bookmark hotkey change");
+			return true;
 		case kSettingsRestoreDefaultsButtonID:
 		{
 			const CameraMode previousCameraMode = settings->cameraMode;
@@ -1705,6 +1718,7 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			const RedrawAggression previousRedrawAggression = settings->redrawAggression;
 			const DebugLogging previousDebugLogging = settings->debugLogging;
 			const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
+			const bool previousBookmarksEnabled = settings->bookmarksEnabled;
 			const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
 			settings->RestoreDefaults();
 			LogOptionChanged(
@@ -1757,6 +1771,11 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				"Camera Dump Hotkey",
 				ToOnOffString(previousCameraDumpHotkey),
 				ToOnOffString(settings->cameraDumpHotkey));
+			LogOptionChanged(
+				"Settings UI",
+				"Bookmarks Enabled",
+				ToOnOffString(previousBookmarksEnabled),
+				ToOnOffString(settings->bookmarksEnabled));
 			LogOptionChanged(
 				"Settings UI",
 				"Show Changelogs on Update",

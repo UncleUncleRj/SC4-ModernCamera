@@ -11,6 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+	<ClCompile Include="src\CameraBookmarkStore.cpp" />
     <ClCompile Include="src\Hooks\VTableHook.cpp" />
     <ClCompile Include="src\Input\KeyStateManager.cpp" />
     <ClCompile Include="src\Main.cpp" />
@@ -86,7 +87,7 @@
     </Manifest>
     <PreBuildEvent>
       <Command>$(PythonExe) "$(ProjectDir)..\tools\build_sc4_ui_dat.py" "$(ProjectDir)ui\SC4-ModernCamera-TestUI.txt" "$(ProjectDir)ui\SC4-ModernCamera.dat"</Command>
-      <Message>Generating native UI DAT...</Message>
+      <Message>Checking native UI DAT...</Message>
     </PreBuildEvent>
     <PostBuildEvent>
       <Command>xcopy "$(TargetPath)" "$(PLUGINS_FOLDER)" /Y /I
@@ -124,7 +125,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     </Manifest>
     <PreBuildEvent>
       <Command>$(PythonExe) "$(ProjectDir)..\tools\build_sc4_ui_dat.py" "$(ProjectDir)ui\SC4-ModernCamera-TestUI.txt" "$(ProjectDir)ui\SC4-ModernCamera.dat"</Command>
-      <Message>Generating native UI DAT...</Message>
+      <Message>Checking native UI DAT...</Message>
     </PreBuildEvent>
     <PostBuildEvent>
       <Command>xcopy "$(TargetPath)" "$(PLUGINS_FOLDER)" /Y /I
@@ -137,6 +138,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+	<ClInclude Include="src\CameraBookmarkStore.h" />
     <ClCompile Include="src\cRZBaseString.cpp" />
     <ClCompile Include="src\cRZBaseUnknown.cpp" />
     <ClCompile Include="src\cRZBaseVariant.cpp" />

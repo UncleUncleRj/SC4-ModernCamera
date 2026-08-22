@@ -3,17 +3,22 @@
 #include "cIGZGraphicSystem.h"
 #include "cIGZMessage2Standard.h"
 #include "cIGZMessageServer2.h"
+#include "cIGZString.h"
 #include "cIGZWin.h"
 #include "cIGZWinMgr.h"
 #include "cIGZWinProcFilterW32.h"
 #include "cIGZWinTextEdit.h"
 #include "cISC4App.h"
+#include "cISC4Nation.h"
+#include "cISC4RegionalCity.h"
 #include "cISC4View3DWin.h"
 #include "cISC4ViewInputControl.h"
 #include "cRZAutoRefCount.h"
 #include "cRZMessage2COMDirector.h"
+#include "SC4String.h"
 #include "GZServPtrs.h"
 #include "Hooks/VTableHook.h"
+#include "CameraBookmarkStore.h"
 #include "Input/KeyStateManager.h"
 #include "Logger.h"
 #include "PluginPaths.h"
@@ -30,9 +35,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -76,6 +83,7 @@ static constexpr UINT kZoomIdleRedrawDelayMs = 1500; // Delay before redrawing a
 static constexpr UINT kHighPeriodicRedrawDelayMs = 1000; // Repeat interval for High redraw aggression.
 static constexpr UINT kExtremePeriodicRedrawDelayMs = 100; // Repeat interval for Extreme redraw aggression.
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500; // Lifetime of the dump confirmation.
+static constexpr UINT kBookmarkConfirmationDelayMs = 2500; // Lifetime of the bookmark confirmation.
 static constexpr UINT kNativeToolClearEscDelayMs = 50; // Delay before the Escape tap clears a native tool.
 static constexpr UINT kModernCameraFocusRestoreDelayMs = 150; // Delay before restoring 3D-view focus.
 
@@ -153,6 +161,8 @@ HWND g_CanvasWindow = NULL;
 HHOOK g_KeyboardHook = NULL;
 // Owns Modern Camera state and direct native camera operations.
 SC4CameraController g_CameraController;
+// Owns persistent, per-city bookmark records and its asynchronous file writer.
+CameraBookmarkStore g_CameraBookmarks;
 // Persisted settings currently applied to the plugin.
 PluginSettings g_Settings;
 // Owns plugin-created SC4 windows and UI callbacks.
@@ -177,6 +187,10 @@ VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DW
 VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Clears the temporary camera-dump confirmation state.
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+// Clears the temporary bookmark confirmation state.
+VOID CALLBACK ClearCameraBookmarkConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+// Shows the bookmark confirmation for a short interval.
+void StartCameraBookmarkConfirmationTimer();
 // Sends the delayed Escape input that clears a native view tool.
 VOID CALLBACK NativeToolClearEscTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Returns focus to the 3D view after a UI transition.
@@ -207,6 +221,14 @@ bool IsRightClickScrollingActive();
 bool FocusView3DForNativeInput(const char* context);
 // Restores city focus after the settings window closes.
 void RestoreWorldFocusAfterSettingsClosed();
+// Captures the active full camera view into one zero-based bookmark slot.
+bool SaveCameraBookmark(uint32_t slot);
+// Restores one zero-based bookmark slot with city-bounds correction.
+bool RecallCameraBookmark(uint32_t slot);
+// Returns a stable per-region/per-city identity for persistence lookup.
+bool GetActiveBookmarkCityKey(std::string& cityKey);
+// Activates the persistent slot set for the currently loaded region and city.
+bool ActivateCurrentBookmarkCity();
 // Mirrors native UI minimization to Modern Camera UI state.
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize);
 // Limits native scrolling to the city bounds before forwarding it.
@@ -234,6 +256,121 @@ std::string FormatWindowID(uint32_t value)
     std::ostringstream stream;
     stream << "0x" << std::uppercase << std::hex << value;
     return stream.str();
+}
+
+// Resolves a stable bookmark key from SC4's public nation and regional-city
+// services. The active region directory is valid before the city has ever
+// been saved, unlike the optional city-save path.
+bool GetActiveBookmarkCityKey(std::string& cityKey)
+{
+	cityKey.clear();
+	cISC4AppPtr app;
+	if (!app)
+	{
+		return false;
+	}
+	cISC4RegionalCity* regionalCity = app->GetRegionalCity();
+	if (!regionalCity)
+	{
+		return false;
+	}
+	cISC4Nation* nation = app->GetNation();
+	SC4String* regionDirectory = nation ? nation->GetRegionDirectory() : nullptr;
+	const cIGZString* regionPath = regionDirectory ? regionDirectory->AsIGZString() : nullptr;
+	const char* regionText = regionPath ? regionPath->ToChar() : nullptr;
+	if (!regionText || !*regionText)
+	{
+		return false;
+	}
+
+	std::string normalizedPath = regionText;
+	std::transform(
+		normalizedPath.begin(),
+		normalizedPath.end(),
+		normalizedPath.begin(),
+		[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+	cityKey = std::to_string(regionalCity->GetCitySerialNumber()) + "|" + normalizedPath;
+	return true;
+}
+
+// Activates the slot set associated with the active region and city. This is
+// also called from the deferred save callback in case city initialization
+// completed before the regional path was available.
+bool ActivateCurrentBookmarkCity()
+{
+	std::string cityKey;
+	if (!GetActiveBookmarkCityKey(cityKey))
+	{
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmarks: active region/city identity was unavailable.");
+		return false;
+	}
+	if (!g_CameraBookmarks.ActivateCity(cityKey))
+	{
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmarks: failed to activate persistent storage for the active city.");
+		return false;
+	}
+	return true;
+}
+
+// Captures the active camera state and hands only serialized bookmark bytes to
+// the store's background writer. No image or renderer-buffer capture is used.
+bool SaveCameraBookmark(uint32_t slot)
+{
+	if (!g_IsCityLoaded || !g_IsModernCamEnabled || slot >= CameraBookmarkStore::kSlotCount)
+	{
+		return false;
+	}
+	if (!ActivateCurrentBookmarkCity())
+	{
+		return false;
+	}
+
+	SC4NativeCameraState view;
+	if (!g_CameraController.CaptureCurrentCameraState(view, "bookmark save"))
+	{
+		Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmark: failed to capture the current camera state.");
+		return false;
+	}
+	const bool saved = g_CameraBookmarks.Save(slot, view);
+	Logger::GetInstance().WriteLine(
+		saved ? LogLevel::Info : LogLevel::Warning,
+		std::string("Camera Bookmark: ") + (saved ? "saved slot " : "failed to save slot ")
+		+ std::to_string(slot + 1) + ".");
+	if (saved)
+	{
+		if (!g_WindowManager.HasVisibleWindow())
+		{
+			// SetCursorText can display the acknowledgement while returning false,
+			// so its return value must not prevent the cleanup timer from starting.
+			g_CameraController.ShowCameraBookmarkConfirmation(true, slot);
+			StartCameraBookmarkConfirmationTimer();
+		}
+	}
+	return saved;
+}
+
+// Restores only the copy held by the store; bounds correction therefore never
+// rewrites the saved view when city dimensions have changed.
+bool RecallCameraBookmark(uint32_t slot)
+{
+	if (!g_IsCityLoaded || !g_IsModernCamEnabled || slot >= CameraBookmarkStore::kSlotCount)
+	{
+		return false;
+	}
+	const std::optional<CameraBookmark> bookmark = g_CameraBookmarks.Get(slot);
+	if (!bookmark)
+	{
+		return false;
+	}
+	const bool recalled = g_CameraController.RestoreCameraState(bookmark->view, "bookmark recall");
+	if (recalled && !g_WindowManager.HasVisibleWindow())
+	{
+		// Keep the timer independent from SetCursorText's unreliable status so
+		// an acknowledged recall cannot leave a stale cursor-text entry behind.
+		g_CameraController.ShowCameraBookmarkConfirmation(false, slot);
+		StartCameraBookmarkConfirmationTimer();
+	}
+	return recalled;
 }
 
 // Returns the diagnostic name for a key-state owner.
@@ -1094,6 +1231,22 @@ void StartCameraDumpConfirmationTimer()
         ClearCameraDumpConfirmationTimerProc);
 }
 
+// Stops the temporary bookmark confirmation timer.
+void KillCameraBookmarkConfirmationTimer()
+{
+    g_TimerManager.Stop(RuntimeTimer::BookmarkConfirmation);
+}
+
+// Starts the timer that clears the bookmark confirmation.
+void StartCameraBookmarkConfirmationTimer()
+{
+    KillCameraBookmarkConfirmationTimer();
+    g_TimerManager.Start(
+        RuntimeTimer::BookmarkConfirmation,
+        kBookmarkConfirmationDelayMs,
+        ClearCameraBookmarkConfirmationTimerProc);
+}
+
 // Sends the delayed Escape input that completes native-tool clearing.
 VOID CALLBACK NativeToolClearEscTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
 {
@@ -1442,9 +1595,11 @@ void ResetInputState(bool resetCamera = true)
     StopMiddleMouseRotation("input reset", false);
     ClearTrackedKeyStates("input reset");
     KillCameraDumpConfirmationTimer();
+	KillCameraBookmarkConfirmationTimer();
     KillNativeToolClearEscTimer();
     KillModernCameraFocusRestoreTimer();
     g_CameraController.ClearCameraDumpConfirmation();
+	g_CameraController.ClearCameraBookmarkConfirmation();
 
     if (resetCamera) {
         g_CameraController.Reset();
@@ -1462,6 +1617,7 @@ void ResetCameraToNativeView()
     StopMiddleMouseRotation("camera reset", false);
     ClearTrackedKeyStates("camera reset");
     KillCameraDumpConfirmationTimer();
+	KillCameraBookmarkConfirmationTimer();
     KillNativeToolClearEscTimer();
     KillModernCameraFocusRestoreTimer();
 
@@ -1759,7 +1915,77 @@ bool IsCameraKeyboardFocus()
             + "}");
     }
 
-    return cameraFocus;
+	return cameraFocus;
+}
+
+// Maps the top-row numeric keys used by the eight fixed bookmark slots.
+bool GetBookmarkHotkeySlot(WPARAM key, uint32_t& slot)
+{
+	if (key < '1' || key > '8')
+	{
+		return false;
+	}
+	slot = static_cast<uint32_t>(key - '1');
+	return true;
+}
+
+// Invokes numbered bookmark commands only in the explicitly supported focus
+// context. Ctrl saves; unmodified number keys recall. All other modifiers are
+// left to SC4 so they preserve native command behavior.
+bool HandleBookmarkHotkey(WPARAM key, bool isRepeat)
+{
+	uint32_t slot = 0;
+	if (!GetBookmarkHotkeySlot(key, slot)
+		|| !g_IsCityLoaded
+		|| !g_IsModernCamEnabled
+		|| !g_Settings.bookmarksEnabled
+		|| !IsCameraKeyboardFocus())
+	{
+		return false;
+	}
+
+	RefreshTrackedModifierStates();
+	const bool control = IsVirtualKeyDown(VK_CONTROL);
+	const bool shift = IsVirtualKeyDown(VK_SHIFT);
+	const bool alt = IsVirtualKeyDown(VK_MENU);
+	const bool windows = IsVirtualKeyDown(VK_LWIN) || IsVirtualKeyDown(VK_RWIN);
+	if (alt || windows || shift)
+	{
+		return false;
+	}
+
+	if (!isRepeat)
+	{
+		if (control)
+		{
+			SaveCameraBookmark(slot);
+		}
+		else
+		{
+			RecallCameraBookmark(slot);
+		}
+	}
+	return true;
+}
+
+// Consumes the character counterpart of a handled recall or Ctrl-save so SC4
+// never receives a trailing numeric character after the keydown command.
+bool ShouldConsumeBookmarkCharacter(WPARAM character)
+{
+	uint32_t slot = 0;
+	if (!GetBookmarkHotkeySlot(character, slot)
+		|| !g_IsCityLoaded
+		|| !g_IsModernCamEnabled
+		|| !g_Settings.bookmarksEnabled
+		|| !IsCameraKeyboardFocus())
+	{
+		return false;
+	}
+	RefreshTrackedModifierStates();
+	return !IsVirtualKeyDown(VK_SHIFT)
+		&& !IsVirtualKeyDown(VK_MENU)
+		&& !IsVirtualKeyDown(VK_LWIN)
+		&& !IsVirtualKeyDown(VK_RWIN);
 }
 
 // Returns whether a virtual key is one of the WASD movement keys.
@@ -2487,6 +2713,15 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
     }
 }
 
+// Clears the bookmark confirmation when its timer expires.
+VOID CALLBACK ClearCameraBookmarkConfirmationTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
+{
+    if (g_TimerManager.IsCurrent(RuntimeTimer::BookmarkConfirmation, idEvent)) {
+        KillCameraBookmarkConfirmationTimer();
+        g_CameraController.ClearCameraBookmarkConfirmation();
+    }
+}
+
 // Returns whether a canvas message carries pointer input that may target plugin UI.
 bool IsCanvasMouseMessage(UINT message)
 {
@@ -2676,11 +2911,20 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             return 0;
         }
     }
+    else if (isKeyboardCharacterMessage && ShouldConsumeBookmarkCharacter(wParam)) {
+        handled = true;
+        return 0;
+    }
 
     switch (uMsg) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         const bool isRepeat = (lParam & (1 << 30)) != 0;
+
+        if (HandleBookmarkHotkey(wParam, isRepeat)) {
+            handled = true;
+            return 0;
+        }
 
         if (g_Settings.cameraDumpHotkey
             && IsManualCameraDumpHotkey(wParam)
@@ -2903,6 +3147,10 @@ public:
                 std::string("Failed to initialize settings: ") + exception.what());
         }
 
+        if (!g_CameraBookmarks.Initialize(PluginPaths::GetBookmarksPath())) {
+            Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Bookmarks: failed to initialize persistent storage.");
+        }
+
         g_IsModernCamEnabled = g_Settings.cameraMode == CameraMode::Modern;
         g_WindowManager.SetCallbacks(SC4WindowManagerCallbacks{
             ApplyModernCameraEnabled,
@@ -2963,14 +3211,16 @@ public:
     bool PreAppShutdown() override
     {
         Logger& logger = Logger::GetInstance();
-        logger.WriteLine(LogLevel::Info, "Framework lifecycle: PreAppShutdown. Stopping asynchronous logger.");
+        logger.WriteLine(LogLevel::Info, "Framework lifecycle: PreAppShutdown. Draining camera bookmarks and asynchronous logger.");
+        g_CameraBookmarks.Shutdown();
         logger.Shutdown();
         return true;
     }
 
-    // Signals the writer to stop without waiting during an abortive framework shutdown.
+    // Stops plugin writers before an abortive framework shutdown can unload code.
     bool AbortiveQuit() override
     {
+        g_CameraBookmarks.Shutdown();
         Logger::GetInstance().RequestAbortiveStop();
         return true;
     }
@@ -2982,6 +3232,11 @@ public:
 
         if (msgType == kSC4MessagePostCityInit) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating input handlers...");
+            if (!ActivateCurrentBookmarkCity()) {
+                Logger::GetInstance().WriteLine(
+                    LogLevel::Warning,
+                    "Camera Bookmarks: active city could not be activated; bookmark controls remain empty for this city.");
+            }
             g_WindowManager.OnCityLoaded(g_Settings);
             g_IsCityLoaded = true;
             g_IsNativeUIHidden = false;
@@ -3013,6 +3268,7 @@ public:
         else if (msgType == kSC4MessagePreCityShutdown) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating input handlers...");
             g_WindowManager.OnCityShutdown();
+			g_CameraBookmarks.DeactivateCity();
             g_CameraController.AbandonSavePreviewNormalization();
             g_IsCityLoaded = false;
             UninstallSetScrollingHook();
