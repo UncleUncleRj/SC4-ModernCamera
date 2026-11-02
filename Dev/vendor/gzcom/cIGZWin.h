@@ -52,14 +52,59 @@ class cIGZWin : public cIGZUnknown
 			WinFlag_Moveable =				0x100,
 			WinFlag_Sizeable =				0x200,
 			WinFlag_Sortable =				0x800,
+			WinFlag_Modal =					0x1000,
+			WinFlag_AcceptFocus =			0x8000,
 			WinFlag_PrivateBuffer =			0x10000,
 			WinFlag_PrivateBufferTrans =	0x20000,
 			WinFlag_PrivateBufferErase =	0x40000,
-			WinFlag_PrivateBufferVid =		0x100000,
-			WinFlag_AcceptFocus =			0x8000,
 			WinFlag_MouseTrans =			0x80000,
+			WinFlag_PrivateBufferVid =		0x100000,
 			WinFlag_IgnoreMouse =			0x200000,
-			WinFlag_Unknown1 =				0x8000000,
+			WinFlag_DelayedPlot =			0x8000000,
+		};
+
+		struct tWinProcMessageTypes
+		{
+			enum eWinProcMessageTypes : uint32_t
+			{
+				ChildDelete = 1,
+				ChildRemove = 2,
+				// generic control command with the data fields having control-specific values.
+				Command = 3,
+				// data1 = virtual key code, data2 = framework modifier keys, data3 = repeat count
+				Character = 4,
+				// data1 = virtual key code, data2 = framework modifier keys, data3 = repeat count
+				KeyDown = 5,
+				// data1 = virtual key code, data2 = framework modifier keys, data3 = repeat count
+				KeyUp = 6,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseDownL = 7,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseDownR = 8,
+				// not implemented in the game's OS window procedure, or the base game UI APIs.
+				MouseDownM = 9,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseUpL = 10,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseUpR = 11,
+				// not implemented in the game's OS window procedure, or the base game UI APIs.
+				MouseUpM = 12,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseMove = 13,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseWheel = 14,
+				// used primarily as the first parameter to cIGZWinMgr::PostWinMsg when ending a dialog.
+				// in this use case, the second PostWinMsg parameter is the window pointer and the third parameter ins the result code.
+				DialogEnd = 15,
+				KillFocus = 16,
+				SetFocus = 17,
+				CaptureChanged = 18,
+				MouseEnter = 19,
+				MouseExit = 20,
+				WinMoving = 23,
+				WinMoveStart = 24,
+				WinMoveEnd = 25,
+			};
 		};
 
 		virtual bool DoMessage(cGZMessage& sMessage) = 0;
@@ -122,28 +167,37 @@ class cIGZWin : public cIGZUnknown
 		virtual int32_t GetR() const = 0;
 		virtual int32_t GetB() const = 0;
 
-		virtual bool GetArea(cRZRect& rect) const = 0;
+		// MSVC puts every virtual overload of a name at the vtable slot of the
+		// first one declared, in REVERSE declaration order. So each overload
+		// group in this class is declared in the reverse of the game's order.
+		// Game slots: 47 GetArea(cRZRect&), 48 GetArea(),
+		// 49 GetAreaAbsolute(cRZRect&), 50 GetAreaAbsolute().
 		virtual int32_t* GetArea() const = 0;
-		virtual bool GetAreaAbsolute(cRZRect& rect) const = 0;
+		virtual bool GetArea(cRZRect& rect) const = 0;
 		virtual int32_t* GetAreaAbsolute() const = 0;
+		virtual bool GetAreaAbsolute(cRZRect& rect) const = 0;
 
 		virtual bool SetW(int32_t value) = 0;
 		virtual bool SetH(int32_t value) = 0;
-		virtual bool SetSize(int32_t unknown1, int32_t unknown2) = 0;
+		virtual bool SetSize(int32_t width, int32_t height) = 0;
 
-		virtual bool SetArea(const cRZRect& rect) = 0;
+		// Game slots: 54 SetArea(const cRZRect&), 55 SetArea(l, t, r, b).
 		virtual bool SetArea(int32_t left, int32_t top, int32_t right, int32_t bottom) = 0;
+		virtual bool SetArea(const cRZRect& rect) = 0;
 
+		// Moves the window to (x, y).
 		virtual bool GZWinMoveTo(int32_t x, int32_t y) = 0;
+		// Moves the window by (dx, dy). Slot 57, right after GZWinMoveTo.
+		virtual bool GZWinOffset(int32_t dx, int32_t dy) = 0;
 
 		virtual bool FitRectToWindow(cRZRect& unknown1, int32_t unknown2) = 0;
-		virtual bool ScreenToWindowCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
-		virtual bool WindowToScreenCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
+		virtual void ScreenToWindowCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
+		virtual void WindowToScreenCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
 		virtual bool WindowToWindowCoordinates(cIGZWin* unknown1, int32_t& unknown2, int32_t& unknown3) const = 0;
 		virtual bool IsPointInWindowScreenCoordinates(int32_t unknown1, int32_t unknown2) const = 0;
 
 		virtual uint32_t GetID() const = 0;
-		virtual bool SetID(uint32_t id) = 0;
+		virtual void SetID(uint32_t id) = 0;
 
 		virtual uint32_t GetInstanceID() const = 0;
 		virtual bool SetInstanceID(uint32_t id) = 0;
@@ -151,8 +205,8 @@ class cIGZWin : public cIGZUnknown
 		virtual bool GetFlag(tWinFlag flag) const = 0;
 		virtual tWinFlag SetFlag(tWinFlag flag, bool value) = 0;
 
-		virtual bool ShowWindow() = 0;
-		virtual bool HideWindow() = 0;
+		virtual void ShowWindow() = 0;
+		virtual void HideWindow() = 0;
 
 		virtual bool IsVisible() const = 0;
 		virtual bool IsEnabled() const = 0;
@@ -161,21 +215,23 @@ class cIGZWin : public cIGZUnknown
 		virtual bool SetCaption(cIGZString const& caption) = 0;
 
 		virtual cIGZWinKeyAccelerator* GetKeyboardAccelerator() = 0;
-		virtual bool SetKeyboardAccelerator(cIGZWinKeyAccelerator* pWinKeyAccelerator) = 0;
+		virtual void SetKeyboardAccelerator(cIGZWinKeyAccelerator* pWinKeyAccelerator) = 0;
 
-		virtual bool AccelerateKeyboardMsg() = 0;
+		// Passes the message to the keyboard accelerator's ProcessAccelerator.
+		virtual bool AccelerateKeyboardMsg(cGZMessage const& msg) = 0;
 
 		virtual uint32_t GetKeyEquivalent() = 0;
-		virtual bool SetKeyEquivalent(uint32_t value) = 0;
-		virtual bool CheckKeyEquivalent(uint32_t value) = 0;
+		virtual void SetKeyEquivalent(uint32_t value) = 0;
+		// Compares MakeKeyEquivalent(key, modifiers) with GetKeyEquivalent().
+		virtual bool CheckKeyEquivalent(uint32_t key, uint32_t modifiers) = 0;
 		virtual uint32_t MakeKeyEquivalent(uint32_t unknown1, uint32_t unknown2) = 0;
 		virtual bool IsChildKeyEquivalent(uint32_t unknown1, uint32_t unknown2) = 0;
 
 		virtual bool ProcessCursorMessage(cGZMessage& msg) = 0;
-		virtual bool UpdateCursor() = 0;
-		virtual bool SetCursor(cIGZCursor* pCursor, bool updateCursor) = 0;
+		virtual void UpdateCursor() = 0;
+		virtual void SetCursor(cIGZCursor* pCursor, bool updateCursor) = 0;
 
-		virtual bool SetNotificationTarget(cIGZWin* pTarget) = 0;
+		virtual void SetNotificationTarget(cIGZWin* pTarget) = 0;
 		virtual cIGZWin* GetNotificationTarget() = 0;
 
 		virtual bool GZPaint() = 0;
@@ -198,18 +254,24 @@ class cIGZWin : public cIGZUnknown
 		virtual bool PrivateBuffer(bool unknown1) = 0;
 		virtual intptr_t GetPrivateBuffer() = 0;// cIGZBuffer*
 
-		virtual bool GetFillColor(cRZColor& fillColor) = 0;
-		virtual uint32_t GetFillColor() = 0;
+		// Game slots: 102 GetFillColor(cRZColor&), 103 GetFillColor(),
+		// 104 GetFillColor(r&, g&, b&), 105 SetFillColor(cRZColor),
+		// 106 SetFillColor(uint32_t), 107 SetFillColor(r, g, b).
+		// Declared in reverse; see GetArea.
 		virtual void GetFillColor(uint8_t& red, uint8_t& green, uint8_t& blue) = 0;
-		virtual bool SetFillColor(cRZColor const& color) = 0;
-		virtual void SetFillColor(uint32_t fillColor) = 0;
+		virtual uint32_t GetFillColor() = 0;
+		virtual bool GetFillColor(cRZColor& fillColor) = 0;
 		virtual void SetFillColor(uint8_t red, uint8_t green, uint8_t blue) = 0;
+		virtual void SetFillColor(uint32_t fillColor) = 0;
+		// The game takes the 4-byte colour by value, not a pointer to it.
+		virtual bool SetFillColor(cRZColor color) = 0;
 		virtual bool MakeFillColor(uint8_t red, uint8_t green, uint8_t blue) = 0;
 
 		virtual void SetFadeEffectPeriod(int32_t unknown1, int32_t unknown2) = 0;
 		virtual void GetFadeEffectPeriod(int32_t& unknown1, int32_t& unknown2) = 0;
 
-		virtual void SetShadeColor(cRZColor const& color) = 0;
+		// The game takes the 4-byte colour by value, not a pointer to it.
+		virtual void SetShadeColor(cRZColor color) = 0;
 		virtual void GetShadeColor(cRZColor& color) = 0;
 
 		virtual bool GetParam(uint32_t key, cIGZVariant** ppVariant) = 0;
@@ -221,9 +283,17 @@ class cIGZWin : public cIGZUnknown
 		virtual bool AddMessageFilter(cIGZWinMessageFilter* unknown1) = 0;
 		virtual bool RemoveMessageFilter(cIGZWinMessageFilter* unknown1) = 0;
 
-		virtual bool SetSize(cRZPoint const& size) = 0;
-		virtual void CenterWindowInRect(cRZRect const& rect) = 0;
+		// The game has SetSize(cRZPoint) here at slot 118, far from
+		// SetSize(width, height) at 53. MSVC would pull a second virtual
+		// SetSize up to 53, so the virtual gets its own name. The non-virtual
+		// SetSize(cRZPoint const&) keeps existing callers compiling.
+		virtual bool SetSizeFromPoint(cRZPoint const& size) = 0;
+		bool SetSize(cRZPoint const& size) { return SetSizeFromPoint(size); }
+
+		// Game slots: 119 CenterWindowInRect(cRZRect const&),
+		// 120 CenterWindowInRect(cRZRect*). Declared in reverse; see GetArea.
 		virtual void CenterWindowInRect(cRZRect* rect) = 0;
+		virtual void CenterWindowInRect(cRZRect const& rect) = 0;
 
 		virtual bool IsPointInWindowWindowCoordinates(int32_t x, int32_t y) = 0;
 		virtual bool IsPointInWindowParentCoordinates(int32_t x, int32_t y) = 0;
@@ -240,7 +310,9 @@ class cIGZWin : public cIGZUnknown
 		virtual bool GZOnKeyDown(uint32_t key, uint32_t modifier) = 0;
 		virtual bool GZOnKeyUp(uint32_t key, uint32_t modifier) = 0;
 
-		virtual bool GZOnSetFocus(uint32_t unknown1, uint32_t unknown2) = 0;
+		// The window manager sends this to the window gaining focus, with the
+		// window that lost it.
+		virtual bool GZOnSetFocus(cIGZWin* pWinLostFocus) = 0;
 		virtual bool GZOnKillFocus(cIGZWin* pWinLostTo) = 0;
 
 		virtual bool GZOnMouseDownL(int32_t unknown1, int32_t unknown2, uint32_t unknown3) = 0;
@@ -248,14 +320,17 @@ class cIGZWin : public cIGZUnknown
 		virtual bool GZOnMouseUpL(int32_t unknown1, int32_t unknown2, uint32_t unknown3) = 0;
 		virtual bool GZOnMouseUpR(int32_t unknown1, int32_t unknown2, uint32_t unknown3) = 0;
 		virtual bool GZOnMouseMove(int32_t unknown1, int32_t unknown2, uint32_t unknown3) = 0;
-		virtual bool GZOnMouseWheel(int32_t unknown1, int32_t unknown2, uint32_t unknown3) = 0;
+		// The fourth argument is the signed wheel delta.
+		virtual bool GZOnMouseWheel(int32_t unknown1, int32_t unknown2, uint32_t unknown3, int32_t wheelDelta) = 0;
 
-		virtual bool GZOnCaptureChanged(cIGZWin* pWin, uint32_t data1, uint32_t data2, uint32_t data3) = 0;
+		virtual bool GZOnCaptureChanged(cIGZWin* pOldCapture, cIGZWin* pNewCapture) = 0;
 
-		virtual bool GZOnMouseEnter(uint32_t data1, uint32_t data2) = 0;
-		virtual bool GZOnMouseExit(uint32_t data1) = 0;
+		// Sent to the window the mouse entered, with the window it left.
+		virtual bool GZOnMouseEnter(cIGZWin* pPreviousWin) = 0;
+		// Sent to the window the mouse left, with the window it entered (may be null).
+		virtual bool GZOnMouseExit(cIGZWin* pNextWin) = 0;
 
-		virtual bool GZOnCommand(uint32_t unknown1) = 0;
+		virtual bool GZOnCommand(uint32_t command, uint32_t data) = 0;
 
 		virtual bool SendMsg(cIGZWin* pWin, cGZMessage const& msg) = 0;
 		virtual bool SendMsg(cIGZWin* pWin, uint32_t msgType, uint32_t data1, uint32_t data2, uint32_t data3) = 0;

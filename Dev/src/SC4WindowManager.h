@@ -21,8 +21,6 @@ struct SC4WindowManagerCallbacks
 {
 	// Applies a requested Modern or Classic camera mode change.
 	std::function<void(bool modernCameraEnabled)> OnCameraModeChanged;
-	// Restarts redraw scheduling after its setting changes.
-	std::function<void()> OnRedrawAggressionChanged;
 	// Resets Modern Camera to its native view state.
 	std::function<void()> OnResetCameraRequested;
 	// Clears held input after an input setting changes.
@@ -60,8 +58,6 @@ enum class DeferredWindowOpen : uint8_t
 {
 	// No deferred window request is pending.
 	None = 0,
-	// Reopens the advanced settings window after the current transition.
-	AdvancedSettings,
 	// Opens the changelog window after the current transition.
 	Changelog,
 };
@@ -205,7 +201,8 @@ private:
 	cIGZWin* rootWindow;
 };
 
-// Baked settings dialog that mirrors and updates PluginSettings.
+// Baked settings dialog with General and Advanced pages that mirrors and
+// updates PluginSettings.
 class SettingsWindow final : public BakedManagedWindow
 {
 public:
@@ -221,6 +218,8 @@ public:
 	void RefreshFromSettings();
 	// Saves a delayed slider or toggle change when its debounce timer fires.
 	void OnDelayedSettingsSaveTimer();
+	// Selects the General page so the window next opens there.
+	void ResetToGeneralPage();
 
 protected:
 	// Initializes control state after the baked settings resource is created.
@@ -233,8 +232,23 @@ protected:
 	void OnClosed() override;
 
 private:
+	// Pages shown inside the settings window.
+	enum class Page : uint8_t
+	{
+		// Camera mode and Modern camera controls.
+		General,
+		// Redraw, diagnostics, and update preferences.
+		Advanced,
+	};
+
+	// Shows the active page's controls, hides the other page, and selects its tab.
+	void ApplyActivePage();
 	// Synchronizes every visible control with the supplied settings object.
 	void SyncControlsFromSettings();
+	// Copies redraw, diagnostics, camera-dump, and changelog preferences into their controls.
+	void SyncAdvancedControlsFromSettings();
+	// Applies one Advanced page option and returns whether controlID belonged to the page.
+	bool ApplyAdvancedOption(uint32_t controlID);
 	// Converts a changed sensitivity slider position into its matching setting value.
 	bool ApplySensitivitySliderChange(uint32_t controlID);
 	// Applies a camera mode selected by the primary settings window.
@@ -266,6 +280,8 @@ private:
 	bool syncingControls;
 	// Diagnostic reason retained for the delayed settings write.
 	std::string delayedSaveReason;
+	// Page shown while the window is open.
+	Page activePage;
 };
 
 // Floating baked button that opens and closes the settings dialog.
@@ -334,39 +350,6 @@ class ControlsWindow final : public BakedManagedWindow
 public:
 	// Creates the baked controls-reference window.
 	ControlsWindow();
-};
-
-// Baked dialog for settings not shown in the primary settings window.
-class AdvancedSettingsWindow final : public BakedManagedWindow
-{
-public:
-	// Creates the baked advanced-settings window.
-	AdvancedSettingsWindow();
-	// Supplies the manager used for advanced settings transitions.
-	void SetWindowManager(class SC4WindowManager* manager);
-	// Supplies the settings object mirrored by advanced controls.
-	void SetSettings(PluginSettings* settings);
-	// Supplies callbacks used after an advanced setting changes.
-	void SetCallbacks(const SC4WindowManagerCallbacks* callbacks);
-	// Copies current advanced settings into visible controls.
-	void RefreshFromSettings();
-
-protected:
-	// Initializes advanced controls after the baked resource is created.
-	void OnCreated() override;
-	// Handles advanced-settings button presses.
-	bool OnButtonClick(uint32_t controlID) override;
-
-private:
-	// Synchronizes advanced controls with their backing settings values.
-	void SyncControlsFromSettings();
-
-	// Manager coordinating settings-window state during advanced transitions.
-	SC4WindowManager* manager;
-	// Settings object read and changed by advanced controls.
-	PluginSettings* settings;
-	// Runtime callbacks used to apply advanced setting changes.
-	const SC4WindowManagerCallbacks* callbacks;
 };
 
 // Experimental native-control workspace used to inspect GZ UI behavior.
@@ -511,8 +494,6 @@ public:
 	bool ShowGreetingWindow();
 	// Opens the baked controls-reference window.
 	bool ShowControlsWindow();
-	// Opens the baked advanced-settings window.
-	bool ShowAdvancedSettingsWindow();
 	// Opens the baked settings window.
 	bool ShowSettingsWindow();
 	// Opens settings when closed or closes it when already visible.
@@ -555,8 +536,6 @@ private:
 	GreetingWindow greetingWindow;
 	// Baked controls-reference window instance.
 	ControlsWindow controlsWindow;
-	// Baked advanced-settings window instance.
-	AdvancedSettingsWindow advancedSettingsWindow;
 	// Baked primary settings window instance.
 	SettingsWindow settingsWindow;
 	// Floating menu-button window instance.

@@ -56,9 +56,10 @@ def main() -> None:
         shutil.copytree(reference, wrong_contract)
         manifest_path = wrong_contract / "theme.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["contractVersion"] = "2.0"
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        expect_invalid(wrong_contract, "an unsupported contract major version")
+        for version in ("1.0", "3.0"):
+            manifest["contractVersion"] = version
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            expect_invalid(wrong_contract, f"unsupported contract version {version}")
 
         missing_image = root / "missing-image"
         shutil.copytree(reference, missing_image)

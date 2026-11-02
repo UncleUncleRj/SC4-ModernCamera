@@ -2078,11 +2078,13 @@ bool SC4CameraController::ZoomByNotches(float wheelNotches, bool& changed)
 	});
 }
 
-// Requests a complete redraw through the active SC4 renderer.
+// Requests a complete redraw through the active SC4 renderer. The native call has no
+// result to read: it ends in a void routine, so its return value is a leftover register.
 bool SC4CameraController::ForceFullRedraw()
 {
 	return WithRenderer([](cISC43DRender* renderer) {
-		return renderer->ForceFullRedraw();
+		renderer->ForceFullRedraw();
+		return true;
 	});
 }
 

@@ -6,18 +6,30 @@ This document records production behavior for the SC4-ModernCamera settings UI.
 
 The floating camera button in the upper-right corner opens the main Camera Settings window. It hides and shows with SC4's native UI by observing the native `cISC4View3DWin::MinimizeUI(bool)` transition.
 
-The main window contains:
+The window has General and Advanced tabs under the title bar, a View Controls button at the far right of that row, and shared footer actions: Defaults, Show Changelog, and Close. It reopens on General after it is closed.
 
-- Camera Mode: Modern and Classic.
-- Modern settings: WASD Movement, rotation sensitivity, zoom sensitivity, panning speed, Invert Vertical, Reset Camera Location, and Advanced Settings.
-- Footer actions: Defaults, Show Changelog, and Close.
+The General page contains:
 
-Advanced Settings opens a child window for:
+- Camera: Camera Mode (Modern, Classic) and Reset Camera Location.
+- Modern: WASD Movement, Q/E Rotation, Invert Vertical, On Alt Release, Bookmark Hotkeys, rotation sensitivity, zoom sensitivity, and panning speed.
 
-- Redraw Aggression.
-- Diagnostics logging.
+The Advanced page contains:
 
-Diagnostics are intentionally available in both Modern and Classic camera modes.
+- Camera Tuning: Q/E rotation speed, Shift pan boost, Invert Q/E, Mouse wheel zoom, and Invert wheel zoom.
+- Diagnostics: Debug Logging, with a note about the log location and the Ctrl+Alt+F8 camera dump, which is always available.
+- Updates: Show Changelogs on Update.
+
+Advanced is intentionally available in both Modern and Classic camera modes. Camera Tuning buttons are disabled in Classic, and Invert wheel zoom is also disabled while Mouse wheel zoom is Stepped, because SC4's stepped zoom cannot be inverted.
+
+Every setting in `PluginSettings` has a control on one of these pages. Pages are shown by control ID range, as described in [ui-theme-contract.md](ui-theme-contract.md); every control stays a direct child of the root window so button and slider notifications keep reaching the window's procedure directly.
+
+## Adding an Option
+
+1. Add the field, default, and JSON read and write to `PluginSettings`.
+2. Add one row to `GENERAL_SECTIONS` or `ADVANCED_SECTIONS` in `tools/build_sc4_ui_dat.py`, with IDs from that page's range.
+3. Handle the control IDs in `SettingsWindow`: sync, click, the Defaults log, and the Modern-only list when it applies.
+4. Add interactive controls to `REQUIRED_CONTROLS` and `ValidateThemeControls`.
+5. Run `tools/test_sc4_ui_layout.py` and `tools/test_sc4_ui_theme.py`.
 
 ## Camera Mode Rules
 
@@ -28,29 +40,24 @@ Classic mode:
 - resets the camera location before disabling Modern camera control;
 - disables Modern-only controls in the main settings window;
 - keeps Reset Camera Location enabled as an emergency recovery action;
-- leaves Advanced Settings available for diagnostics;
-- visually forces Advanced Settings redraw aggression to Classic.
+- leaves the Advanced page available for diagnostics, with Camera Tuning disabled.
 
-Classic mode must not erase the user's saved Modern-only preferences. WASD, sensitivity, panning speed, invert vertical, and redraw aggression reappear with their saved values when the user switches back to Modern.
+Classic mode must not erase the user's saved Modern-only preferences. WASD, Q/E rotation, sensitivity, panning speed, invert vertical, On Alt Release, Bookmark Hotkeys, and Camera Tuning reappear with their saved values when the user switches back to Modern.
 
 Modern mode:
 
 - re-enables the Modern-only controls;
-- restores the actual saved redraw aggression selection in Advanced Settings;
 - moves an off-map camera target back near the city center when returning from Classic camera mode;
 - clears the native view tools with the same call as SC4's Cancel command, `RemoveAllViewInputControls(false)`, so Modern camera input does not inherit a zoning, network, or other tool cursor selected while Classic controls were active. Passing `true` skips the cursor reset and leaves the old tool's cursor showing;
 - resumes Modern camera input and redraw behavior immediately.
 
-## Redraw Aggression
+## Redraw Behavior
 
-Redraw Aggression only affects the Modern camera. The buttons are:
+Redraw scheduling is fixed and has no setting. Classic mode leaves redraws to the game. Modern mode requests one full redraw 1 second after M3 rotation ends and 1.5 seconds after the last wheel zoom. The older High and Extreme levels, which also redrew on a repeating timer, are gone. A `redrawAggression` key in an older settings file is ignored and dropped on the next save.
 
-- Classic: standard classic-camera behavior; no Modern redraw aggression.
-- Normal: normal Modern redraw behavior.
-- High: periodic redraw every 1000 ms and idle redraw delay divided by 4, minimum 100 ms.
-- Extreme: stress-test behavior; periodic redraw every 100 ms and idle redraw delay divided by 20, minimum 25 ms.
+## Camera Tuning
 
-When Classic camera mode is selected, the Advanced Settings redraw group shows Classic as selected and leaves Normal, High, and Extreme disabled. This is visual state only; it does not overwrite the saved Modern redraw preference.
+Q/E rotation speed is separate from Rotation sensitivity, which now only affects the mouse. A settings file from before this option starts Q/E rotation speed at its Rotation sensitivity, so Q/E keeps the speed it had. Invert Q/E also applies to the Classic steps made while Alt is held, and Invert wheel zoom to the Classic zoom steps. Stepped mouse wheel zoom leaves the wheel to SC4 in Modern mode, except during the Alt hold, which keeps its own Classic steps.
 
 ## WASD Movement
 
@@ -78,9 +85,9 @@ When WASD Movement is re-enabled while Modern camera is active, the plugin clear
 
 SC4's standard arrow-key panning remains available independently of the WASD Movement setting. In Modern camera mode, arrow-key panning and WASD Movement use the same internal `SetScrolling` path so panning speed, Shift boost, focus gating, modifier pass-through, and map-boundary handling stay consistent.
 
-## Settings File Only
+## On Alt Release
 
-`altCameraBungie` in the `camera` block of `SC4-ModernCamera.json` has no settings-window control yet. It decides what releasing Alt does in Modern mode: `true`, the default, returns to the view saved when Alt was pressed, and `false` stays on the view Alt let go of. The file is read at startup, so a change takes effect on the next launch. A file without the option gets it, at its default value, the next time the plugin loads. The Defaults button resets it to `true`.
+On Alt Release decides what releasing Alt does in Modern mode. Restore View, the default, returns to the view saved when Alt was pressed, and Keep View stays on the view Alt let go of. It is stored as `altCameraBungie` in the `camera` block of `SC4-ModernCamera.json`, `true` for Restore View. A change in the menu applies to the next Alt release. A file without the option gets it, at its default value, the next time the plugin loads. The Defaults button resets it to Restore View.
 
 ## Slider Saves
 
@@ -96,7 +103,9 @@ Important log patterns:
 
 - `Settings UI: Camera Mode changed from Modern to Classic.`
 - `Settings UI: WASD Movement changed from On to Off.`
-- `Advanced Settings UI: Redraw Aggression changed from Normal to Extreme.`
+- `Settings UI: Alt Release changed from Restore View to Keep View.`
+- `Settings UI: Bookmark Hotkeys changed from On to Off.`
+- `Advanced Settings UI: Mouse Wheel Zoom changed from Smooth to Stepped.`
 - `Advanced Settings UI: Diagnostics Logging changed from Normal to Verbose.`
 - `Settings UI: saved delayed settings after rotation sensitivity change; rotationSensitivity=... zoomSensitivity=... panSensitivity=...`
 
@@ -112,6 +121,8 @@ Probe-based synchronization is not used. Fixed lower-left UI probes and timer re
 
 ## Child Window Z-Order
 
+The Advanced page needs none of this, because a tab click only changes which controls are visible.
+
 Do not create child windows directly inside a settings button callback. SC4 can finish its command handling by restoring the parent window above the child.
 
 The stable flow is:
@@ -122,12 +133,12 @@ The stable flow is:
 4. The manager sends the settings window behind the child.
 5. The manager pulls the child to front.
 
-Advanced Settings and Show Changelog both have one extra hardening step: destroy and recreate the child window when explicitly opened. Reusing an existing native child can inherit stale z-order after the user has changed settings, especially after switching to Classic and reopening a child window.
+Show Changelog has one extra hardening step: destroy and recreate the child window when explicitly opened. Reusing an existing native child can inherit stale z-order after the user has changed settings, especially after switching to Classic and reopening a child window.
 
-If this regresses, inspect `SC4WindowManager::ScheduleDeferredWindowOpen`, `SC4WindowManager::OnDeferredWindowOpenTimer`, `SC4WindowManager::ShowAdvancedSettingsWindow`, and the `DeferredWindowOpen::Changelog` case first.
+If this regresses, inspect `SC4WindowManager::ScheduleDeferredWindowOpen`, `SC4WindowManager::OnDeferredWindowOpenTimer`, and the `DeferredWindowOpen::Changelog` case first.
 
 ## Changelog Window
 
-The changelog popup is the same baked Welcome/Greeting window resource used for the first-install/version notice. Its changelog body is generated from `docs/changelog.md`; camera-settings guidance and the `View Controls` affordance live outside that scrollable changelog body.
+The changelog popup is the same baked Welcome/Greeting window resource used for the first-install/version notice. Its changelog body is generated from `docs/changelog.md`; camera-settings guidance and the `View Github` button live outside that scrollable changelog body. `View Github` opens the project page in the default browser; the controls popup now opens from `View Controls` in the settings window.
 
 The body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes` so changelog text can grow without increasing the window size. Visual Studio generates the companion DAT from `tools/build_sc4_ui_dat.py` during the project pre-build event; manual DAT edits should be avoided.

@@ -81,18 +81,6 @@ const char* PluginSettingText::ToString(CameraMode value)
 	return value == CameraMode::Classic ? "Classic" : "Modern";
 }
 
-// Converts a redraw-aggression level to its persisted representation.
-const char* PluginSettingText::ToString(RedrawAggression value)
-{
-	switch (value)
-	{
-	case RedrawAggression::Classic: return "Classic";
-	case RedrawAggression::High: return "High";
-	case RedrawAggression::Extreme: return "Extreme";
-	default: return "Normal";
-	}
-}
-
 // Converts a diagnostics logging level to its persisted representation.
 const char* PluginSettingText::ToString(DebugLogging value)
 {
@@ -121,9 +109,12 @@ void PluginSettings::RestoreDefaults()
 	panSensitivity = kDefaultSensitivity;
 	invertVertical = false;
 	altCameraBungie = true;
-	redrawAggression = RedrawAggression::Normal;
+	qeRotationSpeed = kDefaultSensitivity;
+	shiftPanBoost = kDefaultShiftPanBoost;
+	invertQE = false;
+	smoothWheelZoom = true;
+	invertWheelZoom = false;
 	debugLogging = DebugLogging::Normal;
-	cameraDumpHotkey = true;
 	bookmarksEnabled = true;
 	showChangelogsOnUpdate = true;
 }
@@ -164,14 +155,11 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	TryReadBool(json, "invertVertical", invertVertical);
 	const bool hasAltCameraBungie = TryReadBool(json, "altCameraBungie", altCameraBungie);
 
-	if (TryReadString(json, "redrawAggression", value))
-	{
-		if (value == "Classic" || value == "Off" || value == "None") redrawAggression = RedrawAggression::Classic;
-		else if (value == "High") redrawAggression = RedrawAggression::High;
-		else if (value == "Extreme") redrawAggression = RedrawAggression::Extreme;
-		else if (value == "Aggressive") redrawAggression = RedrawAggression::High;
-		else redrawAggression = RedrawAggression::Normal;
-	}
+	const bool hasQERotationSpeed = TryReadFloat(json, "qeRotationSpeed", qeRotationSpeed);
+	TryReadFloat(json, "shiftPanBoost", shiftPanBoost);
+	TryReadBool(json, "invertQE", invertQE);
+	TryReadBool(json, "smoothWheelZoom", smoothWheelZoom);
+	TryReadBool(json, "invertWheelZoom", invertWheelZoom);
 
 	if (TryReadString(json, "logging", value))
 	{
@@ -179,18 +167,24 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		else if (value == "Verbose") debugLogging = DebugLogging::Verbose;
 		else debugLogging = DebugLogging::Normal;
 	}
-	TryReadBool(json, "cameraDumpHotkey", cameraDumpHotkey);
 	TryReadBool(json, "bookmarksEnabled", bookmarksEnabled);
 	TryReadBool(json, "showChangelogsOnUpdate", showChangelogsOnUpdate);
 
 	rotationSensitivity = std::clamp(rotationSensitivity, kMinimumSensitivity, kMaximumSensitivity);
 	zoomSensitivity = std::clamp(zoomSensitivity, kMinimumSensitivity, kMaximumSensitivity);
 	panSensitivity = std::clamp(panSensitivity, kMinimumPanSensitivity, kMaximumPanSensitivity);
+	// Q/E speed used to follow rotation sensitivity, so older files keep the speed they had.
+	if (!hasQERotationSpeed)
+	{
+		qeRotationSpeed = rotationSensitivity;
+	}
+	qeRotationSpeed = std::clamp(qeRotationSpeed, kMinimumSensitivity, kMaximumSensitivity);
+	shiftPanBoost = std::clamp(shiftPanBoost, kMinimumShiftPanBoost, kMaximumShiftPanBoost);
 
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Loaded settings from " + path.string());
 
-	// This option has no menu entry yet, so the settings file is the only place to find it.
-	if (!hasAltCameraBungie)
+	// Settings files from before these options get them written at their starting values.
+	if (!hasAltCameraBungie || !hasQERotationSpeed)
 	{
 		Save();
 	}
@@ -224,14 +218,15 @@ bool PluginSettings::Save() const
 		<< "    \"zoomSensitivity\": " << zoomSensitivity << ",\n"
 		<< "    \"panSensitivity\": " << panSensitivity << ",\n"
 		<< "    \"invertVertical\": " << (invertVertical ? "true" : "false") << ",\n"
-		<< "    \"altCameraBungie\": " << (altCameraBungie ? "true" : "false") << "\n"
-		<< "  },\n"
-		<< "  \"rendering\": {\n"
-		<< "    \"redrawAggression\": \"" << PluginSettingText::ToString(redrawAggression) << "\"\n"
+		<< "    \"altCameraBungie\": " << (altCameraBungie ? "true" : "false") << ",\n"
+		<< "    \"qeRotationSpeed\": " << qeRotationSpeed << ",\n"
+		<< "    \"shiftPanBoost\": " << shiftPanBoost << ",\n"
+		<< "    \"invertQE\": " << (invertQE ? "true" : "false") << ",\n"
+		<< "    \"smoothWheelZoom\": " << (smoothWheelZoom ? "true" : "false") << ",\n"
+		<< "    \"invertWheelZoom\": " << (invertWheelZoom ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"diagnostics\": {\n"
-		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\",\n"
-		<< "    \"cameraDumpHotkey\": " << (cameraDumpHotkey ? "true" : "false") << "\n"
+		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\"\n"
 		<< "  },\n"
 		<< "  \"bookmarks\": {\n"
 		<< "    \"bookmarksEnabled\": " << (bookmarksEnabled ? "true" : "false") << "\n"

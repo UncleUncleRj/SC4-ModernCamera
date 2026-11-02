@@ -69,7 +69,7 @@ This produces all desired view types without a forced zoom/pitch curve:
   level closest in on-screen size, and that level's native pitch. Classic zoom levels are
   stages 0 to 4 at magnification 1, plus stage 4 at magnification 2.
 - Releasing Alt moves back to the exact saved view, whatever was done during the hold.
-  With `altCameraBungie` set to `false` in the settings file, the camera stays on the view
+  With On Alt Release set to Keep View (`altCameraBungie` is `false`), the camera stays on the view
   it reached instead. A move still under way finishes, then the camera dips about 6 percent
   closer and settles back on that view, so the release has visible feedback.
 - Each move takes 0.3 seconds, starts fast, passes its target slightly, and settles back.

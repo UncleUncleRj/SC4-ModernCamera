@@ -13,13 +13,13 @@ from pathlib import Path
 import build_sc4_ui_dat as base
 
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "2.0"
+CONTRACT_MAJOR = 2
 SCRIPT_RESOURCES = {
     "greeting.txt": (base.GREETING_INSTANCE_ID, 0x3D0C0706),
     "controls.txt": (base.CONTROLS_INSTANCE_ID, 0x3D0C0708),
     "menu-button.txt": (base.MENU_BUTTON_INSTANCE_ID, 0x3D0C0902),
     "settings.txt": (base.SETTINGS_INSTANCE_ID, 0x3D0C0904),
-    "advanced-settings.txt": (base.DIAGNOSTICS_INSTANCE_ID, 0x3D0C0906),
 }
 IMAGE_RESOURCES = {
     base.MENU_ICON_ON_SOURCE_NAME: (
@@ -36,11 +36,11 @@ IMAGE_RESOURCES = {
     ),
     "camicon.png": (
         base.CAM_ICON_INSTANCE_ID,
-        lambda path: base.build_button_strip_fsh_from_png(path, b"MODCMIC2"),
+        lambda path: base.build_fsh_dxt3_from_png(path, b"MODCMIC2"),
     ),
     "camera_point.png": (
         base.CAMERA_POINT_INSTANCE_ID,
-        lambda path: base.build_button_strip_fsh_from_png(path, b"MODCMARW"),
+        lambda path: base.build_fsh_dxt3_from_png(path, b"MODCMARW"),
     ),
 }
 GENERATED_IMAGE_RESOURCES = {
@@ -65,19 +65,16 @@ REQUIRED_CONTROLS = {
         **{control_id: "GZWinBtn" for control_id in (
             0x3D0C0920, 0x3D0C0930, 0x3D0C0931, 0x3D0C0932, 0x3D0C0933,
             0x3D0C0936, 0x3D0C0937, 0x3D0C0938, 0x3D0C093A, 0x3D0C093B,
-            0x3D0C0950, 0x3D0C0951, 0x3D0C0952, 0x3D0C0953,
-            0x3D0C0954,
+            0x3D0C093C, 0x3D0C093D, 0x3D0C093E, 0x3D0C093F,
+            0x3D0C0950, 0x3D0C0951, 0x3D0C0952, 0x3D0C0953, 0x3D0C0955, 0x3D0C095A,
+            0x3D0C0940, 0x3D0C0941, 0x3D0C0942, 0x3D0C0943, 0x3D0C094C, 0x3D0C094D,
+            0x3D0C0968, 0x3D0C0969, 0x3D0C096A, 0x3D0C096E,
         )},
         0x3D0C0934: "GZWinSlider",
         0x3D0C0935: "GZWinSlider",
         0x3D0C0939: "GZWinSlider",
-    },
-    "advanced-settings.txt": {
-        **{control_id: "GZWinBtn" for control_id in (
-            0x3D0C0940, 0x3D0C0941, 0x3D0C0942, 0x3D0C0943,
-            0x3D0C0960, 0x3D0C0963, 0x3D0C0968, 0x3D0C0969,
-            0x3D0C096A, 0x3D0C096C, 0x3D0C096D, 0x3D0C096E,
-        )},
+        0x3D0C0946: "GZWinSlider",
+        0x3D0C0948: "GZWinSlider",
     },
 }
 
@@ -106,7 +103,7 @@ def read_manifest(theme_dir: Path) -> tuple[dict[str, object], int]:
         raise ValueError("theme.json name must be a non-empty string")
     version = str(manifest["contractVersion"])
     match = re.fullmatch(r"(\d+)\.(\d+)", version)
-    if not match or int(match.group(1)) != 1:
+    if not match or int(match.group(1)) != CONTRACT_MAJOR:
         raise ValueError(
             f"theme contract {version!r} is incompatible with supported contract {CONTRACT_VERSION}"
         )
@@ -250,7 +247,6 @@ def export_template(destination: Path, group: int) -> None:
         "controls.txt": base.build_controls_script(),
         "menu-button.txt": base.build_menu_button_script(),
         "settings.txt": base.build_settings_script(version_header),
-        "advanced-settings.txt": base.build_diagnostics_script(),
     }
     (destination / "ui").mkdir(parents=True, exist_ok=True)
     (destination / "images").mkdir(parents=True, exist_ok=True)

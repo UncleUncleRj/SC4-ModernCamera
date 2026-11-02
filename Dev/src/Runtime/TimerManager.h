@@ -9,8 +9,6 @@ enum class RuntimeTimer : size_t
 {
 	// One-shot redraw after camera input becomes idle.
 	IdleRedraw,
-	// One-shot periodic redraw that reschedules itself when required.
-	PeriodicRedraw,
 	// Repeating camera frame used only when the framework tick could not be registered.
 	CameraFrameFallback,
 	// One-shot timer that hides the camera-dump confirmation.

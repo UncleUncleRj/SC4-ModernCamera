@@ -24,6 +24,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <array>
@@ -53,15 +54,14 @@ namespace
 	constexpr uint32_t kMenuButtonCLSID = 0x3D0C0902;
 	constexpr uint32_t kSettingsWindowResourceInstance = 0x3D0C0903;
 	constexpr uint32_t kSettingsWindowCLSID = 0x3D0C0904;
-	constexpr uint32_t kAdvancedWindowResourceInstance = 0x3D0C0905;
-	constexpr uint32_t kAdvancedWindowCLSID = 0x3D0C0906;
 	constexpr uint32_t kBasicCloseXButtonID = 0x3D0C0810;
 	constexpr uint32_t kBasicTitleID = 0x3D0C0820;
 	constexpr uint32_t kBasicTextID = 0x3D0C0821;
 	constexpr uint32_t kBasicActionButtonID = 0x3D0C0830;
 	constexpr uint32_t kGreetingCloseXButtonID = 0x3D0C0840;
 	constexpr uint32_t kGreetingOKButtonID = 0x3D0C0843;
-	constexpr uint32_t kGreetingViewControlsButtonID = 0x3D0C0844;
+	constexpr uint32_t kGreetingViewGithubButtonID = 0x3D0C0844;
+	constexpr char kProjectGithubUrl[] = "https://github.com/UncleUncleRj/SC4-ModernCamera";
 	constexpr uint32_t kGreetingSuppressChangelogsButtonID = 0x3D0C0847;
 	constexpr uint32_t kControlsCloseXButtonID = 0x3D0C0850;
 	constexpr uint32_t kControlsOKButtonID = 0x3D0C0853;
@@ -94,25 +94,50 @@ namespace
 	constexpr uint32_t kSettingsPanSliderID = 0x3D0C0939;
 	constexpr uint32_t kSettingsQERotationOnButtonID = 0x3D0C093A;
 	constexpr uint32_t kSettingsQERotationOffButtonID = 0x3D0C093B;
-	constexpr uint32_t kSettingsRedrawOffButtonID = 0x3D0C0940;
-	constexpr uint32_t kSettingsRedrawNormalButtonID = 0x3D0C0941;
-	constexpr uint32_t kSettingsRedrawHighButtonID = 0x3D0C0942;
-	constexpr uint32_t kSettingsRedrawAggressiveButtonID = 0x3D0C0943;
+	constexpr uint32_t kSettingsAltRestoreViewButtonID = 0x3D0C093C;
+	constexpr uint32_t kSettingsAltKeepViewButtonID = 0x3D0C093D;
+	constexpr uint32_t kSettingsBookmarksOnButtonID = 0x3D0C093E;
+	constexpr uint32_t kSettingsBookmarksOffButtonID = 0x3D0C093F;
+	constexpr uint32_t kAdvancedInvertQEOnButtonID = 0x3D0C0940;
+	constexpr uint32_t kAdvancedInvertQEOffButtonID = 0x3D0C0941;
+	constexpr uint32_t kAdvancedWheelSmoothButtonID = 0x3D0C0942;
+	constexpr uint32_t kAdvancedWheelSteppedButtonID = 0x3D0C0943;
+	constexpr uint32_t kAdvancedQESpeedSliderID = 0x3D0C0946;
+	constexpr uint32_t kAdvancedShiftBoostSliderID = 0x3D0C0948;
+	constexpr uint32_t kAdvancedInvertWheelOnButtonID = 0x3D0C094C;
+	constexpr uint32_t kAdvancedInvertWheelOffButtonID = 0x3D0C094D;
 	constexpr uint32_t kSettingsRestoreDefaultsButtonID = 0x3D0C0950;
-	constexpr uint32_t kSettingsAdvancedButtonID = 0x3D0C0951;
+	constexpr uint32_t kSettingsAdvancedTabButtonID = 0x3D0C0951;
 	constexpr uint32_t kSettingsReadChangelogButtonID = 0x3D0C0952;
 	constexpr uint32_t kSettingsCloseButtonID = 0x3D0C0953;
-	constexpr uint32_t kSettingsBookmarkHotkeysButtonID = 0x3D0C0954;
-	constexpr uint32_t kAdvancedCloseXButtonID = 0x3D0C0960;
-	constexpr uint32_t kAdvancedCloseButtonID = 0x3D0C0963;
+	// 0x3D0C0954 was the single Bookmark Hotkeys toggle. Keep it retired.
+	constexpr uint32_t kSettingsGeneralTabButtonID = 0x3D0C0955;
+	constexpr uint32_t kSettingsViewControlsButtonID = 0x3D0C095A;
 	constexpr uint32_t kAdvancedDebugLoggingOffButtonID = 0x3D0C0968;
 	constexpr uint32_t kAdvancedDebugLoggingNormalButtonID = 0x3D0C0969;
 	constexpr uint32_t kAdvancedDebugLoggingVerboseButtonID = 0x3D0C096A;
-	constexpr uint32_t kAdvancedCameraDumpHotkeyOnButtonID = 0x3D0C096C;
-	constexpr uint32_t kAdvancedCameraDumpHotkeyOffButtonID = 0x3D0C096D;
 	constexpr uint32_t kAdvancedShowChangelogsButtonID = 0x3D0C096E;
+
+	// Inclusive block of control IDs that belong to one settings page. Pages are
+	// shown by ID range so a theme can add art to a page without code changes.
+	struct SettingsPageRange
+	{
+		uint32_t first;
+		uint32_t last;
+	};
+
+	constexpr SettingsPageRange kGeneralPageRanges[] = {
+		{ 0x3D0C0922, 0x3D0C093F },
+	};
+	constexpr SettingsPageRange kAdvancedPageRanges[] = {
+		{ 0x3D0C0940, 0x3D0C094F },
+		{ 0x3D0C0961, 0x3D0C097F },
+	};
 	// Fixed handle returned for the one control-laboratory window.
 	constexpr SC4WindowHandle kControlLaboratoryHandle = 1;
+
+	// Major version of the theme contract documented in ui-theme-contract.md.
+	constexpr unsigned long kThemeContractMajor = 2;
 
 	// Stores the selected external theme after its manifest passes the runtime
 	// compatibility checks. The default state represents the built-in UI.
@@ -220,7 +245,7 @@ namespace
 		{
 			const unsigned long contractMajor = std::stoul(versionMatch[1].str());
 			const unsigned long contractMinor = std::stoul(versionMatch[2].str());
-			if (contractMajor != 1 || contractMinor > UINT32_MAX)
+			if (contractMajor != kThemeContractMajor || contractMinor > UINT32_MAX)
 			{
 				Logger::GetInstance().WriteLine(
 					LogLevel::Warning,
@@ -319,7 +344,7 @@ namespace
 	}
 
 	// Maps one primary settings slider to its setting, valid range, and logging
-	// labels. This keeps the three sensitivity controls on one code path.
+	// labels. This keeps the sensitivity controls on one code path.
 	struct SensitivitySlider
 	{
 		uint32_t controlID;
@@ -331,7 +356,7 @@ namespace
 		const char* classicModeName;
 	};
 
-	// Metadata for rotation, zoom, and pan sliders in the primary settings UI.
+	// Metadata for the rotation, zoom, pan, Q/E speed, and Shift boost sliders.
 	constexpr std::array kSensitivitySliders = {
 		SensitivitySlider{
 			kSettingsRotationSliderID,
@@ -357,6 +382,22 @@ namespace
 			"Panning Speed",
 			"panning speed change",
 			"panning speed" },
+		SensitivitySlider{
+			kAdvancedQESpeedSliderID,
+			&PluginSettings::qeRotationSpeed,
+			PluginSettings::kMinimumSensitivity,
+			PluginSettings::kSensitivityRange,
+			"Q/E Rotation Speed",
+			"Q/E rotation speed change",
+			"Q/E rotation speed" },
+		SensitivitySlider{
+			kAdvancedShiftBoostSliderID,
+			&PluginSettings::shiftPanBoost,
+			PluginSettings::kMinimumShiftPanBoost,
+			PluginSettings::kShiftPanBoostRange,
+			"Shift Pan Boost",
+			"Shift pan boost change",
+			"Shift pan boost" },
 	};
 
 	// Returns slider metadata for a settings control, or null when it is not a
@@ -500,6 +541,18 @@ namespace
 		return window->SetCaption(text);
 	}
 
+	// Converts the Alt release setting to the label shown on its button.
+	// Returns the player-facing name of a mouse wheel zoom choice.
+	const char* ToWheelZoomString(bool smooth)
+	{
+		return smooth ? "Smooth" : "Stepped";
+	}
+
+	const char* ToAltReleaseString(bool restoreView)
+	{
+		return restoreView ? "Restore View" : "Keep View";
+	}
+
 	// Converts a boolean setting to the label used in UI diagnostics.
 	const char* ToOnOffString(bool value)
 	{
@@ -624,6 +677,20 @@ namespace
 		child->InvalidateSelfAndParents();
 	}
 
+	// Shows or hides every control a page owns. IDs the window does not contain
+	// are skipped.
+	template <size_t Count>
+	void SetPageRangesVisible(cIGZWin* root, const SettingsPageRange (&ranges)[Count], bool visible)
+	{
+		for (const SettingsPageRange& range : ranges)
+		{
+			for (uint32_t id = range.first; id <= range.last; ++id)
+			{
+				SetControlVisible(root, id, visible);
+			}
+		}
+	}
+
 	// Enables or disables every control in a supplied baked-control group.
 	void SetControlsEnabled(cIGZWin* root, const uint32_t* ids, size_t count, bool enabled)
 	{
@@ -649,7 +716,7 @@ namespace
 			buttons = {
 				kGreetingCloseXButtonID,
 				kGreetingOKButtonID,
-				kGreetingViewControlsButtonID,
+				kGreetingViewGithubButtonID,
 				kGreetingSuppressChangelogsButtonID,
 			};
 			break;
@@ -674,32 +741,33 @@ namespace
 				kSettingsInvertOnButtonID,
 				kSettingsInvertOffButtonID,
 				kSettingsResetCameraButtonID,
+				kSettingsAltRestoreViewButtonID,
+				kSettingsAltKeepViewButtonID,
+				kSettingsBookmarksOnButtonID,
+				kSettingsBookmarksOffButtonID,
 				kSettingsRestoreDefaultsButtonID,
-				kSettingsAdvancedButtonID,
+				kSettingsGeneralTabButtonID,
+				kSettingsAdvancedTabButtonID,
 				kSettingsReadChangelogButtonID,
+				kSettingsViewControlsButtonID,
 				kSettingsCloseButtonID,
-				kSettingsBookmarkHotkeysButtonID,
+				kAdvancedInvertQEOnButtonID,
+				kAdvancedInvertQEOffButtonID,
+				kAdvancedWheelSmoothButtonID,
+				kAdvancedWheelSteppedButtonID,
+				kAdvancedInvertWheelOnButtonID,
+				kAdvancedInvertWheelOffButtonID,
+				kAdvancedDebugLoggingOffButtonID,
+				kAdvancedDebugLoggingNormalButtonID,
+				kAdvancedDebugLoggingVerboseButtonID,
+				kAdvancedShowChangelogsButtonID,
 			};
 			sliders = {
 				kSettingsRotationSliderID,
 				kSettingsZoomSliderID,
 				kSettingsPanSliderID,
-			};
-			break;
-		case kAdvancedWindowResourceInstance:
-			buttons = {
-				kAdvancedCloseXButtonID,
-				kAdvancedCloseButtonID,
-				kSettingsRedrawOffButtonID,
-				kSettingsRedrawNormalButtonID,
-				kSettingsRedrawHighButtonID,
-				kSettingsRedrawAggressiveButtonID,
-				kAdvancedDebugLoggingOffButtonID,
-				kAdvancedDebugLoggingNormalButtonID,
-				kAdvancedDebugLoggingVerboseButtonID,
-				kAdvancedCameraDumpHotkeyOnButtonID,
-				kAdvancedCameraDumpHotkeyOffButtonID,
-				kAdvancedShowChangelogsButtonID,
+				kAdvancedQESpeedSliderID,
+				kAdvancedShiftBoostSliderID,
 			};
 			break;
 		default:
@@ -729,13 +797,15 @@ namespace
 		return true;
 	}
 
-	// Returns whether a control ID selects one redraw-aggression option.
-	bool IsRedrawAggressionControl(uint32_t controlID)
+	// Returns whether a control ID belongs to the Modern-only camera tuning buttons.
+	bool IsCameraTuningButton(uint32_t controlID)
 	{
-		return controlID == kSettingsRedrawOffButtonID
-			|| controlID == kSettingsRedrawNormalButtonID
-			|| controlID == kSettingsRedrawHighButtonID
-			|| controlID == kSettingsRedrawAggressiveButtonID;
+		return controlID == kAdvancedInvertQEOnButtonID
+			|| controlID == kAdvancedInvertQEOffButtonID
+			|| controlID == kAdvancedWheelSmoothButtonID
+			|| controlID == kAdvancedWheelSteppedButtonID
+			|| controlID == kAdvancedInvertWheelOnButtonID
+			|| controlID == kAdvancedInvertWheelOffButtonID;
 	}
 
 	// Returns whether a visible window contains a parent-window coordinate.
@@ -858,10 +928,10 @@ bool BasicManagedWindow::Create(const SC4BasicWindowOptions& requestedOptions)
 
 	const int32_t widthDelta = width - 420;
 	const int32_t heightDelta = height - 240;
-	closeX->GZWinMoveTo(widthDelta, 0);
+	closeX->GZWinOffset(widthDelta, 0);
 	title->SetSize(std::max(120, width - 62), title->GetH());
 	text->SetSize(std::max(180, width - 40), std::max(40, height - 112));
-	action->GZWinMoveTo(widthDelta, heightDelta);
+	action->GZWinOffset(widthDelta, heightDelta);
 
 	if (!SetTextCaption(title, requestedOptions.title))
 	{
@@ -1261,7 +1331,8 @@ SettingsWindow::SettingsWindow()
 	delayedSaveTimerID(0),
 	delayedSavePending(false),
 	syncingControls(false),
-	delayedSaveReason()
+	delayedSaveReason(),
+	activePage(Page::General)
 {
 }
 
@@ -1292,7 +1363,26 @@ void SettingsWindow::RefreshFromSettings()
 // Synchronizes controls as soon as the baked settings resource is available.
 void SettingsWindow::OnCreated()
 {
+	ApplyActivePage();
 	SyncControlsFromSettings();
+}
+
+// Selects the General page; the root window may already be destroyed.
+void SettingsWindow::ResetToGeneralPage()
+{
+	activePage = Page::General;
+	ApplyActivePage();
+}
+
+// Page switches change visibility only, so they are safe inside the tab's own
+// button callback. Every control stays a direct child of the root window.
+void SettingsWindow::ApplyActivePage()
+{
+	const bool advanced = activePage == Page::Advanced;
+	SetPageRangesVisible(GetRootWindow(), kGeneralPageRanges, !advanced);
+	SetPageRangesVisible(GetRootWindow(), kAdvancedPageRanges, advanced);
+	const uint32_t tabIDs[2] = { kSettingsGeneralTabButtonID, kSettingsAdvancedTabButtonID };
+	ApplyChoice(advanced ? kSettingsAdvancedTabButtonID : kSettingsGeneralTabButtonID, tabIDs, 2);
 }
 
 // Applies one selected button to a mutually exclusive primary-control group.
@@ -1347,7 +1437,8 @@ void SettingsWindow::SyncControlsFromSettings()
 		PluginSettings::kMinimumPanSensitivity,
 		PluginSettings::kPanSensitivityRange);
 	ApplyBooleanPair(kSettingsInvertOnButtonID, kSettingsInvertOffButtonID, settings->invertVertical);
-	SetButtonToggle(GetRootWindow(), kSettingsBookmarkHotkeysButtonID, settings->bookmarksEnabled);
+	ApplyBooleanPair(kSettingsAltRestoreViewButtonID, kSettingsAltKeepViewButtonID, settings->altCameraBungie);
+	ApplyBooleanPair(kSettingsBookmarksOnButtonID, kSettingsBookmarksOffButtonID, settings->bookmarksEnabled);
 
 	const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
 	const uint32_t modernOnlyControlIDs[] = {
@@ -1360,12 +1451,17 @@ void SettingsWindow::SyncControlsFromSettings()
 		kSettingsPanSliderID,
 		kSettingsInvertOnButtonID,
 		kSettingsInvertOffButtonID,
+		kSettingsAltRestoreViewButtonID,
+		kSettingsAltKeepViewButtonID,
+		kSettingsBookmarksOnButtonID,
+		kSettingsBookmarksOffButtonID,
 	};
 	SetControlsEnabled(
 		GetRootWindow(),
 		modernOnlyControlIDs,
 		sizeof(modernOnlyControlIDs) / sizeof(modernOnlyControlIDs[0]),
 		modernCameraActive);
+	SyncAdvancedControlsFromSettings();
 	syncingControls = false;
 }
 
@@ -1387,9 +1483,13 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 		+ " zoomSensitivity=" + std::to_string(settings->zoomSensitivity)
 		+ " panSensitivity=" + std::to_string(settings->panSensitivity)
 		+ " invertVertical=" + (settings->invertVertical ? "true" : "false")
+		+ " altCameraBungie=" + (settings->altCameraBungie ? "true" : "false")
 		+ " bookmarksEnabled=" + (settings->bookmarksEnabled ? "true" : "false")
-		+ " redrawAggression="
-		+ PluginSettingText::ToString(settings->redrawAggression)
+		+ " qeRotationSpeed=" + std::to_string(settings->qeRotationSpeed)
+		+ " shiftPanBoost=" + std::to_string(settings->shiftPanBoost)
+		+ " invertQE=" + (settings->invertQE ? "true" : "false")
+		+ " smoothWheelZoom=" + (settings->smoothWheelZoom ? "true" : "false")
+		+ " invertWheelZoom=" + (settings->invertWheelZoom ? "true" : "false")
 		+ " debugLogging="
 		+ PluginSettingText::ToString(settings->debugLogging));
 
@@ -1697,15 +1797,42 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			settings->invertVertical = false;
 			ApplySettingsChange("invert vertical change");
 			return true;
-		case kSettingsBookmarkHotkeysButtonID:
+		case kSettingsAltRestoreViewButtonID:
+		case kSettingsAltKeepViewButtonID:
+		{
+			if (!modernCameraActive)
+			{
+				SyncControlsFromSettings();
+				return true;
+			}
+			const bool restoreView = controlID == kSettingsAltRestoreViewButtonID;
+			LogOptionChanged(
+				"Settings UI",
+				"Alt Release",
+				ToAltReleaseString(settings->altCameraBungie),
+				ToAltReleaseString(restoreView));
+			settings->altCameraBungie = restoreView;
+			ApplySettingsChange("Alt release change");
+			return true;
+		}
+		case kSettingsBookmarksOnButtonID:
+		case kSettingsBookmarksOffButtonID:
+		{
+			if (!modernCameraActive)
+			{
+				SyncControlsFromSettings();
+				return true;
+			}
+			const bool enabled = controlID == kSettingsBookmarksOnButtonID;
 			LogOptionChanged(
 				"Settings UI",
 				"Bookmark Hotkeys",
 				ToOnOffString(settings->bookmarksEnabled),
-				ToOnOffString(!settings->bookmarksEnabled));
-			settings->bookmarksEnabled = !settings->bookmarksEnabled;
+				ToOnOffString(enabled));
+			settings->bookmarksEnabled = enabled;
 			ApplySettingsChange("bookmark hotkey change");
 			return true;
+		}
 		case kSettingsRestoreDefaultsButtonID:
 		{
 			const CameraMode previousCameraMode = settings->cameraMode;
@@ -1715,9 +1842,13 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			const float previousZoomSensitivity = settings->zoomSensitivity;
 			const float previousPanSensitivity = settings->panSensitivity;
 			const bool previousInvertVertical = settings->invertVertical;
-			const RedrawAggression previousRedrawAggression = settings->redrawAggression;
+			const bool previousAltCameraBungie = settings->altCameraBungie;
+			const float previousQERotationSpeed = settings->qeRotationSpeed;
+			const float previousShiftPanBoost = settings->shiftPanBoost;
+			const bool previousInvertQE = settings->invertQE;
+			const bool previousSmoothWheelZoom = settings->smoothWheelZoom;
+			const bool previousInvertWheelZoom = settings->invertWheelZoom;
 			const DebugLogging previousDebugLogging = settings->debugLogging;
-			const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
 			const bool previousBookmarksEnabled = settings->bookmarksEnabled;
 			const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
 			settings->RestoreDefaults();
@@ -1758,19 +1889,39 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				ToOnOffString(settings->invertVertical));
 			LogOptionChanged(
 				"Settings UI",
-				"Redraw Aggression",
-				PluginSettingText::ToString(previousRedrawAggression),
-				PluginSettingText::ToString(settings->redrawAggression));
+				"Alt Release",
+				ToAltReleaseString(previousAltCameraBungie),
+				ToAltReleaseString(settings->altCameraBungie));
+			LogOptionChanged(
+				"Settings UI",
+				"Q/E Rotation Speed",
+				FormatSettingFloat(previousQERotationSpeed),
+				FormatSettingFloat(settings->qeRotationSpeed));
+			LogOptionChanged(
+				"Settings UI",
+				"Shift Pan Boost",
+				FormatSettingFloat(previousShiftPanBoost),
+				FormatSettingFloat(settings->shiftPanBoost));
+			LogOptionChanged(
+				"Settings UI",
+				"Invert Q/E",
+				ToOnOffString(previousInvertQE),
+				ToOnOffString(settings->invertQE));
+			LogOptionChanged(
+				"Settings UI",
+				"Mouse Wheel Zoom",
+				ToWheelZoomString(previousSmoothWheelZoom),
+				ToWheelZoomString(settings->smoothWheelZoom));
+			LogOptionChanged(
+				"Settings UI",
+				"Invert Wheel Zoom",
+				ToOnOffString(previousInvertWheelZoom),
+				ToOnOffString(settings->invertWheelZoom));
 			LogOptionChanged(
 				"Settings UI",
 				"Diagnostics Logging",
 				PluginSettingText::ToString(previousDebugLogging),
 				PluginSettingText::ToString(settings->debugLogging));
-			LogOptionChanged(
-				"Settings UI",
-				"Camera Dump Hotkey",
-				ToOnOffString(previousCameraDumpHotkey),
-				ToOnOffString(settings->cameraDumpHotkey));
 			LogOptionChanged(
 				"Settings UI",
 				"Bookmarks Enabled",
@@ -1795,10 +1946,6 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			{
 				callbacks->OnInputSettingsChanged();
 			}
-			if (callbacks && callbacks->OnRedrawAggressionChanged)
-			{
-				callbacks->OnRedrawAggressionChanged();
-			}
 			if (callbacks && callbacks->OnDebugLoggingChanged)
 			{
 				callbacks->OnDebugLoggingChanged();
@@ -1811,15 +1958,20 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				callbacks->OnResetCameraRequested();
 			}
 			return true;
-		case kSettingsAdvancedButtonID:
-			if (manager)
-			{
-				manager->ScheduleDeferredWindowOpen(DeferredWindowOpen::AdvancedSettings);
-			}
-			return true;
 		default:
+			if (ApplyAdvancedOption(controlID))
+			{
+				return true;
+			}
 			break;
 		}
+	}
+
+	if (controlID == kSettingsGeneralTabButtonID || controlID == kSettingsAdvancedTabButtonID)
+	{
+		activePage = controlID == kSettingsAdvancedTabButtonID ? Page::Advanced : Page::General;
+		ApplyActivePage();
+		return true;
 	}
 
 	if (controlID == kSettingsReadChangelogButtonID)
@@ -1830,6 +1982,15 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 		}
 		return true;
 	}
+
+	if (controlID == kSettingsViewControlsButtonID)
+	{
+		if (manager)
+		{
+			manager->ShowControlsWindow();
+		}
+		return true;
+	}
 	return BakedManagedWindow::OnButtonClick(controlID);
 }
 
@@ -1837,10 +1998,205 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 void SettingsWindow::OnClosed()
 {
 	FlushPendingSettingsSave();
+	ResetToGeneralPage();
 	if (manager)
 	{
 		manager->OnSettingsWindowClosed();
 	}
+}
+
+// Copies camera tuning, diagnostics, and changelog preferences into the Advanced
+// page. Camera tuning is disabled in Classic mode, which keeps the saved values.
+void SettingsWindow::SyncAdvancedControlsFromSettings()
+{
+	if (!settings)
+	{
+		return;
+	}
+
+	SetSliderValueFromSetting(
+		GetRootWindow(),
+		kAdvancedQESpeedSliderID,
+		settings->qeRotationSpeed,
+		PluginSettings::kMinimumSensitivity,
+		PluginSettings::kSensitivityRange);
+	SetSliderValueFromSetting(
+		GetRootWindow(),
+		kAdvancedShiftBoostSliderID,
+		settings->shiftPanBoost,
+		PluginSettings::kMinimumShiftPanBoost,
+		PluginSettings::kShiftPanBoostRange);
+	ApplyBooleanPair(kAdvancedInvertQEOnButtonID, kAdvancedInvertQEOffButtonID, settings->invertQE);
+	ApplyBooleanPair(kAdvancedWheelSmoothButtonID, kAdvancedWheelSteppedButtonID, settings->smoothWheelZoom);
+	ApplyBooleanPair(kAdvancedInvertWheelOnButtonID, kAdvancedInvertWheelOffButtonID, settings->invertWheelZoom);
+
+	const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
+	const uint32_t cameraTuningIDs[] = {
+		kAdvancedQESpeedSliderID,
+		kAdvancedShiftBoostSliderID,
+		kAdvancedInvertQEOnButtonID,
+		kAdvancedInvertQEOffButtonID,
+		kAdvancedWheelSmoothButtonID,
+		kAdvancedWheelSteppedButtonID,
+	};
+	SetControlsEnabled(
+		GetRootWindow(),
+		cameraTuningIDs,
+		sizeof(cameraTuningIDs) / sizeof(cameraTuningIDs[0]),
+		modernCameraActive);
+	// SC4's stepped zoom cannot be inverted, so this choice only applies to smooth zoom.
+	const uint32_t invertWheelIDs[] = {
+		kAdvancedInvertWheelOnButtonID,
+		kAdvancedInvertWheelOffButtonID,
+	};
+	SetControlsEnabled(
+		GetRootWindow(),
+		invertWheelIDs,
+		sizeof(invertWheelIDs) / sizeof(invertWheelIDs[0]),
+		modernCameraActive && settings->smoothWheelZoom);
+
+	const uint32_t debugLoggingIDs[3] = {
+		kAdvancedDebugLoggingOffButtonID,
+		kAdvancedDebugLoggingNormalButtonID,
+		kAdvancedDebugLoggingVerboseButtonID,
+	};
+	uint32_t selectedDebugLoggingID = kAdvancedDebugLoggingNormalButtonID;
+	switch (settings->debugLogging)
+	{
+	case DebugLogging::Off:
+		selectedDebugLoggingID = kAdvancedDebugLoggingOffButtonID;
+		break;
+	case DebugLogging::Verbose:
+		selectedDebugLoggingID = kAdvancedDebugLoggingVerboseButtonID;
+		break;
+	default:
+		break;
+	}
+	ApplyButtonChoice(GetRootWindow(), selectedDebugLoggingID, debugLoggingIDs, 3);
+	SetButtonToggle(
+		GetRootWindow(),
+		kAdvancedShowChangelogsButtonID,
+		settings->showChangelogsOnUpdate);
+}
+
+// Applies Advanced page buttons, persists their new values immediately, and
+// notifies the runtime for logging changes that take effect at once.
+bool SettingsWindow::ApplyAdvancedOption(uint32_t controlID)
+{
+	if (settings->cameraMode != CameraMode::Modern && IsCameraTuningButton(controlID))
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Verbose,
+			"Advanced Settings UI: ignored a camera tuning button while Classic camera is selected.");
+		SyncControlsFromSettings();
+		if (manager)
+		{
+			manager->RefreshSettingsWindows();
+		}
+		return true;
+	}
+
+	const char* reason = nullptr;
+	bool debugLoggingChanged = false;
+	const DebugLogging previousDebugLogging = settings->debugLogging;
+	switch (controlID)
+	{
+	case kAdvancedInvertQEOnButtonID:
+	case kAdvancedInvertQEOffButtonID:
+	{
+		const bool enabled = controlID == kAdvancedInvertQEOnButtonID;
+		LogOptionChanged("Advanced Settings UI", "Invert Q/E", ToOnOffString(settings->invertQE), ToOnOffString(enabled));
+		settings->invertQE = enabled;
+		reason = "invert Q/E change";
+		break;
+	}
+	case kAdvancedWheelSmoothButtonID:
+	case kAdvancedWheelSteppedButtonID:
+	{
+		const bool smooth = controlID == kAdvancedWheelSmoothButtonID;
+		LogOptionChanged(
+			"Advanced Settings UI",
+			"Mouse Wheel Zoom",
+			ToWheelZoomString(settings->smoothWheelZoom),
+			ToWheelZoomString(smooth));
+		settings->smoothWheelZoom = smooth;
+		reason = "mouse wheel zoom change";
+		break;
+	}
+	case kAdvancedInvertWheelOnButtonID:
+	case kAdvancedInvertWheelOffButtonID:
+	{
+		const bool enabled = controlID == kAdvancedInvertWheelOnButtonID;
+		LogOptionChanged(
+			"Advanced Settings UI",
+			"Invert Wheel Zoom",
+			ToOnOffString(settings->invertWheelZoom),
+			ToOnOffString(enabled));
+		settings->invertWheelZoom = enabled;
+		reason = "invert wheel zoom change";
+		break;
+	}
+	case kAdvancedDebugLoggingOffButtonID:
+		settings->debugLogging = DebugLogging::Off;
+		debugLoggingChanged = true;
+		break;
+	case kAdvancedDebugLoggingNormalButtonID:
+		settings->debugLogging = DebugLogging::Normal;
+		debugLoggingChanged = true;
+		break;
+	case kAdvancedDebugLoggingVerboseButtonID:
+		settings->debugLogging = DebugLogging::Verbose;
+		debugLoggingChanged = true;
+		break;
+	case kAdvancedShowChangelogsButtonID:
+		LogOptionChanged(
+			"Advanced Settings UI",
+			"Show Changelogs on Update",
+			ToOnOffString(settings->showChangelogsOnUpdate),
+			ToOnOffString(!settings->showChangelogsOnUpdate));
+		settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
+		reason = "changelog preference change";
+		break;
+	default:
+		break;
+	}
+
+	if (debugLoggingChanged)
+	{
+		LogOptionChanged(
+			"Advanced Settings UI",
+			"Diagnostics Logging",
+			PluginSettingText::ToString(previousDebugLogging),
+			PluginSettingText::ToString(settings->debugLogging));
+		reason = "diagnostics logging change";
+	}
+	if (!reason)
+	{
+		return false;
+	}
+
+	if (!settings->Save())
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			std::string("Advanced Settings UI: failed to save settings after ") + reason + ".");
+	}
+	else
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("Advanced Settings UI: saved settings after ") + reason + ".");
+	}
+	SyncControlsFromSettings();
+	if (manager)
+	{
+		manager->RefreshSettingsWindows();
+	}
+	if (debugLoggingChanged && callbacks && callbacks->OnDebugLoggingChanged)
+	{
+		callbacks->OnDebugLoggingChanged();
+	}
+	return true;
 }
 
 // Configures the compact top-right menu resource that opens settings and
@@ -2052,11 +2408,20 @@ bool GreetingWindow::OnButtonClick(uint32_t controlID)
 		}
 		return true;
 	}
-	if (controlID == kGreetingViewControlsButtonID)
+	if (controlID == kGreetingViewGithubButtonID)
 	{
-		if (manager)
+		// ShellExecute reports success with any value above 32.
+		const auto result = reinterpret_cast<INT_PTR>(
+			ShellExecuteA(nullptr, "open", kProjectGithubUrl, nullptr, nullptr, SW_SHOWNORMAL));
+		if (result > 32)
 		{
-			manager->ShowControlsWindow();
+			Logger::GetInstance().WriteLine(LogLevel::Info, "Greeting UI: opened the GitHub page in the browser.");
+		}
+		else
+		{
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Greeting UI: could not open the GitHub page. ShellExecute returned " + std::to_string(result) + ".");
 		}
 		return true;
 	}
@@ -2072,281 +2437,6 @@ ControlsWindow::ControlsWindow()
 		kControlsCloseXButtonID,
 		kControlsOKButtonID)
 {
-}
-
-// Configures the baked resource and callback storage for advanced settings.
-AdvancedSettingsWindow::AdvancedSettingsWindow()
-	: BakedManagedWindow(
-		"Advanced Settings UI",
-		kAdvancedWindowResourceInstance,
-		kAdvancedWindowCLSID,
-		kAdvancedCloseXButtonID,
-		kAdvancedCloseButtonID),
-	manager(nullptr),
-	settings(nullptr),
-	callbacks(nullptr)
-{
-}
-
-// Retains the manager used to refresh related visible windows.
-void AdvancedSettingsWindow::SetWindowManager(SC4WindowManager* windowManager)
-{
-	manager = windowManager;
-}
-
-// Retains the mutable settings object mirrored by advanced controls.
-void AdvancedSettingsWindow::SetSettings(PluginSettings* pluginSettings)
-{
-	settings = pluginSettings;
-}
-
-// Retains runtime callbacks for settings that change active behavior.
-void AdvancedSettingsWindow::SetCallbacks(const SC4WindowManagerCallbacks* managerCallbacks)
-{
-	callbacks = managerCallbacks;
-}
-
-// Copies the current advanced settings into an already-created baked window.
-void AdvancedSettingsWindow::RefreshFromSettings()
-{
-	SyncControlsFromSettings();
-}
-
-// Synchronizes advanced controls as soon as the baked resource is available.
-void AdvancedSettingsWindow::OnCreated()
-{
-	SyncControlsFromSettings();
-}
-
-// Copies redraw, diagnostics, camera-dump, and changelog preferences into the
-// advanced controls. Redraw choices remain disabled in Classic camera mode.
-void AdvancedSettingsWindow::SyncControlsFromSettings()
-{
-	if (!settings)
-	{
-		return;
-	}
-
-	const uint32_t redrawIDs[4] = {
-		kSettingsRedrawOffButtonID,
-		kSettingsRedrawNormalButtonID,
-		kSettingsRedrawHighButtonID,
-		kSettingsRedrawAggressiveButtonID,
-	};
-	const bool modernCameraActive = settings->cameraMode == CameraMode::Modern;
-	uint32_t selectedRedrawID = modernCameraActive ? kSettingsRedrawNormalButtonID : kSettingsRedrawOffButtonID;
-	if (modernCameraActive)
-	{
-		switch (settings->redrawAggression)
-		{
-		case RedrawAggression::Classic:
-			selectedRedrawID = kSettingsRedrawOffButtonID;
-			break;
-		case RedrawAggression::High:
-			selectedRedrawID = kSettingsRedrawHighButtonID;
-			break;
-		case RedrawAggression::Extreme:
-			selectedRedrawID = kSettingsRedrawAggressiveButtonID;
-			break;
-		default:
-			break;
-		}
-	}
-	ApplyButtonChoice(GetRootWindow(), selectedRedrawID, redrawIDs, 4);
-	if (modernCameraActive)
-	{
-		SetControlsEnabled(GetRootWindow(), redrawIDs, 4, true);
-	}
-	else
-	{
-		SetControlEnabled(GetRootWindow(), kSettingsRedrawOffButtonID, true);
-		SetControlEnabled(GetRootWindow(), kSettingsRedrawNormalButtonID, false);
-		SetControlEnabled(GetRootWindow(), kSettingsRedrawHighButtonID, false);
-		SetControlEnabled(GetRootWindow(), kSettingsRedrawAggressiveButtonID, false);
-	}
-
-	const uint32_t debugLoggingIDs[3] = {
-		kAdvancedDebugLoggingOffButtonID,
-		kAdvancedDebugLoggingNormalButtonID,
-		kAdvancedDebugLoggingVerboseButtonID,
-	};
-	uint32_t selectedDebugLoggingID = kAdvancedDebugLoggingNormalButtonID;
-	switch (settings->debugLogging)
-	{
-	case DebugLogging::Off:
-		selectedDebugLoggingID = kAdvancedDebugLoggingOffButtonID;
-		break;
-	case DebugLogging::Verbose:
-		selectedDebugLoggingID = kAdvancedDebugLoggingVerboseButtonID;
-		break;
-	default:
-		break;
-	}
-	ApplyButtonChoice(GetRootWindow(), selectedDebugLoggingID, debugLoggingIDs, 3);
-	const uint32_t cameraDumpHotkeyIDs[2] = {
-		kAdvancedCameraDumpHotkeyOnButtonID,
-		kAdvancedCameraDumpHotkeyOffButtonID,
-	};
-	ApplyButtonChoice(
-		GetRootWindow(),
-		settings->cameraDumpHotkey
-			? kAdvancedCameraDumpHotkeyOnButtonID
-			: kAdvancedCameraDumpHotkeyOffButtonID,
-		cameraDumpHotkeyIDs,
-		2);
-	SetButtonToggle(
-		GetRootWindow(),
-		kAdvancedShowChangelogsButtonID,
-		settings->showChangelogsOnUpdate);
-}
-
-// Applies advanced-option buttons, persists their new values immediately, and
-// notifies the runtime for redraw or logging changes that take effect at once.
-bool AdvancedSettingsWindow::OnButtonClick(uint32_t controlID)
-{
-	if (settings)
-	{
-		if (settings->cameraMode != CameraMode::Modern && IsRedrawAggressionControl(controlID))
-		{
-			Logger::GetInstance().WriteLine(
-				LogLevel::Verbose,
-				"Advanced Settings UI: ignored Redraw Aggression button while Classic camera is selected.");
-			SyncControlsFromSettings();
-			if (manager)
-			{
-				manager->RefreshSettingsWindows();
-			}
-			return true;
-		}
-
-		bool changed = true;
-		bool redrawChanged = false;
-		bool debugLoggingChanged = false;
-		bool cameraDumpHotkeyChanged = false;
-		bool showChangelogsChanged = false;
-		const RedrawAggression previousRedrawAggression = settings->redrawAggression;
-		const DebugLogging previousDebugLogging = settings->debugLogging;
-		const bool previousCameraDumpHotkey = settings->cameraDumpHotkey;
-		const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
-		switch (controlID)
-		{
-		case kSettingsRedrawOffButtonID:
-			settings->redrawAggression = RedrawAggression::Classic;
-			redrawChanged = true;
-			break;
-		case kSettingsRedrawNormalButtonID:
-			settings->redrawAggression = RedrawAggression::Normal;
-			redrawChanged = true;
-			break;
-		case kSettingsRedrawHighButtonID:
-			settings->redrawAggression = RedrawAggression::High;
-			redrawChanged = true;
-			break;
-		case kSettingsRedrawAggressiveButtonID:
-			settings->redrawAggression = RedrawAggression::Extreme;
-			redrawChanged = true;
-			break;
-		case kAdvancedDebugLoggingOffButtonID:
-			settings->debugLogging = DebugLogging::Off;
-			debugLoggingChanged = true;
-			break;
-		case kAdvancedDebugLoggingNormalButtonID:
-			settings->debugLogging = DebugLogging::Normal;
-			debugLoggingChanged = true;
-			break;
-		case kAdvancedDebugLoggingVerboseButtonID:
-			settings->debugLogging = DebugLogging::Verbose;
-			debugLoggingChanged = true;
-			break;
-		case kAdvancedCameraDumpHotkeyOnButtonID:
-			settings->cameraDumpHotkey = true;
-			cameraDumpHotkeyChanged = true;
-			break;
-		case kAdvancedCameraDumpHotkeyOffButtonID:
-			settings->cameraDumpHotkey = false;
-			cameraDumpHotkeyChanged = true;
-			break;
-		case kAdvancedShowChangelogsButtonID:
-			settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
-			showChangelogsChanged = true;
-			break;
-		default:
-			changed = false;
-			break;
-		}
-
-		if (changed)
-		{
-			if (redrawChanged)
-			{
-				LogOptionChanged(
-					"Advanced Settings UI",
-					"Redraw Aggression",
-					PluginSettingText::ToString(previousRedrawAggression),
-					PluginSettingText::ToString(settings->redrawAggression));
-			}
-			if (debugLoggingChanged)
-			{
-				LogOptionChanged(
-					"Advanced Settings UI",
-					"Diagnostics Logging",
-					PluginSettingText::ToString(previousDebugLogging),
-					PluginSettingText::ToString(settings->debugLogging));
-			}
-			if (cameraDumpHotkeyChanged)
-			{
-				LogOptionChanged(
-					"Advanced Settings UI",
-					"Camera Dump Hotkey",
-					ToOnOffString(previousCameraDumpHotkey),
-					ToOnOffString(settings->cameraDumpHotkey));
-			}
-			if (showChangelogsChanged)
-			{
-				LogOptionChanged(
-					"Advanced Settings UI",
-					"Show Changelogs on Update",
-					ToOnOffString(previousShowChangelogs),
-					ToOnOffString(settings->showChangelogsOnUpdate));
-			}
-
-			const char* reason = redrawChanged
-				? "redraw aggression change"
-				: debugLoggingChanged
-					? "diagnostics logging change"
-					: cameraDumpHotkeyChanged
-						? "camera dump hotkey change"
-						: "changelog preference change";
-			if (!settings->Save())
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Warning,
-					std::string("Advanced Settings UI: failed to save settings after ") + reason + ".");
-			}
-			else
-			{
-				Logger::GetInstance().WriteLine(
-					LogLevel::Info,
-					std::string("Advanced Settings UI: saved settings after ") + reason + ".");
-			}
-			SyncControlsFromSettings();
-			if (manager)
-			{
-				manager->RefreshSettingsWindows();
-			}
-			if (redrawChanged && callbacks && callbacks->OnRedrawAggressionChanged)
-			{
-				callbacks->OnRedrawAggressionChanged();
-			}
-			if (debugLoggingChanged && callbacks && callbacks->OnDebugLoggingChanged)
-			{
-				callbacks->OnDebugLoggingChanged();
-			}
-			return true;
-		}
-	}
-
-	return BakedManagedWindow::OnButtonClick(controlID);
 }
 
 // Initializes an empty control laboratory with no retained native interfaces
@@ -2632,14 +2722,9 @@ void ControlLaboratoryWindow::ApplyScrollPosition()
 		}
 
 		const int32_t top = control.baseTop - scrollOffset;
-		const int32_t deltaX = control.baseLeft - control.window->GetL();
-		const int32_t deltaY = top - control.window->GetT();
-		if (deltaX != 0 || deltaY != 0)
+		if (control.window->GetL() != control.baseLeft || control.window->GetT() != top)
 		{
-			// Despite its name, SC4's GZWinMoveTo applies a relative delta.
-			// Computing the delta from the current position makes scrolling
-			// deterministic without resizing or re-anchoring the control.
-			control.window->GZWinMoveTo(deltaX, deltaY);
+			control.window->GZWinMoveTo(control.baseLeft, top);
 		}
 		// SC4 does not clip child windows to the dialog bounds. Only show
 		// controls that fit completely inside the content viewport.
@@ -2993,9 +3078,6 @@ void SC4WindowManager::OnDeferredWindowOpenTimer()
 
 	switch (window)
 	{
-	case DeferredWindowOpen::AdvancedSettings:
-		ShowAdvancedSettingsWindow();
-		break;
 	case DeferredWindowOpen::Changelog:
 		greetingWindow.Destroy();
 		if (ShowGreetingWindow())
@@ -3159,25 +3241,6 @@ bool SC4WindowManager::ShowControlsWindow()
 	return controlsWindow.Create();
 }
 
-// Recreates the advanced settings window, then places it above primary
-// settings so both windows retain their expected focus order.
-bool SC4WindowManager::ShowAdvancedSettingsWindow()
-{
-	advancedSettingsWindow.Destroy();
-	advancedSettingsWindow.SetWindowManager(this);
-	advancedSettingsWindow.SetSettings(pendingSettings);
-	advancedSettingsWindow.SetCallbacks(&callbacks);
-	if (!advancedSettingsWindow.Create())
-	{
-		return false;
-	}
-
-	settingsWindow.SendToBack();
-	advancedSettingsWindow.BringToFront();
-	advancedSettingsWindow.BringToFront();
-	return true;
-}
-
 // Opens the primary settings window and invalidates the menu after its state
 // changes.
 bool SC4WindowManager::ShowSettingsWindow()
@@ -3190,6 +3253,8 @@ bool SC4WindowManager::ShowSettingsWindow()
 		menuButtonWindow.SetSettingsOpen(false);
 		return false;
 	}
+	// Reopening reuses a hidden window, which refreshes skip while it is hidden.
+	settingsWindow.RefreshFromSettings();
 	menuButtonWindow.SetSettingsOpen(true);
 	return true;
 }
@@ -3268,10 +3333,6 @@ void SC4WindowManager::RefreshSettingsWindows()
 	{
 		settingsWindow.RefreshFromSettings();
 	}
-	if (advancedSettingsWindow.IsVisible())
-	{
-		advancedSettingsWindow.RefreshFromSettings();
-	}
 	if (greetingWindow.IsVisible())
 	{
 		greetingWindow.RefreshFromSettings();
@@ -3295,7 +3356,7 @@ void SC4WindowManager::ScheduleSettingsWindowReopen()
 	}
 }
 
-// Defers opening a secondary settings or changelog window until the current
+// Defers opening the changelog window until the current
 // SC4 button command has completed.
 void SC4WindowManager::ScheduleDeferredWindowOpen(DeferredWindowOpen window)
 {
@@ -3319,8 +3380,8 @@ void SC4WindowManager::ScheduleDeferredWindowOpen(DeferredWindowOpen window)
 void SC4WindowManager::CloseAllWindows()
 {
 	settingsWindow.OnDelayedSettingsSaveTimer();
+	settingsWindow.ResetToGeneralPage();
 	settingsWindow.Destroy();
-	advancedSettingsWindow.Destroy();
 	controlsWindow.Destroy();
 	greetingWindow.Destroy();
 	controlLaboratory.Destroy();
@@ -3349,10 +3410,6 @@ bool SC4WindowManager::HasVisibleWindow() const
 		return true;
 	}
 	if (settingsWindow.IsVisible())
-	{
-		return true;
-	}
-	if (advancedSettingsWindow.IsVisible())
 	{
 		return true;
 	}
@@ -3387,10 +3444,6 @@ bool SC4WindowManager::IsPointOverVisibleWindow(int32_t parentX, int32_t parentY
 		return true;
 	}
 	if (settingsWindow.ContainsPoint(parentX, parentY))
-	{
-		return true;
-	}
-	if (advancedSettingsWindow.ContainsPoint(parentX, parentY))
 	{
 		return true;
 	}

@@ -80,12 +80,9 @@ static constexpr int32_t kNativeUICornerProbeMaxBottomOffset = 360;
 static constexpr UINT kPanIdleRedrawDelayMs = 1000; // Delay before redrawing after rotation ends.
 static constexpr UINT kCameraFrameFallbackMs = 33; // Camera frame interval if the framework tick is unavailable.
 static constexpr float kKeyboardPanNativeSpeed = 0.25f; // Base speed before settings and Shift boost.
-static constexpr float kKeyboardPanBoostMultiplier = 2.0f; // Shift multiplier for keyboard-pan speed.
 // Angular speed applied while Q or E is held for keyboard rotation.
 static constexpr float kKeyboardRotationRadiansPerSecond = SC4CameraController::kPi / 4.0f;
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500; // Delay before redrawing after mouse-wheel zoom.
-static constexpr UINT kHighPeriodicRedrawDelayMs = 1000; // Repeat interval for High redraw aggression.
-static constexpr UINT kExtremePeriodicRedrawDelayMs = 100; // Repeat interval for Extreme redraw aggression.
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500; // Lifetime of the dump confirmation.
 static constexpr UINT kBookmarkConfirmationDelayMs = 2500; // Lifetime of the bookmark confirmation.
 static constexpr UINT kModernCameraFocusRestoreDelayMs = 150; // Delay before restoring 3D-view focus.
@@ -244,8 +241,6 @@ std::function<void()> g_UnregisterCanvasWinProcFilterCallback;
 
 // Executes a delayed city redraw.
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
-// Executes a scheduled recurring city redraw.
-VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Runs camera frames from a timer when the framework tick is unavailable.
 VOID CALLBACK CameraFrameFallbackTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Clears the temporary camera-dump confirmation state.
@@ -829,38 +824,10 @@ NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
     return result;
 }
 
-// Returns the configured redraw-aggression label for logging.
-const char* GetRedrawAggressionName()
-{
-    switch (g_Settings.redrawAggression) {
-    case RedrawAggression::Classic:
-        return "Classic";
-    case RedrawAggression::High:
-        return "High";
-    case RedrawAggression::Extreme:
-        return "Extreme";
-    default:
-        return "Normal";
-    }
-}
-
 // Stops the one-shot idle redraw timer.
 void KillIdleTimer()
 {
     g_TimerManager.Stop(RuntimeTimer::IdleRedraw);
-}
-
-// Stops the recurring redraw timer.
-void KillPeriodicRedrawTimer()
-{
-    g_TimerManager.Stop(RuntimeTimer::PeriodicRedraw);
-}
-
-// Stops both idle and periodic redraw timers.
-void KillRedrawTimers()
-{
-    KillIdleTimer();
-    KillPeriodicRedrawTimer();
 }
 
 // Returns whether the key can be tracked by the shared key-state manager.
@@ -1087,57 +1054,17 @@ void ClearTrackedKeyStates(const char* reason)
         + (reason ? reason : "unknown"));
 }
 
-// Starts redraw updates for High or Extreme redraw aggression.
-void StartPeriodicRedrawTimer()
-{
-    KillPeriodicRedrawTimer();
-
-    if (!g_IsCityLoaded || !g_IsModernCamEnabled || IsMiddleMouseRotationActive()) {
-        return;
-    }
-
-    UINT delayMs = 0;
-    if (g_Settings.redrawAggression == RedrawAggression::High) {
-        delayMs = kHighPeriodicRedrawDelayMs;
-    }
-    else if (g_Settings.redrawAggression == RedrawAggression::Extreme) {
-        delayMs = kExtremePeriodicRedrawDelayMs;
-    }
-
-    if (delayMs == 0) {
-        return;
-    }
-
-    Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
-        return "Starting periodic redraw timer: aggression="
-            + std::string(GetRedrawAggressionName())
-            + " delayMs=" + std::to_string(delayMs);
-    });
-    if (!g_TimerManager.Start(RuntimeTimer::PeriodicRedraw, delayMs, PeriodicRedrawTimerProc)) {
-        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the periodic redraw timer.");
-    }
-}
-
-// Starts a delayed redraw after camera interaction becomes idle.
+// Starts a delayed redraw after camera interaction becomes idle. Classic mode leaves redraws to the game.
 void StartIdleTimer(UINT delayMs)
 {
-    KillRedrawTimers();
+    KillIdleTimer();
 
-    if (!g_IsCityLoaded || !g_IsModernCamEnabled || g_Settings.redrawAggression == RedrawAggression::Classic) {
+    if (!g_IsCityLoaded || !g_IsModernCamEnabled) {
         return;
     }
 
-    if (g_Settings.redrawAggression == RedrawAggression::High) {
-        delayMs = std::max<UINT>(100, delayMs / 4);
-    }
-    else if (g_Settings.redrawAggression == RedrawAggression::Extreme) {
-        delayMs = std::max<UINT>(25, delayMs / 20);
-    }
-
     Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
-        return "Starting idle redraw timer: aggression="
-            + std::string(GetRedrawAggressionName())
-            + " delayMs=" + std::to_string(delayMs);
+        return "Starting idle redraw timer: delayMs=" + std::to_string(delayMs);
     });
     if (!g_TimerManager.Start(RuntimeTimer::IdleRedraw, delayMs, RedrawTimerProc)) {
         Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the redraw timer.");
@@ -1152,8 +1079,10 @@ void SetRotationCursorVisible(bool visible)
         return;
     }
 
+    // GZShowCursor returns the game's new hide count, not success, and that count is
+    // zero on a normal show, so only a missing window manager counts as a failure.
     cIGZWinMgrPtr winMgr;
-    if (!winMgr || !winMgr->GZShowCursor(visible)) {
+    if (!winMgr) {
         Logger::GetInstance().WriteLine(
             LogLevel::Warning,
             std::string("Failed to ") + (visible ? "show" : "hide")
@@ -1161,6 +1090,7 @@ void SetRotationCursorVisible(bool visible)
         return;
     }
 
+    winMgr->GZShowCursor(visible);
     g_RotationCursorHidden = hidden;
 }
 
@@ -1611,7 +1541,7 @@ void HandleNativeUICornerClick(const POINT& point)
 // Stops active input, timers, and optional camera state during a reset.
 void ResetInputState(bool resetCamera = true)
 {
-    KillRedrawTimers();
+    KillIdleTimer();
     StopHeldKeyboardPan();
     StopHeldKeyboardRotation("input reset");
     StopClassicAngleHold("input reset");
@@ -1632,7 +1562,7 @@ void ResetInputState(bool resetCamera = true)
 void ResetCameraToNativeView()
 {
     Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: reset camera requested.");
-    KillRedrawTimers();
+    KillIdleTimer();
     StopHeldKeyboardPan();
     StopHeldKeyboardRotation("camera reset");
     StopClassicAngleHold("camera reset");
@@ -1649,7 +1579,6 @@ void ResetCameraToNativeView()
         g_CameraController.AbandonSavePreviewNormalization();
     }
     g_CameraController.Reset();
-    StartPeriodicRedrawTimer();
 }
 
 // Switches between Modern Camera and the native Classic camera mode.
@@ -1692,23 +1621,7 @@ void ApplyModernCameraEnabled(bool enabled)
         ClearNativeView3DToolState(View3DToolClearReason::ModernCameraEnabled);
         ScheduleModernCameraFocusRestore();
         TriggerCityRedraw();
-        StartPeriodicRedrawTimer();
     }
-}
-
-// Applies redraw-aggression settings by restarting redraw scheduling.
-void ApplyRedrawAggressionChange()
-{
-    Logger::GetInstance().WriteLine(
-        LogLevel::Info,
-        "Settings UI: redraw aggression changed to "
-        + std::string(GetRedrawAggressionName())
-        + "; restarting redraw timers.");
-    KillRedrawTimers();
-    if (g_IsModernCamEnabled && g_Settings.redrawAggression != RedrawAggression::Classic) {
-        TriggerCityRedraw();
-    }
-    StartPeriodicRedrawTimer();
 }
 
 // Clears held input and refreshes native input after settings change.
@@ -2184,8 +2097,11 @@ bool ShouldCaptureHeldKeyboardRotation()
 // Applies one frame of Q/E yaw to the Modern Camera controller.
 bool ApplyKeyboardRotation(const char* source, float elapsedSeconds)
 {
-    const float direction = (IsKeyboardRotationKeyDown('Q') ? 1.0f : 0.0f)
+    float direction = (IsKeyboardRotationKeyDown('Q') ? 1.0f : 0.0f)
         - (IsKeyboardRotationKeyDown('E') ? 1.0f : 0.0f);
+    if (g_Settings.invertQE) {
+        direction = -direction;
+    }
     if (direction == 0.0f) {
         return true;
     }
@@ -2193,7 +2109,7 @@ bool ApplyKeyboardRotation(const char* source, float elapsedSeconds)
     const float yawDelta = direction
         * kKeyboardRotationRadiansPerSecond
         * elapsedSeconds
-        * g_Settings.rotationSensitivity;
+        * g_Settings.qeRotationSpeed;
     const bool applied = g_CameraController.ApplyDelta(0.0f, yawDelta, true);
     Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
         return "Keyboard Q/E rotation tick. Source:"
@@ -2231,7 +2147,7 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
     const float directionAngle = std::atan2(-forwardSteps, rightSteps);
     RefreshTrackedModifierStates();
     const float speedMultiplier = IsVirtualKeyDown(VK_SHIFT)
-        ? kKeyboardPanBoostMultiplier
+        ? g_Settings.shiftPanBoost
         : 1.0f;
     // Native speed follows the zoom stage alone, so without this the on-screen speed
     // would rise with magnification across a stage, then drop at the next stage.
@@ -2372,7 +2288,7 @@ void HandleKeyboardRotationKeyState(WPARAM key, bool pressed)
 
     if (pressed && classicStep) {
         if (!wasOwned) {
-            g_CameraController.RotateClassicStep(key == 'Q', key == 'Q' ? "Alt+Q" : "Alt+E");
+            g_CameraController.RotateClassicStep((key == 'Q') != g_Settings.invertQE, key == 'Q' ? "Alt+Q" : "Alt+E");
         }
     }
     else if (pressed) {
@@ -2705,7 +2621,7 @@ bool RegisterNotifications(cIGZMessageTarget2* target)
     return false;
 }
 
-// Executes the delayed redraw and resumes periodic redraw scheduling.
+// Executes the delayed redraw.
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     Logger& log = Logger::GetInstance();
     if (g_TimerManager.IsCurrent(RuntimeTimer::IdleRedraw, idEvent)) {
@@ -2713,21 +2629,6 @@ VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
         g_TimerManager.Stop(RuntimeTimer::IdleRedraw);
 
         TriggerCityRedraw();
-        StartPeriodicRedrawTimer();
-    }
-}
-
-// Executes and reschedules periodic redraws outside rotation gestures.
-VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    if (g_TimerManager.IsCurrent(RuntimeTimer::PeriodicRedraw, idEvent)) {
-        g_TimerManager.Stop(RuntimeTimer::PeriodicRedraw);
-
-        if (!IsMiddleMouseRotationActive()) {
-            Logger::GetInstance().WriteLine(LogLevel::Verbose, "Periodic camera redraw timer fired.");
-            TriggerCityRedraw();
-        }
-
-        StartPeriodicRedrawTimer();
     }
 }
 
@@ -3034,8 +2935,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             return 0;
         }
 
-        if (g_Settings.cameraDumpHotkey
-            && IsManualCameraDumpHotkey(wParam)
+        if (IsManualCameraDumpHotkey(wParam)
             && !isRepeat
             && IsCameraKeyboardFocus()) {
             log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: Ctrl+Alt+F8 pressed, dumping camera info.");
@@ -3093,7 +2993,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         g_CapturedMouseWindow = hWnd;
         SetCapture(hWnd);
         SetRotationCursorVisible(false);
-        KillRedrawTimers();
+        KillIdleTimer();
         log.WriteLine(
             LogLevel::Verbose,
             std::string("Middle mouse camera rotation started. BeginResult:")
@@ -3155,6 +3055,10 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         if (!g_IsModernCamEnabled) {
             break;
         }
+        // Stepped zoom leaves the wheel to SC4. The Alt hold keeps its own Classic steps.
+        if (!g_Settings.smoothWheelZoom && !g_CameraController.IsClassicAngleHoldActive()) {
+            break;
+        }
 
         short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
         log.WriteLineLazy(LogLevel::Verbose, [&]() {
@@ -3196,9 +3100,10 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         // into zero, which would hand the wheel to SC4's own stepped zoom.
         // The Alt hold moves between Classic zoom levels, one for each notch of the wheel.
         bool zoomChanged = false;
-        const float adjustedZoomDelta = static_cast<float>(zDelta) * g_Settings.zoomSensitivity;
+        const float wheelDelta = static_cast<float>(zDelta) * (g_Settings.invertWheelZoom ? -1.0f : 1.0f);
+        const float adjustedZoomDelta = wheelDelta * g_Settings.zoomSensitivity;
         const bool zoomHandled = g_CameraController.IsClassicAngleHoldActive()
-            ? g_CameraController.StepClassicZoom(static_cast<float>(zDelta) / static_cast<float>(WHEEL_DELTA), zoomChanged)
+            ? g_CameraController.StepClassicZoom(wheelDelta / static_cast<float>(WHEEL_DELTA), zoomChanged)
             : g_CameraController.ZoomByWheel(adjustedZoomDelta, zoomChanged);
         if (zoomHandled) {
             if (zoomChanged) {
@@ -3382,7 +3287,6 @@ public:
         g_IsModernCamEnabled = g_Settings.cameraMode == CameraMode::Modern;
         g_WindowManager.SetCallbacks(SC4WindowManagerCallbacks{
             ApplyModernCameraEnabled,
-            ApplyRedrawAggressionChange,
             ResetCameraToNativeView,
             ApplyInputSettingsChange,
             ApplyDebugLoggingChange,
@@ -3522,7 +3426,6 @@ private:
                 FocusView3DForNativeInput("Classic camera startup focus handoff");
                 ScheduleView3DFocusRestore(false, "Classic camera startup focus restore");
             }
-            StartPeriodicRedrawTimer();
         }
         else if (msgType == kSC4MessagePreSave) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "Pre-save notification received.");

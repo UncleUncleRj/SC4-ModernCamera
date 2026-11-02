@@ -11,18 +11,6 @@ enum class CameraMode
     Classic
 };
 
-enum class RedrawAggression
-{
-    // Uses native redraw timing without Modern Camera redraw scheduling.
-    Classic,
-    // Schedules redraws after input becomes idle.
-    Normal,
-    // Adds periodic redraws at a moderate interval - small performance impact.
-    High,
-    // Adds frequent periodic redraws for maximum responsiveness to camera movement - can cause major performance impact on some systems.
-    Extreme
-};
-
 enum class DebugLogging
 {
     // Disables all plugin log output after startup.
@@ -37,8 +25,6 @@ namespace PluginSettingText
 {
     // Returns the persisted label for a camera mode.
     const char* ToString(CameraMode value);
-    // Returns the persisted label for a redraw-aggression level.
-    const char* ToString(RedrawAggression value);
     // Returns the persisted label for a diagnostics logging level.
     const char* ToString(DebugLogging value);
 }
@@ -55,6 +41,10 @@ public:
     static constexpr float kMinimumPanSensitivity = 0.25f;
     static constexpr float kMaximumPanSensitivity = 2.75f;
     static constexpr float kPanSensitivityRange = kMaximumPanSensitivity - kMinimumPanSensitivity;
+    static constexpr float kDefaultShiftPanBoost = 2.0f;
+    static constexpr float kMinimumShiftPanBoost = 1.0f;
+    static constexpr float kMaximumShiftPanBoost = 5.0f;
+    static constexpr float kShiftPanBoostRange = kMaximumShiftPanBoost - kMinimumShiftPanBoost;
 
     // Initializes this settings object with fresh-install defaults.
     PluginSettings();
@@ -92,12 +82,18 @@ public:
     bool invertVertical;
     // True returns to the saved Modern view when Alt is released; false stays on the view Alt let go of.
     bool altCameraBungie;
-    // Controls idle and periodic redraw scheduling.
-    RedrawAggression redrawAggression;
+    // Multiplies the Q and E keyboard rotation speed.
+    float qeRotationSpeed;
+    // Multiplies keyboard panning speed while Shift is held.
+    float shiftPanBoost;
+    // Swaps the directions Q and E turn the camera.
+    bool invertQE;
+    // True zooms smoothly with the wheel; false leaves the wheel to SC4's stepped zoom.
+    bool smoothWheelZoom;
+    // Reverses the direction of wheel zoom handled by this plugin.
+    bool invertWheelZoom;
     // Controls the amount of diagnostic log output.
     DebugLogging debugLogging;
-	// Enables the Ctrl+Alt+F8 camera diagnostics shortcut.
-	bool cameraDumpHotkey;
 	// Enables Modern-mode numbered bookmark hotkeys.
 	bool bookmarksEnabled;
 	// Shows the version greeting and changelog after a plugin update.
