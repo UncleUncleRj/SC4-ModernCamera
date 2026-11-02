@@ -13,6 +13,25 @@ Only after that registration succeeds does the logger start its worker thread.
 If either registration or worker creation fails, the plugin continues with
 synchronous logging rather than creating an unmanaged thread.
 
+`OnStart()` also adds the camera frame service to the framework tick list. If that
+fails, a repeating Win32 timer runs the same frame while a city is loaded.
+
+## Camera frame
+
+The tick service runs at priority 2,000,000. The framework ticks services from
+high to low, so it runs after the message server (5,000,000) and before the draw
+system (1,500,000). A frame applies held keys and accumulated mouse rotation, then
+completes the camera updates requested since the previous frame. Held Q/E rotation
+uses the measured frame time, capped at 0.25 seconds. With no city loaded, a frame
+only records the time.
+
+`PreAppShutdown()` removes the service from the tick list before stopping the
+logger.
+
+SC4's message server and tick loop catch nothing. An exception escaping a tick
+skips later services, so the tick, director messages, canvas filter, and low-level
+keyboard hook each stop and log C++ exceptions at their boundary.
+
 ## Asynchronous logging
 
 Once the worker starts, the game thread creates a timestamped record and tries

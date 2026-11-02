@@ -4,6 +4,7 @@
 #include "cIGZMessage2Standard.h"
 #include "cIGZMessageServer2.h"
 #include "cIGZString.h"
+#include "cIGZSystemService.h"
 #include "cIGZWin.h"
 #include "cIGZWinMgr.h"
 #include "cIGZWinProcFilterW32.h"
@@ -33,8 +34,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cctype>
 #include <exception>
 #include <filesystem>
@@ -45,11 +48,12 @@
 
 // Game lifecycle message identifiers
 // Reverse-engineered SimCity 4 message IDs for post-city initialization,
-// pre-city shutdown, and pre-save. The plugin subscribes to these fixed IDs;
-// it does not assign their values.
+// pre-city shutdown, pre-save, and post-save. The plugin subscribes to these
+// fixed IDs; it does not assign their values.
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
 static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
+static constexpr uint32_t kSC4MessagePostSave = 0x26C63345;
 
 // Reverse-engineered GZ window IDs used to resolve the SC4 application and 3D
 // view, and to recognize input targeting the full 3D surface.
@@ -74,7 +78,7 @@ static constexpr int32_t kNativeUICornerProbeMaxBottomOffset = 360;
 
 // Input and redraw constants. Names ending in Ms are durations in milliseconds.
 static constexpr UINT kPanIdleRedrawDelayMs = 1000; // Delay before redrawing after rotation ends.
-static constexpr UINT kKeyboardPanTickMs = 33; // Interval for held keyboard pan and rotation updates.
+static constexpr UINT kCameraFrameFallbackMs = 33; // Camera frame interval if the framework tick is unavailable.
 static constexpr float kKeyboardPanNativeSpeed = 0.25f; // Base speed before settings and Shift boost.
 static constexpr float kKeyboardPanBoostMultiplier = 2.0f; // Shift multiplier for keyboard-pan speed.
 // Angular speed applied while Q or E is held for keyboard rotation.
@@ -84,8 +88,17 @@ static constexpr UINT kHighPeriodicRedrawDelayMs = 1000; // Repeat interval for 
 static constexpr UINT kExtremePeriodicRedrawDelayMs = 100; // Repeat interval for Extreme redraw aggression.
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500; // Lifetime of the dump confirmation.
 static constexpr UINT kBookmarkConfirmationDelayMs = 2500; // Lifetime of the bookmark confirmation.
-static constexpr UINT kNativeToolClearEscDelayMs = 50; // Delay before the Escape tap clears a native tool.
 static constexpr UINT kModernCameraFocusRestoreDelayMs = 150; // Delay before restoring 3D-view focus.
+
+// Plugin-owned identifier of the camera frame service on the framework tick list.
+static constexpr uint32_t kCameraTickServiceID = 0x3D0C4D10;
+// Tick priorities run high to low, so this follows message delivery (5,000,000)
+// and precedes the draw system (1,500,000).
+static constexpr int32_t kCameraTickPriority = 2000000;
+// Longest frame time applied to held-key rotation, limiting the jump after a stall.
+static constexpr float kMaximumCameraFrameSeconds = 0.25f;
+// Moving the hidden cursor beyond this fraction of the view from its center recenters it.
+static constexpr int kRotationCursorRecenterDivisor = 4;
 
 // Inclusive ID range recognized as Modern Camera UI by IsModernCameraWindowID.
 static constexpr uint32_t kModernCameraWindowIDMin = 0x3D0C0700;
@@ -123,6 +136,42 @@ bool ReadPhysicalKeyState(int key)
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+/// <summary>
+/// Logs an exception stopped at a native callback boundary.
+/// </summary>
+/// <param name="callback">Name of the callback that failed.</param>
+/// <param name="detail">Description of the failure.</param>
+void LogNativeCallbackFailure(const char* callback, const char* detail) noexcept
+{
+    try {
+        Logger::GetInstance().WriteLine(LogLevel::Error, std::string(callback) + " failed: " + detail);
+    }
+    catch (...) {
+        // Logging is the last resort, and nothing may escape to the native caller.
+    }
+}
+
+/// <summary>
+/// Runs a callback that SC4 or Windows invoked without letting a C++ exception reach
+/// the caller. SC4's message server and tick loop catch nothing, so an escaping
+/// exception would skip other services or end the process.
+/// </summary>
+/// <param name="callback">Name logged if the callback fails.</param>
+/// <param name="function">Callback body.</param>
+template <typename Function>
+void RunGuardedNativeCallback(const char* callback, Function&& function) noexcept
+{
+    try {
+        function();
+    }
+    catch (const std::exception& exception) {
+        LogNativeCallbackFailure(callback, exception.what());
+    }
+    catch (...) {
+        LogNativeCallbackFailure(callback, "unknown exception");
+    }
+}
+
 // Cinematic Camera State
 // Prevents the scrolling hook from treating keyboard pan as unrelated native input.
 bool g_IsApplyingKeyboardPan = false;
@@ -149,6 +198,20 @@ static constexpr std::array<WPARAM, 8> kKeyboardPanKeys = {
 static constexpr std::array<WPARAM, 2> kKeyboardRotationKeys = { 'Q', 'E' };
 // Last canvas mouse position used to compute rotation deltas.
 POINT g_LastMousePos = { 0, 0 };
+// Client position where the current middle-mouse gesture began.
+POINT g_RotationCursorOrigin = { 0, 0 };
+// True after the current middle-mouse gesture has moved the hidden cursor.
+bool g_RotationCursorWarped = false;
+// Mouse yaw accumulated by canvas messages until the next camera frame.
+float g_PendingMouseYawDelta = 0.0f;
+// Mouse pitch accumulated by canvas messages until the next camera frame.
+float g_PendingMousePitchDelta = 0.0f;
+// True from the post-save message until the next camera frame restores the free camera.
+bool g_SavePreviewRestorePending = false;
+// True while the framework tick delivers camera frames.
+bool g_CameraTickRegistered = false;
+// Time of the previous camera frame.
+std::chrono::steady_clock::time_point g_LastCameraFrameTime = std::chrono::steady_clock::now();
 // Window that owns mouse capture during a Modern Camera rotation gesture.
 HWND g_CapturedMouseWindow = NULL;
 // True after Modern Camera hides the cursor for a middle-mouse rotation gesture.
@@ -183,16 +246,14 @@ std::function<void()> g_UnregisterCanvasWinProcFilterCallback;
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Executes a scheduled recurring city redraw.
 VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
-// Updates camera movement while a keyboard pan key remains held.
-VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+// Runs camera frames from a timer when the framework tick is unavailable.
+VOID CALLBACK CameraFrameFallbackTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Clears the temporary camera-dump confirmation state.
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Clears the temporary bookmark confirmation state.
 VOID CALLBACK ClearCameraBookmarkConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Shows the bookmark confirmation for a short interval.
 void StartCameraBookmarkConfirmationTimer();
-// Sends the delayed Escape input that clears a native view tool.
-VOID CALLBACK NativeToolClearEscTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Returns focus to the 3D view after a UI transition.
 VOID CALLBACK ModernCameraFocusRestoreTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Observes global keyboard input and captures eligible camera controls.
@@ -312,6 +373,24 @@ bool ActivateCurrentBookmarkCity()
 	return true;
 }
 
+/// <summary>
+/// Shows the outcome of a bookmark command unless a Modern Camera window is open.
+/// </summary>
+/// <param name="notice">Outcome to report to the player.</param>
+/// <param name="slot">Zero-based bookmark slot. Ignored for storage failures.</param>
+void ShowCameraBookmarkNotice(CameraBookmarkNotice notice, uint32_t slot)
+{
+	if (g_WindowManager.HasVisibleWindow())
+	{
+		return;
+	}
+
+	// SetCursorText can display the acknowledgement while returning false,
+	// so its return value must not prevent the cleanup timer from starting.
+	g_CameraController.ShowCameraBookmarkNotice(notice, slot);
+	StartCameraBookmarkConfirmationTimer();
+}
+
 // Captures the active camera state and hands only serialized bookmark bytes to
 // the store's background writer. No image or renderer-buffer capture is used.
 bool SaveCameraBookmark(uint32_t slot)
@@ -322,13 +401,18 @@ bool SaveCameraBookmark(uint32_t slot)
 	}
 	if (!ActivateCurrentBookmarkCity())
 	{
+		ShowCameraBookmarkNotice(CameraBookmarkNotice::SaveFailed, slot);
 		return false;
 	}
+
+	// A bookmark must store a real view, not a point on the way to one.
+	g_CameraController.FinishClassicAngleTransition();
 
 	SC4NativeCameraState view;
 	if (!g_CameraController.CaptureCurrentCameraState(view, "bookmark save"))
 	{
 		Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmark: failed to capture the current camera state.");
+		ShowCameraBookmarkNotice(CameraBookmarkNotice::SaveFailed, slot);
 		return false;
 	}
 	const bool saved = g_CameraBookmarks.Save(slot, view);
@@ -336,16 +420,7 @@ bool SaveCameraBookmark(uint32_t slot)
 		saved ? LogLevel::Info : LogLevel::Warning,
 		std::string("Camera Bookmark: ") + (saved ? "saved slot " : "failed to save slot ")
 		+ std::to_string(slot + 1) + ".");
-	if (saved)
-	{
-		if (!g_WindowManager.HasVisibleWindow())
-		{
-			// SetCursorText can display the acknowledgement while returning false,
-			// so its return value must not prevent the cleanup timer from starting.
-			g_CameraController.ShowCameraBookmarkConfirmation(true, slot);
-			StartCameraBookmarkConfirmationTimer();
-		}
-	}
+	ShowCameraBookmarkNotice(saved ? CameraBookmarkNotice::Saved : CameraBookmarkNotice::SaveFailed, slot);
 	return saved;
 }
 
@@ -360,16 +435,11 @@ bool RecallCameraBookmark(uint32_t slot)
 	const std::optional<CameraBookmark> bookmark = g_CameraBookmarks.Get(slot);
 	if (!bookmark)
 	{
+		ShowCameraBookmarkNotice(CameraBookmarkNotice::Empty, slot);
 		return false;
 	}
 	const bool recalled = g_CameraController.RestoreCameraState(bookmark->view, "bookmark recall");
-	if (recalled && !g_WindowManager.HasVisibleWindow())
-	{
-		// Keep the timer independent from SetCursorText's unreliable status so
-		// an acknowledged recall cannot leave a stale cursor-text entry behind.
-		g_CameraController.ShowCameraBookmarkConfirmation(false, slot);
-		StartCameraBookmarkConfirmationTimer();
-	}
+	ShowCameraBookmarkNotice(recalled ? CameraBookmarkNotice::Recalled : CameraBookmarkNotice::RecallFailed, slot);
 	return recalled;
 }
 
@@ -616,19 +686,16 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
             std::string(reasonName) + ": no current native view tool to clear.");
     }
 
-    const bool removedControl = currentControl
-        ? view3D->RemoveCurrentViewInputControl(true)
-        : false;
+    // This is the call SC4's own Cancel command makes. Passing true would remove
+    // the tools without resetting the cursor, leaving the old tool's cursor showing.
+    view3D->RemoveAllViewInputControls(false);
     const bool stoppedScrolling = view3D->ScrollStop();
     const bool killedKeyboardScrolling = view3D->KillKeyboardScrolling();
     cISC4ViewInputControl* remainingControl = view3D->GetCurrentViewInputControl();
     Logger::GetInstance().WriteLine(
         LogLevel::Info,
         std::string(reasonName)
-        + ": native view input reset. RemoveCurrentViewInputControl="
-        + (removedControl ? "true" : "false")
-        + " RemoveAllViewInputControls=skipped"
-        + " ScrollStop="
+        + ": native view input reset. ScrollStop="
         + (stoppedScrolling ? "true" : "false")
         + " KillKeyboardScrolling="
         + (killedKeyboardScrolling ? "true" : "false")
@@ -636,12 +703,6 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
         + (remainingControl ? FormatWindowID(remainingControl->GetID()) : "none"));
 
     view3D->Release();
-}
-
-// Stops the delayed Escape key used to clear a native view tool.
-void KillNativeToolClearEscTimer()
-{
-    g_TimerManager.Stop(RuntimeTimer::NativeToolClearEsc);
 }
 
 // Stops the pending 3D-view focus restoration timer.
@@ -672,56 +733,6 @@ void ScheduleView3DFocusRestore(bool requireModern, const char* context)
 void ScheduleModernCameraFocusRestore()
 {
     ScheduleView3DFocusRestore(true, "Modern camera focus restore");
-}
-
-// Sends and logs a synthetic virtual-key press and release.
-bool SendVirtualKeyTap(WORD virtualKey, const char* label)
-{
-    INPUT inputs[2]{};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = virtualKey;
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = virtualKey;
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-
-    const UINT sent = SendInput(2, inputs, sizeof(INPUT));
-    Logger::GetInstance().WriteLine(
-        sent == 2 ? LogLevel::Info : LogLevel::Warning,
-        std::string("Native view input clear: ")
-        + (label ? label : "key")
-        + " tap "
-        + (sent == 2 ? "sent." : "failed.")
-        + " Sent:" + std::to_string(sent));
-    return sent == 2;
-}
-
-// Delays the Escape key that finishes clearing the native view tool.
-void ScheduleNativeToolClearEsc()
-{
-    KillNativeToolClearEscTimer();
-    if (!g_TimerManager.Start(
-        RuntimeTimer::NativeToolClearEsc,
-        kNativeToolClearEscDelayMs,
-        NativeToolClearEscTimerProc)) {
-        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start native tool clear Esc timer.");
-    }
-}
-
-// Switches to the query tool, then clears it with Escape.
-void ClearNativeToolWithQueryThenEsc()
-{
-    Logger::GetInstance().WriteLine(LogLevel::Info, "Native view input clear: activating query tool before Esc clear.");
-    FocusView3DForNativeInput("Native view input clear");
-    if (SendVirtualKeyTap(VK_OEM_2, "query tool slash")) {
-        ScheduleNativeToolClearEsc();
-    }
-    else {
-        ScheduleView3DFocusRestore(
-            g_IsModernCamEnabled,
-            g_IsModernCamEnabled
-            ? "Modern camera native tool clear focus restore"
-            : "Classic camera native tool clear focus restore");
-    }
 }
 
 // Returns whether a hit-test candidate is more specific than container windows.
@@ -806,11 +817,13 @@ NativeWheelHitTest HitTestNativeWheelTarget(int32_t parentX, int32_t parentY)
     result.overView3D = result.targetIsView3D
         || result.targetIsView3DSurface
         || (!targetWindow && result.insideView3DRect);
-    result.targetDescription = DescribeGZWindow(targetWindow);
-    result.globalTargetDescription = DescribeGZWindow(globalTarget);
-    result.mainTargetDescription = DescribeGZWindow(mainTarget);
-    result.parentTargetDescription = DescribeGZWindow(parentTarget);
-    result.viewDescription = DescribeGZWindow(viewWindow);
+    if (Logger::GetInstance().IsEnabled(LogLevel::Verbose)) {
+        result.targetDescription = DescribeGZWindow(targetWindow);
+        result.globalTargetDescription = DescribeGZWindow(globalTarget);
+        result.mainTargetDescription = DescribeGZWindow(mainTarget);
+        result.parentTargetDescription = DescribeGZWindow(parentTarget);
+        result.viewDescription = DescribeGZWindow(viewWindow);
+    }
 
     view3D->Release();
     return result;
@@ -848,15 +861,6 @@ void KillRedrawTimers()
 {
     KillIdleTimer();
     KillPeriodicRedrawTimer();
-}
-
-// Stops the shared timer that continues held keyboard pan and Q/E rotation.
-void KillKeyboardPanTimer()
-{
-    if (g_TimerManager.IsActive(RuntimeTimer::KeyboardPan)) {
-        g_TimerManager.Stop(RuntimeTimer::KeyboardPan);
-        Logger::GetInstance().WriteLine(LogLevel::Verbose, "Keyboard input timer stopped.");
-    }
 }
 
 // Returns whether the key can be tracked by the shared key-state manager.
@@ -1083,31 +1087,6 @@ void ClearTrackedKeyStates(const char* reason)
         + (reason ? reason : "unknown"));
 }
 
-// Starts the shared periodic update while keyboard pan or Q/E rotation remains held.
-void StartKeyboardPanTimer()
-{
-    if (g_TimerManager.IsActive(RuntimeTimer::KeyboardPan)) {
-        return;
-    }
-
-    if (!g_TimerManager.Start(RuntimeTimer::KeyboardPan, kKeyboardPanTickMs, KeyboardPanTimerProc)) {
-        Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the keyboard input timer.");
-    }
-    else {
-        Logger::GetInstance().WriteLine(
-            LogLevel::Verbose,
-            "Keyboard input timer started. TickMs:" + std::to_string(kKeyboardPanTickMs));
-    }
-}
-
-// Stops the shared keyboard-input timer after both pan and Q/E rotation are idle.
-void StopKeyboardInputTimerIfIdle()
-{
-    if (!HasHeldKeyboardPanKey() && !HasHeldKeyboardRotationKey()) {
-        KillKeyboardPanTimer();
-    }
-}
-
 // Starts redraw updates for High or Extreme redraw aggression.
 void StartPeriodicRedrawTimer()
 {
@@ -1129,11 +1108,11 @@ void StartPeriodicRedrawTimer()
         return;
     }
 
-    Logger::GetInstance().WriteLine(
-        LogLevel::Info,
-        "Starting periodic redraw timer: aggression="
-        + std::string(GetRedrawAggressionName())
-        + " delayMs=" + std::to_string(delayMs));
+    Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+        return "Starting periodic redraw timer: aggression="
+            + std::string(GetRedrawAggressionName())
+            + " delayMs=" + std::to_string(delayMs);
+    });
     if (!g_TimerManager.Start(RuntimeTimer::PeriodicRedraw, delayMs, PeriodicRedrawTimerProc)) {
         Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the periodic redraw timer.");
     }
@@ -1155,11 +1134,11 @@ void StartIdleTimer(UINT delayMs)
         delayMs = std::max<UINT>(25, delayMs / 20);
     }
 
-    Logger::GetInstance().WriteLine(
-        LogLevel::Info,
-        "Starting idle redraw timer: aggression="
-        + std::string(GetRedrawAggressionName())
-        + " delayMs=" + std::to_string(delayMs));
+    Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+        return "Starting idle redraw timer: aggression="
+            + std::string(GetRedrawAggressionName())
+            + " delayMs=" + std::to_string(delayMs);
+    });
     if (!g_TimerManager.Start(RuntimeTimer::IdleRedraw, delayMs, RedrawTimerProc)) {
         Logger::GetInstance().WriteLine(LogLevel::Warning, "Failed to start the redraw timer.");
     }
@@ -1185,21 +1164,80 @@ void SetRotationCursorVisible(bool visible)
     g_RotationCursorHidden = hidden;
 }
 
+/// <summary>
+/// Applies the mouse rotation accumulated since the previous camera frame.
+/// </summary>
+void ApplyPendingMouseRotation()
+{
+    if (g_PendingMouseYawDelta == 0.0f && g_PendingMousePitchDelta == 0.0f) {
+        return;
+    }
+
+    const float yawDelta = g_PendingMouseYawDelta;
+    const float pitchDelta = g_PendingMousePitchDelta;
+    g_PendingMouseYawDelta = 0.0f;
+    g_PendingMousePitchDelta = 0.0f;
+    g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
+}
+
+/// <summary>
+/// Moves the hidden cursor back to the view center before it can stop at a screen edge.
+/// </summary>
+/// <param name="window">Canvas window whose client coordinates the cursor position uses.</param>
+void RecenterRotationCursor(HWND window)
+{
+    RECT client{};
+    if (!GetClientRect(window, &client)) {
+        return;
+    }
+
+    const POINT center = { (client.left + client.right) / 2, (client.top + client.bottom) / 2 };
+    const int limitX = (client.right - client.left) / kRotationCursorRecenterDivisor;
+    const int limitY = (client.bottom - client.top) / kRotationCursorRecenterDivisor;
+    if (std::abs(g_LastMousePos.x - center.x) <= limitX && std::abs(g_LastMousePos.y - center.y) <= limitY) {
+        return;
+    }
+
+    POINT screenCenter = center;
+    if (ClientToScreen(window, &screenCenter) && SetCursorPos(screenCenter.x, screenCenter.y)) {
+        // The move this generates arrives with a zero delta from the new position.
+        g_LastMousePos = center;
+        g_RotationCursorWarped = true;
+    }
+}
+
 // Ends middle-mouse rotation, releases capture, and optionally schedules redraw.
 void StopMiddleMouseRotation(const char* reason, bool scheduleRedraw)
 {
     const bool wasActive = IsMiddleMouseRotationActive();
-    if (g_CapturedMouseWindow != NULL && GetCapture() == g_CapturedMouseWindow) {
-        ReleaseCapture();
-    }
+    const HWND capturedWindow = g_CapturedMouseWindow;
+    const bool ownsCapture = capturedWindow != NULL && GetCapture() == capturedWindow;
 
+    // ReleaseCapture re-enters the canvas filter with WM_CAPTURECHANGED, which must
+    // see the gesture as already finished.
     ClearMiddleMouseRotationClaim();
     g_CapturedMouseWindow = NULL;
+    if (ownsCapture && scheduleRedraw && g_RotationCursorWarped) {
+        POINT screenOrigin = g_RotationCursorOrigin;
+        if (ClientToScreen(capturedWindow, &screenOrigin)) {
+            SetCursorPos(screenOrigin.x, screenOrigin.y);
+        }
+    }
+    g_RotationCursorWarped = false;
+    if (ownsCapture) {
+        ReleaseCapture();
+    }
     SetRotationCursorVisible(true);
 
     if (!wasActive) {
         return;
     }
+
+    if (scheduleRedraw) {
+        ApplyPendingMouseRotation();
+    }
+    g_PendingMouseYawDelta = 0.0f;
+    g_PendingMousePitchDelta = 0.0f;
 
     if (!g_KeyboardRotationGestureActive) {
         g_CameraController.EndRotationGesture();
@@ -1247,21 +1285,6 @@ void StartCameraBookmarkConfirmationTimer()
         ClearCameraBookmarkConfirmationTimerProc);
 }
 
-// Sends the delayed Escape input that completes native-tool clearing.
-VOID CALLBACK NativeToolClearEscTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
-{
-    if (g_TimerManager.IsCurrent(RuntimeTimer::NativeToolClearEsc, idEvent)) {
-        KillNativeToolClearEscTimer();
-        FocusView3DForNativeInput("Native view input clear Esc");
-        SendVirtualKeyTap(VK_ESCAPE, "Esc");
-        ScheduleView3DFocusRestore(
-            g_IsModernCamEnabled,
-            g_IsModernCamEnabled
-            ? "Modern camera native tool clear focus restore"
-            : "Classic camera native tool clear focus restore");
-    }
-}
-
 // Returns focus to the 3D view when the scheduled restoration fires.
 VOID CALLBACK ModernCameraFocusRestoreTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
 {
@@ -1281,7 +1304,7 @@ void TriggerCityRedraw() {
         return;
     }
 
-    log.WriteLine(LogLevel::Info, "Executing forced redraw.");
+    log.WriteLine(LogLevel::Verbose, "Executing forced redraw.");
 
     if (!g_CameraController.ForceFullRedraw()) {
         log.WriteLine(LogLevel::Warning, "ForceFullRedraw() failed.");
@@ -1596,7 +1619,6 @@ void ResetInputState(bool resetCamera = true)
     ClearTrackedKeyStates("input reset");
     KillCameraDumpConfirmationTimer();
 	KillCameraBookmarkConfirmationTimer();
-    KillNativeToolClearEscTimer();
     KillModernCameraFocusRestoreTimer();
     g_CameraController.ClearCameraDumpConfirmation();
 	g_CameraController.ClearCameraBookmarkConfirmation();
@@ -1618,7 +1640,6 @@ void ResetCameraToNativeView()
     ClearTrackedKeyStates("camera reset");
     KillCameraDumpConfirmationTimer();
 	KillCameraBookmarkConfirmationTimer();
-    KillNativeToolClearEscTimer();
     KillModernCameraFocusRestoreTimer();
 
     if (g_CameraController.IsSavePreviewNormalizationActive()) {
@@ -1657,7 +1678,6 @@ void ApplyModernCameraEnabled(bool enabled)
             ResetCameraToNativeView();
         }
         ClearNativeView3DToolState(View3DToolClearReason::ClassicCameraEnabled);
-        ClearNativeToolWithQueryThenEsc();
         ScheduleView3DFocusRestore(false, "Classic camera enabled focus restore");
         Logger::GetInstance().WriteLine(
             LogLevel::Info,
@@ -1670,7 +1690,6 @@ void ApplyModernCameraEnabled(bool enabled)
         InstallKeyboardHook();
         g_CameraController.EnsureTargetNearCityCenterIfOutOfBounds("modern camera enabled");
         ClearNativeView3DToolState(View3DToolClearReason::ModernCameraEnabled);
-        ClearNativeToolWithQueryThenEsc();
         ScheduleModernCameraFocusRestore();
         TriggerCityRedraw();
         StartPeriodicRedrawTimer();
@@ -1701,7 +1720,6 @@ void ApplyInputSettingsChange()
     ClearTrackedKeyStates("input settings changed");
     if (g_IsModernCamEnabled) {
         ClearNativeView3DToolState(View3DToolClearReason::WASDMovementChanged);
-        ClearNativeToolWithQueryThenEsc();
         FocusView3DForNativeInput("Input settings changed focus handoff");
         ScheduleModernCameraFocusRestore();
     }
@@ -1761,12 +1779,13 @@ bool IsManualCameraDumpHotkey(WPARAM key)
         && IsVirtualKeyDown(VK_MENU);
 }
 
-// Returns whether a native command-shortcut modifier is currently held.
+// Returns whether a native command-shortcut modifier is currently held. Windows
+// sees a held Alt, but an Alt owned by the classic-angle hold is a camera action.
 bool IsCommandShortcutModifierDown()
 {
     RefreshTrackedModifierStates();
     return IsVirtualKeyDown(VK_CONTROL)
-        || IsVirtualKeyDown(VK_MENU)
+        || (IsVirtualKeyDown(VK_MENU) && !HasOwnedClassicAngleKey())
         || IsVirtualKeyDown(VK_LWIN)
         || IsVirtualKeyDown(VK_RWIN);
 }
@@ -1774,16 +1793,16 @@ bool IsCommandShortcutModifierDown()
 // Logs movement-key pass-through while a native shortcut modifier is held.
 void LogKeyboardShortcutPassThrough(WPARAM key, const char* source)
 {
-    Logger::GetInstance().WriteLine(
-        LogLevel::Verbose,
-        std::string("Keyboard movement pass-through: command shortcut modifier is down. Source:")
-        + (source ? source : "unknown")
-        + " Key:" + FormatVirtualKey(key)
-        + " Ctrl:" + (IsVirtualKeyDown(VK_CONTROL) ? "true" : "false")
-        + " Shift:" + (IsVirtualKeyDown(VK_SHIFT) ? "true" : "false")
-        + " Alt:" + (IsVirtualKeyDown(VK_MENU) ? "true" : "false")
-        + " LWin:" + (IsVirtualKeyDown(VK_LWIN) ? "true" : "false")
-        + " RWin:" + (IsVirtualKeyDown(VK_RWIN) ? "true" : "false"));
+    Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+        return std::string("Keyboard movement pass-through: command shortcut modifier is down. Source:")
+            + (source ? source : "unknown")
+            + " Key:" + FormatVirtualKey(key)
+            + " Ctrl:" + (IsVirtualKeyDown(VK_CONTROL) ? "true" : "false")
+            + " Shift:" + (IsVirtualKeyDown(VK_SHIFT) ? "true" : "false")
+            + " Alt:" + (IsVirtualKeyDown(VK_MENU) ? "true" : "false")
+            + " LWin:" + (IsVirtualKeyDown(VK_LWIN) ? "true" : "false")
+            + " RWin:" + (IsVirtualKeyDown(VK_RWIN) ? "true" : "false");
+    });
 }
 
 // Returns whether a GZ window implements the text-edit interface.
@@ -1875,19 +1894,19 @@ bool IsCameraKeyboardFocus()
     }
     if (IsModernCameraWindowID(focusedID)) {
         if (g_WindowManager.HasVisibleWindow()) {
-            Logger::GetInstance().WriteLine(
-                LogLevel::Verbose,
-                "Keyboard capture pass-through: focused window is an open Modern Camera UI control. Focus:{"
-                + DescribeGZWindow(focusedWindow)
-                + "}");
+            Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+                return "Keyboard capture pass-through: focused window is an open Modern Camera UI control. Focus:{"
+                    + DescribeGZWindow(focusedWindow)
+                    + "}";
+            });
             return false;
         }
 
-        Logger::GetInstance().WriteLine(
-            LogLevel::Verbose,
-            "Keyboard focus recovery: focused window is a stale Modern Camera UI control. Focus:{"
-            + DescribeGZWindow(focusedWindow)
-            + "}");
+        Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+            return "Keyboard focus recovery: focused window is a stale Modern Camera UI control. Focus:{"
+                + DescribeGZWindow(focusedWindow)
+                + "}";
+        });
         return FocusView3DForNativeInput("Keyboard stale Modern Camera UI focus recovery");
     }
 
@@ -1908,11 +1927,11 @@ bool IsCameraKeyboardFocus()
     }
 
     if (!cameraFocus) {
-        Logger::GetInstance().WriteLine(
-            LogLevel::Verbose,
-            "Keyboard capture pass-through: focused window is not the 3D view. Focus:{"
-            + DescribeGZWindow(focusedWindow)
-            + "}");
+        Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+            return "Keyboard capture pass-through: focused window is not the 3D view. Focus:{"
+                + DescribeGZWindow(focusedWindow)
+                + "}";
+        });
     }
 
 	return cameraFocus;
@@ -2162,8 +2181,8 @@ bool ShouldCaptureHeldKeyboardRotation()
         && HasHeldKeyboardRotationKey();
 }
 
-// Applies one shared-timer Q/E yaw update to the Modern Camera controller.
-bool ApplyKeyboardRotation(const char* source)
+// Applies one frame of Q/E yaw to the Modern Camera controller.
+bool ApplyKeyboardRotation(const char* source, float elapsedSeconds)
 {
     const float direction = (IsKeyboardRotationKeyDown('Q') ? 1.0f : 0.0f)
         - (IsKeyboardRotationKeyDown('E') ? 1.0f : 0.0f);
@@ -2173,7 +2192,7 @@ bool ApplyKeyboardRotation(const char* source)
 
     const float yawDelta = direction
         * kKeyboardRotationRadiansPerSecond
-        * (static_cast<float>(kKeyboardPanTickMs) / 1000.0f)
+        * elapsedSeconds
         * g_Settings.rotationSensitivity;
     const bool applied = g_CameraController.ApplyDelta(0.0f, yawDelta, true);
     Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
@@ -2214,7 +2233,12 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
     const float speedMultiplier = IsVirtualKeyDown(VK_SHIFT)
         ? kKeyboardPanBoostMultiplier
         : 1.0f;
-    const float scrollSpeed = kKeyboardPanNativeSpeed * speedMultiplier * g_Settings.panSensitivity;
+    // Native speed follows the zoom stage alone, so without this the on-screen speed
+    // would rise with magnification across a stage, then drop at the next stage.
+    const float scrollSpeed = kKeyboardPanNativeSpeed
+        * speedMultiplier
+        * g_Settings.panSensitivity
+        * g_CameraController.GetPanSpeedZoomScale();
 
     g_IsApplyingKeyboardPan = true;
     const bool nativeScrollResult = view3D->SetScrolling(true, directionAngle, scrollSpeed);
@@ -2239,9 +2263,8 @@ void StopHeldKeyboardPan()
 {
     const bool hadHeldKey = HasOwnedKeyboardPanKey();
     ClearHeldKeyboardPanKeys();
-    StopKeyboardInputTimerIfIdle();
     if (hadHeldKey) {
-        ApplyKeyboardPan("keyboard capture stopped", LogLevel::Info);
+        ApplyKeyboardPan("keyboard capture stopped", LogLevel::Verbose);
     }
 }
 
@@ -2250,7 +2273,6 @@ void StopHeldKeyboardRotation(const char* reason)
 {
     const bool hadHeldKey = HasOwnedKeyboardRotationKey();
     ClearHeldKeyboardRotationKeys();
-    StopKeyboardInputTimerIfIdle();
     if (g_KeyboardRotationGestureActive) {
         g_KeyboardRotationGestureActive = false;
         if (!IsMiddleMouseRotationActive()) {
@@ -2265,14 +2287,16 @@ void StopHeldKeyboardRotation(const char* reason)
     }
 }
 
-// Releases the Alt-key classic-angle hold and restores Modern Camera angles.
+// Releases the Alt-key classic-angle hold and returns to the saved Modern view at once.
+// Frames may not run after this, because the callers are losing focus or changing state.
 void StopClassicAngleHold(const char* source)
 {
     const bool hadHeldKey = HasOwnedClassicAngleKey();
     ClearClassicAngleKeys();
     if (hadHeldKey) {
-        g_CameraController.EndClassicAngleHold(source ? source : "classic angle hold stopped");
+        g_CameraController.EndClassicAngleHold(source ? source : "classic angle hold stopped", false);
     }
+    g_CameraController.FinishClassicAngleTransition();
 }
 
 // Updates movement-key ownership and applies the resulting camera motion.
@@ -2311,13 +2335,7 @@ void HandleKeyboardPanKeyState(WPARAM key, bool pressed)
             + " WasActive:" + (wasActive ? "true" : "false")
             + " IsActive:" + (isActive ? "true" : "false")
             + " AnyHeld:" + (HasHeldKeyboardPanKey() ? "true" : "false"));
-        ApplyKeyboardPan("keyboard key capture", LogLevel::Info);
-        if (HasHeldKeyboardPanKey()) {
-            StartKeyboardPanTimer();
-        }
-        else {
-            StopKeyboardInputTimerIfIdle();
-        }
+        ApplyKeyboardPan("keyboard key capture", LogLevel::Verbose);
     }
 
     if (!pressed) {
@@ -2361,7 +2379,6 @@ void HandleKeyboardRotationKeyState(WPARAM key, bool pressed)
         if (!g_KeyboardRotationGestureActive) {
             g_KeyboardRotationGestureActive = g_CameraController.BeginRotationGesture();
         }
-        StartKeyboardPanTimer();
     }
 
     if (!pressed) {
@@ -2372,7 +2389,6 @@ void HandleKeyboardRotationKeyState(WPARAM key, bool pressed)
                 g_CameraController.EndRotationGesture();
             }
         }
-        StopKeyboardInputTimerIfIdle();
     }
 }
 
@@ -2404,10 +2420,17 @@ void HandleClassicAngleKeyState(WPARAM key, bool pressed)
     if (!wasActive && isActive) {
         StopHeldKeyboardPan();
         StopHeldKeyboardRotation("Alt key pressed");
+        // A Q or E held through the press keeps auto-repeating. Owning it as a finished
+        // step stops the next repeat from turning the camera a quarter turn on its own.
+        for (const WPARAM rotationKey : kKeyboardRotationKeys) {
+            if (IsTrackedKeyDown(static_cast<int>(rotationKey))) {
+                ClaimKey(rotationKey, KeyOwner::ModernCameraClassicRotation);
+            }
+        }
         g_CameraController.BeginClassicAngleHold("Alt key pressed");
     }
     else if (wasActive && !isActive) {
-        g_CameraController.EndClassicAngleHold("Alt key released");
+        g_CameraController.EndClassicAngleHold("Alt key released", true);
     }
 
     if (!pressed) {
@@ -2494,8 +2517,14 @@ void UninstallKeyboardHook()
     g_KeyboardHook = NULL;
 }
 
-// Observes global keyboard input and captures eligible camera controls.
-LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+/// <summary>
+/// Observes one low-level keyboard event and captures eligible camera controls.
+/// </summary>
+/// <param name="nCode">Hook code supplied by Windows.</param>
+/// <param name="wParam">Keyboard message identifier.</param>
+/// <param name="lParam">Pointer to the low-level keyboard event.</param>
+/// <returns>1 to consume the key; otherwise the result of the next hook.</returns>
+LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION) {
         const KBDLLHOOKSTRUCT* keyboard = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
@@ -2544,18 +2573,18 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
 
+                // Alt continues to Windows so Alt+Tab and Alt+F4 keep working; hiding it
+                // here would turn those chords into plain Tab and F4. The canvas filter
+                // consumes the resulting messages so a plain Alt press does nothing else.
                 if (IsClassicAngleVirtualKey(keyboard->vkCode)) {
                     const bool cameraFocus = IsCameraKeyboardFocus();
                     if (ShouldCaptureClassicAngleKeyInFocus(keyboard->vkCode, cameraFocus)) {
                         HandleClassicAngleKeyState(keyboard->vkCode, isKeyDown);
-                        return 1;
                     }
-                    if (isKeyUp && HasOwnedClassicAngleKey()) {
+                    else if (isKeyUp && HasOwnedClassicAngleKey()) {
                         HandleClassicAngleKeyState(keyboard->vkCode, false);
-                        if (cameraFocus) {
-                            return 1;
-                        }
                     }
+                    return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
             }
         }
@@ -2624,6 +2653,18 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
 }
 
+// Observes global keyboard input and captures eligible camera controls.
+LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT result = 0;
+    bool completed = false;
+    RunGuardedNativeCallback("Keyboard hook", [&]() {
+        result = HandleKeyboardHookEvent(nCode, wParam, lParam);
+        completed = true;
+    });
+    return completed ? result : CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
+}
+
 // Verifies that the running SimCity 4 build is supported.
 bool CheckGameVersion()
 {
@@ -2643,7 +2684,7 @@ bool CheckGameVersion()
     return supportedVersion;
 }
 
-// Subscribes the director to city lifecycle and pre-save notifications.
+// Subscribes the director to city lifecycle and save notifications.
 bool RegisterNotifications(cIGZMessageTarget2* target)
 {
     cIGZMessageServer2Ptr pMsgServ;
@@ -2651,8 +2692,9 @@ bool RegisterNotifications(cIGZMessageTarget2* target)
         const bool addedPostCityInit = pMsgServ->AddNotification(target, kSC4MessagePostCityInit);
         const bool addedPreCityShutdown = pMsgServ->AddNotification(target, kSC4MessagePreCityShutdown);
         const bool addedPreSave = pMsgServ->AddNotification(target, kSC4MessagePreSave);
+        const bool addedPostSave = pMsgServ->AddNotification(target, kSC4MessagePostSave);
 
-        return addedPostCityInit && addedPreCityShutdown && addedPreSave;
+        return addedPostCityInit && addedPreCityShutdown && addedPreSave && addedPostSave;
     }
 
     return false;
@@ -2684,24 +2726,64 @@ VOID CALLBACK PeriodicRedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DW
     }
 }
 
-// Continues held keyboard pan and Q/E rotation while their capture conditions hold.
-VOID CALLBACK KeyboardPanTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    if (g_TimerManager.IsCurrent(RuntimeTimer::KeyboardPan, idEvent)) {
+/// <summary>
+/// Runs one camera frame: applies held input and accumulated mouse rotation, then
+/// completes the requested native updates. Running this once before the draw system
+/// limits a frame to one render-grid rebuild however many input messages arrived.
+/// </summary>
+void RunCameraFrame()
+{
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = (std::min)(
+        std::chrono::duration<float>(now - g_LastCameraFrameTime).count(),
+        kMaximumCameraFrameSeconds);
+    g_LastCameraFrameTime = now;
+
+    if (!g_IsCityLoaded) {
+        return;
+    }
+
+    // Waiting for this frame guarantees the save has finished, and a save-and-exit
+    // that reaches city shutdown first keeps the native tables.
+    if (g_SavePreviewRestorePending) {
+        g_SavePreviewRestorePending = false;
+        g_CameraController.EndSavePreviewNormalization();
+    }
+
+    if (g_IsModernCamEnabled) {
         if (HasHeldKeyboardPanKey() && ShouldCaptureHeldKeyboardPan()) {
-            ApplyKeyboardPan("held keyboard movement tick", LogLevel::Verbose);
+            ApplyKeyboardPan("held keyboard movement frame", LogLevel::Verbose);
         }
         else if (HasOwnedKeyboardPanKey()) {
             StopHeldKeyboardPan();
         }
 
-        if (HasHeldKeyboardRotationKey() && ShouldCaptureHeldKeyboardRotation()) {
-            ApplyKeyboardRotation("held Q/E rotation tick");
-        }
-        else if (HasOwnedKeyboardRotationKey()) {
-            StopHeldKeyboardRotation("held Q/E capture interrupted");
+        // Rotation waits while the camera holds the native angles for a save. An Alt+Q/E
+        // classic step also owns its key, but it is one step and has nothing to continue.
+        if (!g_CameraController.IsSavePreviewNormalizationActive()) {
+            if (HasHeldKeyboardRotationKey() && ShouldCaptureHeldKeyboardRotation()) {
+                ApplyKeyboardRotation("held Q/E rotation frame", elapsedSeconds);
+            }
+            else if (g_KeyStateManager.AnyOwnedBy(kKeyboardRotationKeys, KeyOwner::ModernCameraRotation)) {
+                StopHeldKeyboardRotation("held Q/E capture interrupted");
+            }
+
+            ApplyPendingMouseRotation();
+            g_CameraController.AdvanceClassicAngleTransition(elapsedSeconds);
         }
 
-        StopKeyboardInputTimerIfIdle();
+        if (g_CameraBookmarks.ConsumeWriteFailure()) {
+            ShowCameraBookmarkNotice(CameraBookmarkNotice::StorageFailed, 0);
+        }
+    }
+
+    g_CameraController.FlushPendingViewUpdates();
+}
+
+// Runs camera frames from a timer when the framework tick is unavailable.
+VOID CALLBACK CameraFrameFallbackTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    if (g_TimerManager.IsCurrent(RuntimeTimer::CameraFrameFallback, idEvent)) {
+        RunGuardedNativeCallback("Camera frame timer", RunCameraFrame);
     }
 }
 
@@ -2796,6 +2878,18 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         ClearTrackedKeyStates("application deactivated");
         return 0;
     }
+    if (uMsg == WM_CAPTURECHANGED) {
+        // SC4 drops the capture when a left or right button comes up, even with the
+        // middle button held, so the next move takes it back. If another window took
+        // the mouse or the button is up, the release may never reach this filter.
+        const HWND newCapture = reinterpret_cast<HWND>(lParam);
+        if (IsMiddleMouseRotationActive()
+            && newCapture != g_CapturedMouseWindow
+            && (newCapture != NULL || !IsPhysicalKeyDown(VK_MBUTTON))) {
+            StopMiddleMouseRotation("mouse capture lost", true);
+        }
+        return 0;
+    }
 
     if (RouteMouseInputToVisiblePluginWindow(hWnd, uMsg, wParam, lParam, handled)) {
         return 0;
@@ -2844,7 +2938,16 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     if (isKeyboardInputMessage && IsClassicAngleVirtualKey(wParam)) {
         const bool cameraFocus = IsCameraKeyboardFocus();
         if (ShouldCaptureClassicAngleKeyInFocus(wParam, cameraFocus)) {
-            HandleClassicAngleKeyState(wParam, uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN);
+            // The low-level hook normally owns the hold, and consuming this message is
+            // what stops the default window procedure from opening the system menu. The
+            // hold is only managed here if the hook is gone: Windows removes a hook
+            // silently after repeated timeouts.
+            const bool pressed = uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN;
+            const bool hookMissedPress = pressed && !HasOwnedClassicAngleKey() && IsPhysicalKeyDown(VK_MENU);
+            const bool heldWithoutHook = !pressed && IsKeyOwnedBy(wParam, KeyOwner::ModernCameraClassicAngle);
+            if (hookMissedPress || heldWithoutHook) {
+                HandleClassicAngleKeyState(wParam, pressed);
+            }
             handled = true;
             return 0;
         }
@@ -2977,9 +3080,13 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             break;
         }
         g_LastMousePos = MakePointFromLParam(lParam);
+        g_RotationCursorOrigin = g_LastMousePos;
+        g_RotationCursorWarped = false;
+        g_PendingMouseYawDelta = 0.0f;
+        g_PendingMousePitchDelta = 0.0f;
         const bool beganRotation = g_CameraController.BeginRotationGesture();
-        SetCapture(hWnd);
         g_CapturedMouseWindow = hWnd;
+        SetCapture(hWnd);
         SetRotationCursorVisible(false);
         KillRedrawTimers();
         log.WriteLine(
@@ -3002,6 +3109,15 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     }
     case WM_MOUSEMOVE: {
         if (g_IsModernCamEnabled && IsMiddleMouseRotationActive()) {
+            // The release was missed if the button is already up on this move.
+            if ((wParam & MK_MBUTTON) == 0 && !IsPhysicalKeyDown(VK_MBUTTON)) {
+                StopMiddleMouseRotation("middle mouse release not observed", true);
+                break;
+            }
+            if (GetCapture() != g_CapturedMouseWindow) {
+                SetCapture(g_CapturedMouseWindow);
+            }
+
             const POINT mousePos = MakePointFromLParam(lParam);
             const int deltaX = mousePos.x - g_LastMousePos.x;
             const int deltaY = mousePos.y - g_LastMousePos.y;
@@ -3017,9 +3133,14 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 pitchDelta = -pitchDelta;
             }
 
-            g_CameraController.ApplyDelta(pitchDelta, yawDelta, true);
+            // Applied on the next camera frame. A rotation step can rebuild the whole
+            // render grid, and handling each move here could keep the message drain
+            // busy long enough to starve drawing.
+            g_PendingMouseYawDelta += yawDelta;
+            g_PendingMousePitchDelta += pitchDelta;
 
             g_LastMousePos = mousePos;
+            RecenterRotationCursor(hWnd);
             handled = true;
             return 0;
         }
@@ -3031,7 +3152,9 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
 
         short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-        log.WriteLine(LogLevel::Verbose, "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")");
+        log.WriteLineLazy(LogLevel::Verbose, [&]() {
+            return "Canvas WinProc Filter: WM_MOUSEWHEEL (Delta: " + std::to_string(zDelta) + ")";
+        });
 
         POINT cursor = MakePointFromLParam(lParam);
         if (!hWnd) {
@@ -3042,32 +3165,37 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         }
         else {
             NativeWheelHitTest hitTest = HitTestNativeWheelTarget(cursor.x, cursor.y);
-            log.WriteLine(
-                LogLevel::Info,
-                std::string("Mouse wheel hit-test: X:") + std::to_string(cursor.x)
-                + " Y:" + std::to_string(cursor.y)
-                + " Resolved:" + (hitTest.resolved ? "true" : "false")
-                + " OverView3D:" + (hitTest.overView3D ? "true" : "false")
-                + " TargetIsView3D:" + (hitTest.targetIsView3D ? "true" : "false")
-                + " TargetIsView3DSurface:" + (hitTest.targetIsView3DSurface ? "true" : "false")
-                + " InsideView3DRect:" + (hitTest.insideView3DRect ? "true" : "false")
-                + " TargetSource:" + hitTest.targetSource
-                + " Target:{" + hitTest.targetDescription + "}"
-                + " GlobalTarget:{" + hitTest.globalTargetDescription + "}"
-                + " MainTarget:{" + hitTest.mainTargetDescription + "}"
-                + " ParentTarget:{" + hitTest.parentTargetDescription + "}"
-                + " View3D:{" + hitTest.viewDescription + "}");
+            log.WriteLineLazy(LogLevel::Verbose, [&]() {
+                return std::string("Mouse wheel hit-test: X:") + std::to_string(cursor.x)
+                    + " Y:" + std::to_string(cursor.y)
+                    + " Resolved:" + (hitTest.resolved ? "true" : "false")
+                    + " OverView3D:" + (hitTest.overView3D ? "true" : "false")
+                    + " TargetIsView3D:" + (hitTest.targetIsView3D ? "true" : "false")
+                    + " TargetIsView3DSurface:" + (hitTest.targetIsView3DSurface ? "true" : "false")
+                    + " InsideView3DRect:" + (hitTest.insideView3DRect ? "true" : "false")
+                    + " TargetSource:" + hitTest.targetSource
+                    + " Target:{" + hitTest.targetDescription + "}"
+                    + " GlobalTarget:{" + hitTest.globalTargetDescription + "}"
+                    + " MainTarget:{" + hitTest.mainTargetDescription + "}"
+                    + " ParentTarget:{" + hitTest.parentTargetDescription + "}"
+                    + " View3D:{" + hitTest.viewDescription + "}";
+            });
 
             if (hitTest.resolved && !hitTest.overView3D) {
-                log.WriteLine(LogLevel::Info, "Mouse wheel hit-test: passing wheel through to native SC4 UI.");
+                log.WriteLine(LogLevel::Verbose, "Mouse wheel hit-test: passing wheel through to native SC4 UI.");
                 break;
             }
         }
 
+        // Kept fractional: rounding could turn a small high-resolution wheel delta
+        // into zero, which would hand the wheel to SC4's own stepped zoom.
+        // The Alt hold moves between Classic zoom levels, one for each notch of the wheel.
         bool zoomChanged = false;
-        const int32_t adjustedZoomDelta = static_cast<int32_t>(
-            std::lround(static_cast<float>(zDelta) * g_Settings.zoomSensitivity));
-        if (g_CameraController.ZoomByWheel(adjustedZoomDelta, zoomChanged)) {
+        const float adjustedZoomDelta = static_cast<float>(zDelta) * g_Settings.zoomSensitivity;
+        const bool zoomHandled = g_CameraController.IsClassicAngleHoldActive()
+            ? g_CameraController.StepClassicZoom(static_cast<float>(zDelta) / static_cast<float>(WHEEL_DELTA), zoomChanged)
+            : g_CameraController.ZoomByWheel(adjustedZoomDelta, zoomChanged);
+        if (zoomHandled) {
             if (zoomChanged) {
                 log.WriteLine(LogLevel::Verbose, "Camera zoom changed: scheduling redraw sequence.");
                 StartIdleTimer(kZoomIdleRedrawDelayMs);
@@ -3082,6 +3210,91 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
     return 0;
 }
+
+/// <summary>
+/// Delivers one camera frame per framework tick. The object lives for the whole process
+/// and exists only on the tick list, so it needs no service registration.
+/// </summary>
+class cSC4ModernCameraTickService : public cIGZSystemService
+{
+public:
+    /// <summary>Resolves the service and base COM interfaces.</summary>
+    bool QueryInterface(uint32_t riid, void** ppvObj) override
+    {
+        if (riid == GZIID_cIGZSystemService) {
+            *ppvObj = static_cast<cIGZSystemService*>(this);
+            AddRef();
+            return true;
+        }
+        if (riid == GZIID_cIGZUnknown) {
+            *ppvObj = static_cast<cIGZUnknown*>(this);
+            AddRef();
+            return true;
+        }
+
+        *ppvObj = nullptr;
+        return false;
+    }
+
+    /// <summary>Counts a reference. The static object is never deleted.</summary>
+    uint32_t AddRef() override { return ++m_RefCount; }
+
+    /// <summary>Releases a reference. The static object is never deleted.</summary>
+    uint32_t Release() override { return m_RefCount > 0 ? --m_RefCount : 0; }
+
+    /// <summary>Returns the identifier the tick list uses to detect duplicates.</summary>
+    uint32_t GetServiceID() override { return m_ServiceID; }
+
+    /// <summary>Replaces the service identifier.</summary>
+    cIGZSystemService* SetServiceID(uint32_t serviceID) override
+    {
+        m_ServiceID = serviceID;
+        return this;
+    }
+
+    /// <summary>Returns the service priority.</summary>
+    int32_t GetServicePriority() override { return kCameraTickPriority; }
+
+    /// <summary>Returns the stored running state.</summary>
+    bool IsServiceRunning() override { return m_Running; }
+
+    /// <summary>Stores the running state.</summary>
+    cIGZSystemService* SetServiceRunning(bool running) override
+    {
+        m_Running = running;
+        return this;
+    }
+
+    /// <summary>Requires no framework initialization.</summary>
+    bool Init() override { return true; }
+
+    /// <summary>Requires no framework shutdown.</summary>
+    bool Shutdown() override { return true; }
+
+    /// <summary>Runs one camera frame.</summary>
+    bool OnTick(uint32_t) override
+    {
+        RunGuardedNativeCallback("Camera frame", RunCameraFrame);
+        return true;
+    }
+
+    /// <summary>Does nothing; the camera only moves during active ticks.</summary>
+    bool OnIdle(uint32_t) override { return true; }
+
+    /// <summary>Returns the tick order relative to message delivery and drawing.</summary>
+    int32_t GetServiceTickPriority() override { return kCameraTickPriority; }
+
+private:
+    // Current reference count held by the framework's tick list.
+    uint32_t m_RefCount = 0;
+    // Identifier compared by the framework's tick list.
+    uint32_t m_ServiceID = kCameraTickServiceID;
+    // Running state stored for the service interface.
+    bool m_Running = true;
+};
+
+// Process-lifetime camera frame service.
+cSC4ModernCameraTickService g_CameraTickService;
 
 // Plugin entry point that receives SC4 lifecycle messages and canvas input.
 class cSC4ModernCameraDirector : public cRZMessage2COMDirector, public cIGZWinProcFilterW32
@@ -3123,8 +3336,11 @@ public:
             Logger::GetInstance().Initialize(PluginPaths::GetLogPath().string());
         }
         catch (const std::exception&) {
-            std::filesystem::create_directories("SC4-ModernCamera");
-            Logger::GetInstance().Initialize("SC4-ModernCamera/SC4-ModernCamera.log");
+            RunGuardedNativeCallback("Fallback log setup", []() {
+                std::error_code ignored;
+                std::filesystem::create_directories("SC4-ModernCamera", ignored);
+                Logger::GetInstance().Initialize("SC4-ModernCamera/SC4-ModernCamera.log");
+            });
         }
 
         if (!CheckGameVersion()) {
@@ -3147,8 +3363,15 @@ public:
                 std::string("Failed to initialize settings: ") + exception.what());
         }
 
-        if (!g_CameraBookmarks.Initialize(PluginPaths::GetBookmarksPath())) {
-            Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Bookmarks: failed to initialize persistent storage.");
+        try {
+            if (!g_CameraBookmarks.Initialize(PluginPaths::GetBookmarksPath())) {
+                Logger::GetInstance().WriteLine(LogLevel::Error, "Camera Bookmarks: failed to initialize persistent storage.");
+            }
+        }
+        catch (const std::exception& exception) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Error,
+                std::string("Camera Bookmarks: failed to initialize persistent storage: ") + exception.what());
         }
 
         g_IsModernCamEnabled = g_Settings.cameraMode == CameraMode::Modern;
@@ -3175,6 +3398,13 @@ public:
                 m_FrameworkHookRegistered
                     ? "Registered framework lifecycle hook."
                     : "Failed to register framework lifecycle hook.");
+
+            g_CameraTickRegistered = mpFrameWork->AddToTick(&g_CameraTickService);
+            Logger::GetInstance().WriteLine(
+                g_CameraTickRegistered ? LogLevel::Info : LogLevel::Warning,
+                g_CameraTickRegistered
+                    ? "Registered camera frame tick."
+                    : "Failed to register camera frame tick; using a timer while a city is loaded.");
         }
 
         if (m_FrameworkHookRegistered) {
@@ -3212,6 +3442,10 @@ public:
     {
         Logger& logger = Logger::GetInstance();
         logger.WriteLine(LogLevel::Info, "Framework lifecycle: PreAppShutdown. Draining camera bookmarks and asynchronous logger.");
+        if (g_CameraTickRegistered && mpFrameWork) {
+            mpFrameWork->RemoveFromTick(&g_CameraTickService);
+            g_CameraTickRegistered = false;
+        }
         g_CameraBookmarks.Shutdown();
         logger.Shutdown();
         return true;
@@ -3225,8 +3459,29 @@ public:
         return true;
     }
 
-    // Handles city lifecycle and pre-save notifications from SimCity 4.
+    // Handles city lifecycle and save notifications from SimCity 4.
     bool DoMessage(cIGZMessage2* pMsg) override
+    {
+        RunGuardedNativeCallback("Director message", [&]() { HandleMessage(pMsg); });
+        return true;
+    }
+
+    // Delegates canvas Windows messages to the Modern Camera input router.
+    LRESULT FilterMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled) override
+    {
+        LRESULT result = 0;
+        RunGuardedNativeCallback("Canvas input", [&]() {
+            result = HandleCanvasMouseMessage(hWnd, uMsg, wParam, lParam, handled);
+        });
+        return result;
+    }
+
+private:
+    /// <summary>
+    /// Applies one city lifecycle or save notification.
+    /// </summary>
+    /// <param name="pMsg">Message delivered by the SimCity 4 message server.</param>
+    void HandleMessage(cIGZMessage2* pMsg)
     {
         uint32_t msgType = pMsg->GetType();
 
@@ -3240,7 +3495,14 @@ public:
             g_WindowManager.OnCityLoaded(g_Settings);
             g_IsCityLoaded = true;
             g_IsNativeUIHidden = false;
+            g_SavePreviewRestorePending = false;
             ResetInputState();
+            if (!g_CameraTickRegistered) {
+                g_TimerManager.Start(
+                    RuntimeTimer::CameraFrameFallback,
+                    kCameraFrameFallbackMs,
+                    CameraFrameFallbackTimerProc);
+            }
             InstallMinimizeUIHook();
             RegisterCanvasWinProcFilter();
             if (g_IsModernCamEnabled) {
@@ -3265,29 +3527,26 @@ public:
                 Logger::GetInstance().WriteLine(LogLevel::Warning, "Save Preview: failed to normalize camera at pre-save.");
             }
         }
+        else if (msgType == kSC4MessagePostSave) {
+            // The save preview is finished, but the file is still being written.
+            g_SavePreviewRestorePending = g_IsCityLoaded && g_CameraController.IsSavePreviewNormalizationActive();
+        }
         else if (msgType == kSC4MessagePreCityShutdown) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating input handlers...");
             g_WindowManager.OnCityShutdown();
 			g_CameraBookmarks.DeactivateCity();
+            g_SavePreviewRestorePending = false;
             g_CameraController.AbandonSavePreviewNormalization();
             g_IsCityLoaded = false;
+            g_TimerManager.Stop(RuntimeTimer::CameraFrameFallback);
             UninstallSetScrollingHook();
             UninstallMinimizeUIHook();
             ResetInputState();
             UninstallKeyboardHook();
             UnregisterCanvasWinProcFilter();
         }
-
-        return true;
     }
 
-    // Delegates canvas Windows messages to the Modern Camera input router.
-    LRESULT FilterMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled) override
-    {
-        return HandleCanvasMouseMessage(hWnd, uMsg, wParam, lParam, handled);
-    }
-
-private:
     // Attaches this director as a filter on the Windows canvas procedure.
     void RegisterCanvasWinProcFilter()
     {

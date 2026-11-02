@@ -64,20 +64,37 @@ This produces all desired view types without a forced zoom/pitch curve:
 - Works only in Modern camera mode.
 - Requires city-view keyboard focus and is not captured while Ctrl or either
   Windows key is held.
-- Temporarily snaps the camera to the nearest native Classic pitch, yaw, and
-  discrete rotation while Alt is held.
-- Preserves the current view target, zoom stage, and continuous magnification
-  when the snap starts and when the saved Modern angle is restored.
-- Allows pan, wheel zoom, and M3 horizontal rotation while held. M3 vertical
-  movement is ignored so the Classic downward angle remains fixed.
+- Pressing Alt saves the Modern rotation, yaw, pitch, zoom stage, and magnification, then
+  moves to the nearest native Classic view: the nearest quarter turn, the Classic zoom
+  level closest in on-screen size, and that level's native pitch. Classic zoom levels are
+  stages 0 to 4 at magnification 1, plus stage 4 at magnification 2.
+- Releasing Alt moves back to the exact saved view, whatever was done during the hold.
+- Each move takes 0.3 seconds, starts fast, passes its target slightly, and settles back.
+  A press or release during a move continues from where the camera is, and the saved view
+  stays the one from the first press. Free rotation and zoom input is ignored until a
+  return to Modern arrives.
+- Keeps the focus on the same point of the map throughout. A move only changes the view,
+  so it does not run the native target clamp. Panning during the hold is kept on release.
+- While held, the view stays on Classic angles and zoom levels, so it is not free rotation.
+  Q and E, and each notch of the wheel, make one animated step. An M3 horizontal drag
+  takes the nearest quarter turn to how far the mouse has moved, and M3 vertical movement
+  is ignored.
+- Focus loss, a mode change, and a camera reset return to the saved view at once, because
+  frames may not run afterwards. A save or bookmark first completes any move in progress.
+- Leaves the Alt key visible to Windows, so Alt+Tab, Alt+F4, and other Alt chords
+  keep working. The canvas filter consumes the Alt messages themselves so a plain
+  press does not open the system menu.
 
 ### WASD movement
 
 - Optional in Modern camera mode.
 - Moves the camera forward, back, left, and right while W/A/S/D is held.
-- Uses a timer-driven held-key state, not operating-system key repeat, so movement stops immediately on key release.
+- Uses a frame-driven held-key state, not operating-system key repeat, so movement stops immediately on key release.
 - Shift applies a movement-speed boost.
 - The panning speed setting applies to WASD movement, not right-mouse panning.
+- Keeps a constant on-screen speed while zooming. Native pan speed follows the zoom
+  stage alone, so the speed is divided by magnification. The only remaining step is
+  the native one between stages 2 and 3, about 1.14 times.
 - Uses the same playable-map boundary rules as the other Modern camera movement paths.
 - Does not engage during right-click scrolling.
 - Remains active during M3 camera maneuvering and zoom.
@@ -100,6 +117,10 @@ The initial implementation freezes both known target fields:
 It also suppresses target velocity during the gesture. This should prevent
 inertial focus drift and give SC4 a stable logical point on playable terrain for
 rendering and culling.
+
+Each rotation step restores the frozen target exactly, so a target that differs at
+the start of the next step was moved on purpose by held-key or right-drag panning.
+The pivot follows that movement, which is what keeps WASD active during a gesture.
 
 The physical camera should remain within the playable-map constraints
 enforced by SC4. Rotation near map boundaries requires runtime testing. If an
@@ -141,10 +162,18 @@ healthy and broken states before assigning unverified meanings to fields.
 - M3 down freezes the rotation pivot; M3 up releases it.
 - M3 captures the orthographic scale. During rotation, custom
   magnification counters SC4's square-to-diamond bounds-fit so the visible zoom
-  does not bounce merely to keep every map corner inside the viewport.
-- Alt hold saves the current Modern orientation, snaps to the nearest native
-  Classic angle, keeps pitch locked while held, and applies any held-rotation
-  delta back onto the saved Modern orientation when released.
+  does not bounce merely to keep every map corner inside the viewport. The
+  magnification is computed before the refresh from the native formula,
+  `orthoScale = fit(yaw) * K(zoom) / magnification` with
+  `fit(yaw) = cos|yaw| + sin|yaw|`, so one refresh per step is enough. Wheel zoom
+  during a gesture updates the scale being held.
+- An Alt-hold move interpolates the view's direction, pitch, and on-screen zoom once per
+  camera frame. Yaw is rebalanced into the native yaw window on the way, as M3 rotation
+  does, which leaves the view unchanged but keeps the native fit factor usable: it falls
+  quickly past -90 degrees and inverts the image past -135. Magnification follows the fit
+  factor and the native step between stages 2 and 3, so the size changes evenly. The
+  zoom stage changes once, at the middle of the distance. The last frame writes the
+  target's exact values, so a return to Modern ends on the saved view.
 - Optional WASD movement consumes game W/A/S/D input only while Modern camera mode
   and WASD Movement are enabled, the city view has keyboard focus, and no Ctrl,
   Alt, or Windows-key shortcut modifier is held. Movement is smooth while held,
@@ -160,9 +189,41 @@ healthy and broken states before assigning unverified meanings to fields.
   a healthy low-end orientation directly onto the opposite high-end boundary.
   The wider window delays that handoff and maps it into the safer interior of
   the adjacent bucket instead.
-- Gesture anchor capture/release and every zoom update are logged.
+- Gesture anchor capture/release and every zoom update are logged at Verbose.
+- M3 mouse movement accumulates and is applied once per camera frame. The hidden
+  cursor is recentered during the gesture so rotation cannot stop at a screen edge,
+  and it returns to where the gesture began on release.
 - Automatic pitch curves, vertical-M3 dolly zoom, and Shift free-look mode are
   outside this design.
+
+## Camera Updates
+
+Native evidence for this section is in [default-camera.md](default-camera.md).
+
+Continuous steps (M3, Q/E, wheel) recompute the camera silently, using update mode 1
+followed by the native target clamp. They do not use the broadcast update (mode 2)
+because its zoom and rotation messages describe discrete changes: repeating them
+re-runs work such as the render-grid rebuild and the model maker's pass over occupants.
+
+A camera frame runs once per framework tick, after message delivery and before the
+draw system. It completes what the steps requested, so any number of input messages
+costs at most one of each:
+
+| Change | Render grid | Notification |
+| --- | --- | --- |
+| M3 or Q/E step | Rebuilt | `CameraUpdated` only |
+| Wheel zoom | Not rebuilt, because the grid depends on orientation and not scale | `CameraUpdated` only |
+| Alt-hold move in progress | Rebuilt when the orientation changed | `CameraUpdated` only |
+| Gesture end, end of an Alt-hold move, bookmark, save normalization, mode change | Rebuilt | One broadcast update |
+
+The render grid must be rebuilt every frame the orientation changes. Models are
+placed using the current yaw and pitch while the draw query uses the current camera,
+so a stale grid hides models that are on screen, and the error grows with zoom.
+Throttling the rebuild would therefore cause visible popping at close zoom.
+
+The broadcast update first sets the previous and pending zoom and rotation fields to
+the current values, so subscribers see no discrete change. It runs when a gesture
+ends so that view-dependent systems such as automata re-evaluate once.
 
 ## Acceptance Criteria
 

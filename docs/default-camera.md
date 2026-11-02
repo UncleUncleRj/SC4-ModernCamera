@@ -75,9 +75,79 @@ tables independently of the camera state loaded from a city. Capturing the activ
 camera immediately after city load is not sufficient once the global tables have
 already been modified.
 
-For game version 641, the addresses are documented in
-`Dev/src/SC4CameraController.cpp` as `kPitchAddress1`, `kPitchAddress2`,
-`kYawAddress0`, `kYawAddress1`, and `kYawAddress2`.
+For game version 641, the addresses the plugin patches are documented in
+`Dev/src/SC4CameraController.cpp` as `kPitchAddress1`, `kPitchAddress2`, and
+`kYawAddress1`.
+
+Two other yaw values are deliberately left native. The yaw operand at `0x7CCB0A`
+is an instruction in the camera-control constructor `0x7CC990`, and it only sets
+a new control's starting yaw. The table at `0xABACB8` has no reference in the
+`.text` section or the data-reference export.
+
+## Native camera updates
+
+These notes are binary-verified from the 641 executable. They have not been
+observed at runtime except where the plugin's own behavior shows them.
+
+`UpdateCameraPosition` (`0x7CCF80`) takes a mode:
+
+| Mode | Recomputes camera | Scroll polygon | Messages | Clamps target |
+| ---: | --- | --- | --- | --- |
+| 0 | Yes | If empty | `PostViewInit` | No |
+| 1 | Yes | Rebuilt | None | No |
+| 2 | Yes | Rebuilt | `ZRChange1/2/3`, `CameraUpdated` | Yes (`0x7CD000`) |
+| 3 | Without projection | If empty | `CameraUpdated`, `TChange2/3` | No |
+| 4 | Yes | If empty | `PostViewRefresh` | No |
+| 5 | Yes | If empty | None | No |
+
+The previous and pending zoom and rotation fields (`+0x100`, `+0x110`) are message
+payload. Native setters fill them just before broadcasting, and nothing clears
+them. Native `SetCustomMagnification` (`0x7CD6E0`) sends only `PostViewRefresh`,
+which requests a full redraw.
+
+Many systems subscribe to the zoom and rotation messages, and several act on any
+difference between the two payloads:
+
+- The renderer rebuilds its render grid: `ZRChange2` runs `0x7CAB30` when the
+  rotation differs, and `ZRChange3` runs `0x7CAA60` when the zoom differs.
+- The model maker (`0x495F10`) can make a pass over occupants on `ZRChange2`
+  (`0x495B00`). It returns early when both payloads match.
+- Automata and traffic (`0x506970`, `0x4B0C10`) run their view update on every
+  `ZRChange3`, whatever the payload says.
+
+In the native handler map, only the renderer handles `CameraUpdated`. It
+recalculates the view focus and visible cell range (`0x7C4910`), which the camera
+position changes.
+
+The target clamp (`0x7CD000`) clips the path from the base target, a city corner, to
+the view target against the scroll polygon (`0x7CC650`). When it moves the target, it
+places it on the `y = 0` plane (`0x7CBA90`) rather than on the terrain, so the target
+ends up below the ground and the view swings when the camera later turns. If the clip
+runs out of edges, the result is the base target itself. Native panning (`0x7CD330`)
+clips from the current target instead and casts onto the terrain.
+
+A static model of these routines finds that at normal pitch the polygon contains Small
+and Large tiles, except at the exact corners of a Large tile. Low pitch combined with
+the farthest zoom makes the clamp fire across the tile. This was observed at runtime on
+a Small tile: at zoom stage 0, magnification 0.5, and pitch 0.435, a wheel zoom moved
+the target from (566, 319, 646) to (101, 0, 52), and in the same state the clamp sent
+the target to the base target at (0, 0, 0).
+
+The camera position logged at city load was computed before the city size was set, so
+it uses the constructor's default size of 4096 whatever the tile size is.
+
+## Render grid
+
+The renderer draws models found through a grid. A model's grid rectangle
+(`0x7C1B30`) is projected with the cached sine and cosine of the current yaw and
+pitch, plus fixed offsets per rotation at renderer `+0x268` and `+0x278`. The
+projection does not use the view target, zoom stage, or magnification. The draw query
+(`0x7C1FD0`) projects the viewport corners with the current camera. A grid built
+for another orientation therefore misses models that are on screen.
+
+`0x7CAB30` re-inserts every model (`0x7C5370`) using the rotation it is given and
+requests a full redraw. It returns without working if its previous and new rotation
+match, so a rebuild at the same rotation passes any other value as the previous one.
 
 ## Region-preview implications
 

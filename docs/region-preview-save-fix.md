@@ -58,18 +58,35 @@ When pre-save is received, the controller:
 2. Replaces the global tables with native values.
 3. Selects native pitch for the current discrete zoom.
 4. Restores native yaw while preserving discrete rotation and view target.
-5. Refreshes the camera and requests a redraw.
+5. Refreshes the camera, rebuilds the render grid, and requests a redraw
+   immediately, because no frame runs before the preview is rendered.
 6. Holds native state throughout SC4's internal save and preview generation.
 
-There is no known post-save notification, so restoration is lifecycle-driven.
-This refers to save completion, not the framework `PreAppShutdown()` callback,
-which runs only during application teardown and is used to stop the logger:
+The preview renders inside `cSC4City`'s own pre-save handler (`0x45C1A0` ->
+`0x459B20` -> `0x5DDEC0`). Subscribers are called in subscription order, and
+`cSC4City` subscribes in its `Init` (`0x45BD20`), after the plugin subscribes in
+`OnStart`, so the plugin normalizes first. Moving the plugin's subscription later
+would break this order.
 
-- After a normal save, the first subsequent keyboard or mouse interaction restores
-  free-camera state and custom tables before processing that interaction.
+SC4 also publishes a post-save message, sent after the preview is finished but
+before the object records are written and the file is closed:
+
+```text
+kSC4MessagePostSave = 0x26C63345
+```
+
+Restoration follows from it. This refers to save completion, not the framework
+`PreAppShutdown()` callback, which runs only during application teardown and is
+used to stop the logger:
+
+- After a normal save, the post-save message schedules the restore for the next
+  camera frame, when the save has finished. Any keyboard or mouse interaction that
+  arrives first still restores free-camera state and custom tables before
+  processing that interaction.
 - During save-and-exit, pre-city-shutdown discards the saved free-camera state and
-  deliberately leaves the global tables native. The next city therefore starts
-  from clean defaults.
+  deliberately leaves the global tables native. If a frame does run first, city
+  shutdown's reset still writes native tables, so the next city starts from clean
+  defaults either way.
 
 The `g_IsModernCamEnabled` flag remains available. When false, modern camera input
 is bypassed while diagnostics and native SC4 input remain operational.
@@ -79,3 +96,8 @@ is bypassed while diagnostics and native SC4 input remain operational.
 The path is validated by moving the free camera and using save-and-exit to
 return to region view. Preview tiles retained native orientation, the game
 remained stable, and no custom menu or binary hook is required.
+
+The post-save message and subscription order are binary-verified. Restoring on the
+post-save message still needs runtime validation: after a normal save the free
+camera should return with no input, and after save-and-exit another city should
+open with native angles.

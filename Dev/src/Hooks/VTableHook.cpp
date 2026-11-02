@@ -22,18 +22,18 @@ bool VTableHook::Install(void** vtable, size_t index, void* replacement)
 }
 
 // Restores the original target when another plugin has not replaced this hook.
+// A plugin that chained on top still calls this hook, which must keep forwarding,
+// so the original stays available and the hook stays installed in that case.
 bool VTableHook::Uninstall()
 {
-	if (!mSlot) {
+	if (!mSlot || *mSlot != mReplacement || !PatchSlot(mSlot, mOriginal, nullptr)) {
 		return false;
 	}
 
-	const bool restored = *mSlot == mReplacement
-		&& PatchSlot(mSlot, mOriginal, nullptr);
 	mSlot = nullptr;
 	mReplacement = nullptr;
 	mOriginal = nullptr;
-	return restored;
+	return true;
 }
 
 // Returns whether this object has installed a vtable replacement.

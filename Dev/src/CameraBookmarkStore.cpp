@@ -22,6 +22,10 @@ namespace
 	constexpr uint32_t kLegacyThumbnailBytes = kLegacyThumbnailWidth * kLegacyThumbnailHeight * 4;
 	constexpr uint32_t kMaximumCities = 4096;
 	constexpr uint32_t kMaximumCityKeyBytes = 4096;
+	// Native limits for values SC4 uses as table indexes or accepts as magnification.
+	constexpr int32_t kMaximumNativeZoom = 4;
+	constexpr int32_t kMaximumNativeRotation = 3;
+	constexpr float kMaximumNativeMagnification = 1000.0f;
 
 	template <typename T>
 	void Append(std::vector<uint8_t>& bytes, const T& value)
@@ -128,6 +132,22 @@ namespace
 			&& std::isfinite(view.invOrthoScale);
 	}
 
+	/// <summary>
+	/// Returns whether SC4 can apply a view. Native SetRotation reports success for an
+	/// out-of-range value, so a bad index must be rejected before it reaches the camera.
+	/// </summary>
+	/// <param name="view">View read from the bookmark file or captured from the camera.</param>
+	/// <returns>True when zoom, rotation, and magnification are within native limits.</returns>
+	bool IsRestorableView(const SC4NativeCameraState& view)
+	{
+		return view.zoom >= 0
+			&& view.zoom <= kMaximumNativeZoom
+			&& view.rotation >= 0
+			&& view.rotation <= kMaximumNativeRotation
+			&& view.customMagnification > 0.0f
+			&& view.customMagnification < kMaximumNativeMagnification;
+	}
+
 	std::vector<uint8_t> ReadFile(const std::filesystem::path& path)
 	{
 		std::ifstream stream(path, std::ios::binary);
@@ -230,7 +250,7 @@ bool CameraBookmarkStore::Save(
 	uint32_t slot,
 	const SC4NativeCameraState& view)
 {
-	if (!IsSlotValid(slot) || !IsFiniteView(view)) {
+	if (!IsSlotValid(slot) || !IsFiniteView(view) || !IsRestorableView(view)) {
 		return false;
 	}
 	std::lock_guard lock(mutex);
@@ -241,6 +261,11 @@ bool CameraBookmarkStore::Save(
 	city->slots[slot] = CameraBookmark{ view };
 	QueueWriteLocked();
 	return true;
+}
+
+bool CameraBookmarkStore::ConsumeWriteFailure()
+{
+	return writeFailed.exchange(false, std::memory_order_relaxed);
 }
 
 bool CameraBookmarkStore::Clear(uint32_t slot)
@@ -329,7 +354,15 @@ bool CameraBookmarkStore::Load()
 				if (!valid) {
 					break;
 				}
-				city.slots[slot] = std::move(bookmark);
+				// One unusable record leaves its slot empty instead of discarding every city.
+				if (IsRestorableView(bookmark.view)) {
+					city.slots[slot] = std::move(bookmark);
+				}
+				else {
+					Logger::GetInstance().WriteLine(
+						LogLevel::Warning,
+						"Camera Bookmarks: ignored a stored view with out-of-range zoom, rotation, or magnification.");
+				}
 			}
 			loadedCities.push_back(std::move(city));
 		}
@@ -396,12 +429,14 @@ void CameraBookmarkStore::WriterLoop()
 		const std::filesystem::path temporaryPath = storagePath.wstring() + L".tmp";
 		std::ofstream stream(temporaryPath, std::ios::binary | std::ios::trunc);
 		if (!stream) {
+			writeFailed.store(true, std::memory_order_relaxed);
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmarks: could not open temporary storage file.");
 			continue;
 		}
 		stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 		stream.close();
 		if (!stream) {
+			writeFailed.store(true, std::memory_order_relaxed);
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmarks: could not write temporary storage file.");
 			continue;
 		}
@@ -410,6 +445,7 @@ void CameraBookmarkStore::WriterLoop()
 			temporaryPath.c_str(),
 			storagePath.c_str(),
 			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			writeFailed.store(true, std::memory_order_relaxed);
 			Logger::GetInstance().WriteLine(LogLevel::Warning, "Camera Bookmarks: atomic storage replacement failed.");
 		}
 	}

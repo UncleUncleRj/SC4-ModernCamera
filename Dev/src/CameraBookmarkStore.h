@@ -3,6 +3,7 @@
 #include "SC4CameraController.h"
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
@@ -48,6 +49,11 @@ public:
 	bool Save(uint32_t slot, const SC4NativeCameraState& view);
 	// Removes one populated slot after the caller has confirmed the action.
 	bool Clear(uint32_t slot);
+	/// <summary>
+	/// Reports a background write failure once, so the game thread can tell the player.
+	/// </summary>
+	/// <returns>True when a write has failed since the previous call.</returns>
+	bool ConsumeWriteFailure();
 
 private:
 	struct CityBookmarks
@@ -78,6 +84,8 @@ private:
 	std::string activeCityKey;
 	std::vector<uint8_t> pendingWrite;
 	std::thread writer;
+	// Set by the writer, which must not call game or UI APIs itself.
+	std::atomic<bool> writeFailed{ false };
 	bool initialized = false;
 	bool loaded = false;
 	bool stopping = false;

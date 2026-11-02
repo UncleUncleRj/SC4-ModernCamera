@@ -11,14 +11,12 @@ enum class RuntimeTimer : size_t
 	IdleRedraw,
 	// One-shot periodic redraw that reschedules itself when required.
 	PeriodicRedraw,
-	// Repeating keyboard-pan update while a captured key remains held.
-	KeyboardPan,
+	// Repeating camera frame used only when the framework tick could not be registered.
+	CameraFrameFallback,
 	// One-shot timer that hides the camera-dump confirmation.
 	CameraDumpConfirmation,
 	// One-shot timer that hides the camera-bookmark confirmation.
 	BookmarkConfirmation,
-	// One-shot Escape input that clears a native View3D tool.
-	NativeToolClearEsc,
 	// One-shot restoration of 3D-view focus after a UI transition.
 	ModernCameraFocusRestore,
 	// Number of timer slots. This is not a valid timer.

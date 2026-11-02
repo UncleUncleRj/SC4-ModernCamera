@@ -38,7 +38,7 @@ Modern mode:
 - re-enables the Modern-only controls;
 - restores the actual saved redraw aggression selection in Advanced Settings;
 - moves an off-map camera target back near the city center when returning from Classic camera mode;
-- clears the current native view tool, then activates the native query shortcut and Esc clear sequence so Modern camera input does not inherit a zoning, network, or other tool cursor selected while Classic controls were active;
+- clears the native view tools with the same call as SC4's Cancel command, `RemoveAllViewInputControls(false)`, so Modern camera input does not inherit a zoning, network, or other tool cursor selected while Classic controls were active. Passing `true` skips the cursor reset and leaves the old tool's cursor showing;
 - resumes Modern camera input and redraw behavior immediately.
 
 ## Redraw Aggression
@@ -58,7 +58,7 @@ WASD Movement is a Modern camera feature. When Modern camera and WASD Movement a
 
 - W/A/S/D key input is consumed only while the city view has keyboard focus and
   Ctrl, Alt, and the Windows keys are up.
-- movement is timer-driven, not key-repeat driven, so it starts while held and stops immediately on key release;
+- movement is frame-driven, not key-repeat driven, so it starts while held and stops immediately on key release;
 - Shift + WASD applies the configured boost multiplier;
 - the panning speed slider applies to WASD movement;
 - movement uses the same camera bounds as the other Modern camera movement paths;
@@ -68,7 +68,9 @@ WASD Movement is a Modern camera feature. When Modern camera and WASD Movement a
 Holding Ctrl, Alt, or either Windows key stops any held Modern Camera movement
 and returns W/A/S/D and arrow keys to SC4 for native shortcuts. Plain Alt still
 has its separate Modern Camera classic-angle function when the city view has
-keyboard focus and Ctrl or a Windows key is not held.
+keyboard focus and Ctrl or a Windows key is not held. While that hold owns Alt,
+W/A/S/D and arrow keys keep panning, and Windows still sees Alt for chords such as
+Alt+Tab and Alt+F4.
 
 When WASD Movement is off, or Classic camera is active, the plugin stops consuming W/A/S/D and returns those keys to the game.
 

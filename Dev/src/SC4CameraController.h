@@ -135,6 +135,23 @@ struct SC4NativeCameraState
 	float invOrthoScale;
 };
 
+// Player-facing outcome of one numbered bookmark command.
+enum class CameraBookmarkNotice : uint8_t
+{
+	// The current view was stored in the requested slot.
+	Saved,
+	// The camera moved to the requested slot.
+	Recalled,
+	// The requested slot has no stored view.
+	Empty,
+	// The current view could not be stored in the requested slot.
+	SaveFailed,
+	// The stored view could not be applied.
+	RecallFailed,
+	// The background writer could not update the bookmark file.
+	StorageFailed,
+};
+
 // Applies Modern Camera rotation, zoom, bounds, and native-state restoration.
 class SC4CameraController
 {
@@ -177,20 +194,51 @@ public:
 		float& adjustedDirectionAngle,
 		bool& blocked,
 		const char* source);
-	// Switches to the temporary Classic camera angle while Alt is held.
+	// Saves the Modern view and moves to the nearest Classic angle and zoom while Alt is held.
 	bool BeginClassicAngleHold(const char* source);
-	// Restores Modern Camera angles after the temporary Classic-angle hold.
-	bool EndClassicAngleHold(const char* source);
+	/// <summary>
+	/// Returns to the Modern view saved when the temporary Classic-angle hold began.
+	/// </summary>
+	/// <param name="source">Label that identifies the caller in the log.</param>
+	/// <param name="animate">True to move there over the following frames, false to arrive now.</param>
+	/// <returns>True when the return started or completed.</returns>
+	bool EndClassicAngleHold(const char* source, bool animate);
 	// Returns whether temporary Classic-angle mode is active.
 	bool IsClassicAngleHoldActive() const;
-	// Performs one native Classic camera quarter-turn for an Alt+Q or Alt+E press.
+	// Starts one Classic quarter turn for an Alt+Q or Alt+E press.
 	bool RotateClassicStep(bool left, const char* source);
+	/// <summary>
+	/// Moves to the next Classic zoom level for each whole wheel notch during the Alt hold.
+	/// </summary>
+	/// <param name="wheelNotches">Wheel movement in notches; positive zooms in.</param>
+	/// <param name="changed">Receives whether a move to another zoom level started.</param>
+	/// <returns>True when the hold consumed the wheel input.</returns>
+	bool StepClassicZoom(float wheelNotches, bool& changed);
+	/// <summary>
+	/// Advances the move between the Modern and Classic views by one camera frame.
+	/// </summary>
+	/// <param name="elapsedSeconds">Time since the previous camera frame.</param>
+	void AdvanceClassicAngleTransition(float elapsedSeconds);
+	/// <summary>
+	/// Completes a move between the Modern and Classic views at once, for callers that
+	/// need the view to be final, such as a save or a bookmark.
+	/// </summary>
+	void FinishClassicAngleTransition();
 	// Re-centers a native target that falls outside verified city bounds.
 	bool EnsureTargetNearCityCenterIfOutOfBounds(const char* source);
-	// Applies a mouse-wheel delta and reports whether the camera zoom changed.
-	bool ZoomByWheel(int32_t wheelDelta, bool& changed);
+	// Applies a sensitivity-adjusted wheel delta and reports whether the camera zoom changed.
+	bool ZoomByWheel(float wheelDelta, bool& changed);
 	// Requests the active SC4 renderer to perform a full redraw.
 	bool ForceFullRedraw();
+	/// <summary>
+	/// Completes the native notifications, render-grid rebuild, and redraw requested since the previous frame.
+	/// </summary>
+	void FlushPendingViewUpdates();
+	/// <summary>
+	/// Returns the multiplier that keeps keyboard panning at a constant on-screen speed within a zoom stage.
+	/// </summary>
+	/// <returns>The reciprocal of the current magnification, or 1 when no usable camera is available.</returns>
+	float GetPanSpeedZoomScale() const;
 	// Writes the active camera state to the diagnostic log.
 	bool DumpCameraInfo(const char* reason) const;
 	// Shows the temporary camera-dump confirmation UI.
@@ -198,12 +246,12 @@ public:
 	// Clears the temporary camera-dump confirmation UI.
 	bool ClearCameraDumpConfirmation() const;
 	/// <summary>
-	/// Shows a temporary confirmation after a bookmark save or recall.
+	/// Shows a temporary message describing the outcome of a bookmark command.
 	/// </summary>
-	/// <param name="saved">True for a save acknowledgement; false for a recall acknowledgement.</param>
-	/// <param name="slot">Zero-based bookmark slot that completed the command.</param>
+	/// <param name="notice">Outcome to report to the player.</param>
+	/// <param name="slot">Zero-based bookmark slot. Ignored for storage failures.</param>
 	/// <returns>True when SC4 accepted the cursor-text entry.</returns>
-	bool ShowCameraBookmarkConfirmation(bool saved, uint32_t slot) const;
+	bool ShowCameraBookmarkNotice(CameraBookmarkNotice notice, uint32_t slot) const;
 	// Clears the temporary bookmark confirmation UI.
 	bool ClearCameraBookmarkConfirmation() const;
 	// Returns whether a restorable native camera state has been captured.
@@ -229,10 +277,69 @@ public:
 	bool IsSavePreviewNormalizationActive() const;
 
 private:
+	// One complete view the Alt hold can save or move to. The focus is not part of it,
+	// because switching views never moves the focus.
+	struct ClassicAngleView
+	{
+		// Native quarter-turn rotation.
+		int32_t rotation;
+		// Yaw in radians.
+		float yaw;
+		// Pitch in radians.
+		float pitch;
+		// Native zoom stage.
+		int32_t zoom;
+		// Custom magnification within the zoom stage.
+		float magnification;
+	};
+
 	// Captures native state once for the supplied active camera control.
 	bool EnsureNativeCameraStateCaptured(const SC4CameraControlLayout& cameraControl);
-	// Refreshes SC4's derived camera state after direct value changes.
+	// Refreshes SC4's derived camera state after direct value changes without notifying subscribers.
 	static bool Refresh(SC4CameraControlLayout& cameraControl);
+	/// <summary>
+	/// Recomputes SC4's derived camera state from the current fields without notifying
+	/// subscribers and without the target clamp.
+	/// </summary>
+	/// <param name="cameraControl">Camera control to recompute.</param>
+	/// <returns>True when the native update ran.</returns>
+	static bool RecomputeCamera(SC4CameraControlLayout& cameraControl);
+	/// <summary>
+	/// Puts the camera in one view of an Alt-hold move, keeping the focus on the same point
+	/// of the map.
+	/// </summary>
+	/// <param name="renderer">Active renderer.</param>
+	/// <param name="view">View to apply.</param>
+	/// <returns>True when the camera now uses the requested view.</returns>
+	bool ApplyClassicAngleView(cISC43DRender* renderer, const ClassicAngleView& view);
+	/// <summary>
+	/// Starts moving from the camera's current view to a new one.
+	/// </summary>
+	/// <param name="cameraControl">Camera control holding the current view.</param>
+	/// <param name="target">View to end on.</param>
+	/// <param name="yawTravel">Signed turn to make on the way, in radians.</param>
+	void StartClassicAngleTransition(
+		const SC4CameraControlLayout& cameraControl,
+		const ClassicAngleView& target,
+		float yawTravel);
+	/// <summary>
+	/// Ends the current Alt-hold move on the exact target view and tells native subscribers.
+	/// </summary>
+	/// <param name="renderer">Active renderer.</param>
+	/// <returns>True when the camera now uses the target view.</returns>
+	bool CompleteClassicAngleTransition(cISC43DRender* renderer);
+	/// <summary>
+	/// Starts Classic quarter turns from wherever the hold is heading.
+	/// </summary>
+	/// <param name="turns">Signed number of quarter turns.</param>
+	/// <param name="source">Label that identifies the input in the log.</param>
+	/// <returns>True when the turn started.</returns>
+	bool TurnClassicView(int32_t turns, const char* source);
+	/// <summary>
+	/// Requests one native notification, clamp, and render-grid rebuild after a discrete view change.
+	/// </summary>
+	/// <param name="keepViewTarget">True when the native clamp must not move the focus.</param>
+	void RequestViewSettle(bool keepViewTarget = false);
 	// Clamps invalid pitch values to the supported Modern Camera range.
 	static float SanitizePitch(float pitch);
 	// Normalizes yaw to the range expected by the native camera tables.
@@ -267,16 +374,36 @@ private:
 	bool anglesInitialized;
 	// Indicates that temporary Classic-angle mode is currently active.
 	bool classicAngleHoldActive;
-	// Modern Camera pitch saved before entering temporary Classic-angle mode.
-	float classicAngleHoldPitch;
-	// Modern Camera yaw saved before entering temporary Classic-angle mode.
-	float classicAngleHoldYaw;
-	// Native rotation index saved before entering temporary Classic-angle mode.
-	int32_t classicAngleHoldRotation;
-	// Quarter-turn yaw selected for temporary Classic-angle mode.
-	float classicAngleHoldSnapYaw;
-	// Native rotation index matching classicAngleHoldSnapYaw.
-	int32_t classicAngleHoldSnapRotation;
+	// Modern view saved before entering temporary Classic-angle mode.
+	ClassicAngleView classicAngleHoldSavedView;
+	// Classic zoom level the hold is using or heading to.
+	int32_t classicAngleHoldZoomLevel;
+	// M3 yaw accumulated during the hold, in radians.
+	float classicAngleHoldDragYaw;
+	// Quarter turns already made from classicAngleHoldDragYaw.
+	int32_t classicAngleHoldDragTurns;
+	// Wheel movement during the hold that has not yet made up a whole notch.
+	float classicAngleHoldWheelNotches;
+	// Indicates that the camera is moving toward classicTransitionTarget.
+	bool classicTransitionActive;
+	// Time spent on the current move, in seconds.
+	float classicTransitionElapsed;
+	// Eased progress of the last frame of the current move.
+	float classicTransitionEased;
+	// Azimuth the current move started from, in radians.
+	float classicTransitionFromAzimuth;
+	// Signed turn the current move makes, in radians.
+	float classicTransitionYawTravel;
+	// Pitch the current move started from, in radians.
+	float classicTransitionFromPitch;
+	// On-screen zoom the current move started from.
+	float classicTransitionFromZoomLevel;
+	// On-screen zoom the current move ends on.
+	float classicTransitionToZoomLevel;
+	// Native zoom stage the current move started from.
+	int32_t classicTransitionFromZoom;
+	// Exact view the current move ends on.
+	ClassicAngleView classicTransitionTarget;
 	// Indicates that rotationViewTarget and rotationBaseTarget are valid.
 	bool rotationGestureActive;
 	// Orthographic scale captured when the current rotation gesture began.
@@ -293,10 +420,8 @@ private:
 	bool savePreviewNormalizationActive;
 	// Native pitch tables captured at the start of save-preview normalization.
 	float savedPitchTables[2][5];
-	// Native yaw instruction value captured at the start of save-preview normalization.
-	float savedYawInstruction;
-	// Native yaw tables captured at the start of save-preview normalization.
-	float savedYawTables[2][5];
+	// Native yaw table captured at the start of save-preview normalization.
+	float savedYawTable[5];
 	// Modern Camera pitch saved before save-preview normalization.
 	float savedPreviewPitch;
 	// Modern Camera yaw saved before save-preview normalization.
@@ -305,4 +430,16 @@ private:
 	cS3DVector3 savedPreviewViewTarget;
 	// Native rotation base saved before save-preview normalization.
 	cS3DVector3 savedPreviewBaseTarget;
+	// Indicates that the active rotation gesture has changed the camera.
+	bool rotationGestureChanged;
+	// Indicates that native subscribers must be told about a completed view change.
+	bool viewSettlePending;
+	// Indicates that the pending view change is an Alt switch, which keeps its view target.
+	bool viewSettleKeepsTarget;
+	// Indicates that the renderer's camera-dependent view focus must be recalculated.
+	bool cameraUpdatePending;
+	// Indicates that pitch or yaw changed, so the orientation-dependent render grid is stale.
+	bool gridRebuildPending;
+	// Indicates that a full redraw is required.
+	bool redrawPending;
 };

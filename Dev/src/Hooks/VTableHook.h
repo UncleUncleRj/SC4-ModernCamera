@@ -8,7 +8,8 @@ class VTableHook
 public:
 	// Replaces one vtable slot and records its original target for later restoration.
 	bool Install(void** vtable, size_t index, void* replacement);
-	// Restores the original target only if the slot still contains this hook.
+	// Restores the original target only if the slot still contains this hook. Otherwise
+	// returns false and stays installed, because another plugin still forwards to it.
 	bool Uninstall();
 	// Returns whether a slot is currently owned by this hook object.
 	bool IsInstalled() const;
