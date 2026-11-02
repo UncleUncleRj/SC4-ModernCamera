@@ -17,7 +17,7 @@ The Advanced page contains:
 
 - Camera Tuning: Q/E rotation speed, Shift pan boost, Invert Q/E, Mouse wheel zoom, and Invert wheel zoom.
 - Diagnostics: Debug Logging, with a note about the log location and the Ctrl+Alt+F8 camera dump, which is always available.
-- Updates: Show Changelogs on Update.
+- Updates: Don't notify me of updates in the news ticker.
 
 Advanced is intentionally available in both Modern and Classic camera modes. Camera Tuning buttons are disabled in Classic, and Invert wheel zoom is also disabled while Mouse wheel zoom is Stepped, because SC4's stepped zoom cannot be inverted.
 
@@ -139,6 +139,18 @@ If this regresses, inspect `SC4WindowManager::ScheduleDeferredWindowOpen`, `SC4W
 
 ## Changelog Window
 
-The changelog popup is the same baked Welcome/Greeting window resource used for the first-install/version notice. Its changelog body is generated from `docs/changelog.md`; camera-settings guidance and the `View Github` button live outside that scrollable changelog body. `View Github` opens the project page in the default browser; the controls popup now opens from `View Controls` in the settings window.
+The changelog window opens from Show Changelog in Settings and from the update notice's See what's new link; nothing opens it automatically after an install. Its body shows the latest GitHub release at runtime, and no changelog text is baked into the DAT, so an out-of-date list can never appear. `Github` and `Simtropolis` open the project pages in the default browser. Installed comes from `Dev/src/PluginVersion.h`; Current and Update available! are set at runtime.
+
+`ReleaseNotesDownloader` reads `https://github.com/UncleUncleRj/SC4-ModernCamera/releases/latest` on a worker. It takes the latest version from the URL the redirect ends at (`/releases/tag/v1.0.4` is `1.0.4`) and the notes from the `markdown-body` element inside the page's `Box-body`, which leaves out the title and author rows. A game-thread timer polls every 250 ms. A failed download shows a message pointing to `Github`, logs the reason, and is retried by the next city load or window open. Because this scrapes GitHub's page markup, a markup change appears as that message with `the release page had no notes inside Box-body` in the log; the version check does not depend on the markup.
+
+## Update Notice
+
+A city load starts the download unless the player turned notices off, and it compares the latest version with the installed one numerically. The notice is a real game advice, defined by the package script `Dev/ui/SC4-ModernCamera-UpdateNotice.lua`, which the DAT builder stores with the advisor script type and group. The script's trigger reads `sc4moderncamera.update_available`, and `SC4WindowManager::PublishUpdateNotification` sets that field through `cISCLua::DoString` in the city's advisor Lua state. The game then shows the title in the ticker and the message in its advice list. The message's link calls the native `sc4moderncamera_open_changelog`, which `OnCityLoaded` registers for each city's Lua state and which uses the deferred window open.
+
+The advice's `title` and `message` are `text@` keys, not literal text. The game resolves every advice string as an LTEXT resource (type `0x2026960B`, group `0x6A231EA4`, binary-verified at `0x4178F0`) and prefixes `***_NOT_IN_TEXT_DATABASE_***` to anything it can't find, so the DAT builder also stores the two strings at instances `0x3D0C0A03` and `0x3D0C0A04`. The game substitutes `#s@...#` and `#link_id#` tokens after that lookup.
+
+Priority is 59 and has to stay there. When any active advice is above 59 the ticker cycles only advice at 59 or higher (binary-verified at `0x774070`), and the lowest popup threshold is `ADVICE_PRIORITY_MED_HIGH` (60), so 59 reaches the ticker without opening a dialog. It uses the base advice's `frequency` of 720 days: a dismissed notice returns after two game years until the player updates. Turning notices off, or installing the new version, makes the trigger false and the game removes the advice at its next check. The game stores active advice in the city file by GUID (`0x3D0C0A02`).
+
+An older settings file's `showChangelogsOnUpdate` value seeds `notifyUpdatesInTicker`, so someone who turned off the install popup also gets no ticker notice.
 
 The body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes` so changelog text can grow without increasing the window size. Visual Studio generates the companion DAT from `tools/build_sc4_ui_dat.py` during the project pre-build event; manual DAT edits should be avoided.

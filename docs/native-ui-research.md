@@ -10,7 +10,7 @@ The test window is a native SimCity 4 UI window. It does not use ImGui and does 
 - `tools/build_sc4_ui_dat.py` packages that script into an uncompressed DBPF file.
 - The Visual Studio pre-build step generates the companion DAT, and the post-build step copies it beside the plugin DLL.
 - `Dev/src/SC4WindowManager.cpp` owns plugin windows, notification dialogs, the floating settings button, the production Settings window with its General and Advanced pages, and the control laboratory.
-- `docs/changelog.md` is baked into the first-install greeting window by the DAT builder. The greeting version is read from `Dev/src/PluginVersion.h`, not from the changelog text.
+- The changelog window's body is filled at runtime from the latest GitHub release; see `docs/settings-workflow.md`. The greeting version is read from `Dev/src/PluginVersion.h`, not from the changelog text.
 
 The DBPF resource identifiers are:
 
@@ -29,7 +29,7 @@ The window is instantiated through `cIGZUIScriptService::CreateWindowFromScript`
 
 The manager owns:
 
-- the baked first-install/version/changelog greeting window;
+- the baked changelog window;
 - the baked Controls help popup opened from the greeting window;
 - the baked floating camera-settings menu button;
 - the baked camera settings window, with General and Advanced pages;
@@ -77,14 +77,14 @@ The packager emits these UI script resources in the same type/group:
 | --- | --- |
 | `0x3D0C0701` | Native control laboratory |
 | `0x3D0C0703` | Generic basic-window template |
-| `0x3D0C0705` | First-install greeting/changelog window |
+| `0x3D0C0705` | Changelog window |
 | `0x3D0C0707` | Controls help popup |
 | `0x3D0C0901` | Floating camera-settings menu button |
 | `0x3D0C0903` | Camera settings window, both pages |
 
 Instance `0x3D0C0905` held the separate Advanced Settings window and is retired.
 
-The same DAT also carries custom UI image resources for the floating menu icon, selected/disabled button states, title-bar camera icon, and welcome arrow art. The packager substitutes the ordinance-style checkbox recipe and bakes `docs/changelog.md` into the greeting resource. The greeting heading is generated as `SC4-ModernCamera {PluginVersion::String} Installed!`, so the version number remains centralized in `Dev/src/PluginVersion.h`.
+The same DAT also carries custom UI image resources for the floating menu icon, selected/disabled button states, title-bar camera icon, and welcome arrow art. The packager substitutes the ordinance-style checkbox recipe. The window's Installed line is generated from `Dev/src/PluginVersion.h`, so the version number remains centralized there. Its settings note uses the native `PuckIndicator` style because the game's font style table in `SimCity_1.dat` (group `0x4A87BFE8`, instance `0x2A87BFFC`) defines it as Arta italic at size 11, the smaller counterpart of `GenBodyLight` at size 13. The native frame image `0x6BB93CB5` draws its own two-pixel line 62 pixels above the window's bottom edge (runtime-observed at heights 320, 336 and 342), over a flat panel color of (217,223,228). This window hides that line with a flat rectangle in the panel color; controls listed later draw on top, so the rectangle goes before the label it passes behind.
 
 The settings option buttons use the custom button-stage image resource `0x856DDBAC / 0x3D0C0700 / 0x3D0C0907`, generated from `Dev/ui/menu-button-stages.png`. The image strip order is Disabled, Normal, Selected, Hovered. The selected state uses the green `#25DC80` fill baked into the asset, and selected-state coloring remains baked into button image resources. `cIGZWin::SetFillColor` and `SetFillColorRGB` now compile to their game slots, but they have not been called in game, and whether an image button honors its fill color is unknown.
 
@@ -389,7 +389,7 @@ Safe geometry queries used by the laboratory are `GetL`, `GetT`, `GetR`, and `Ge
 
 ## Lifecycle and input behavior
 
-The first-install/changelog popup is a baked native SC4 window generated from `docs/changelog.md`. It is displayed during the first city load for each installed plugin version. Controls and camera-settings guidance are intentionally kept out of the changelog body; the settings window has a `View Controls` button that opens a smaller baked controls popup, and the greeting window has a `View Github` button and a separate top-right note pointing to the floating camera button. The changelog body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes`, not a plain `GZWinText`, so release notes can grow without increasing the window size.
+The changelog popup is a baked native SC4 window whose changelog body is filled at runtime from the latest GitHub release. It opens from Settings and from the news ticker update notice. Controls and camera-settings guidance are intentionally kept out of the changelog body; the settings window has a `View Controls` button that opens a smaller baked controls popup, and the window has `Github` and `Simtropolis` buttons and a top-right note describing the floating camera button. The changelog body uses a read-only multiline `GZWinTextEdit` with `vscrollbar=yes`, not a plain `GZWinText`, so release notes can grow without increasing the window size.
 
 Creating the managed greeting during city-load notification can run before the city view and UI hierarchy finish initializing. A 3-second Win32 timer defers greeting creation until the native UI is ready.
 

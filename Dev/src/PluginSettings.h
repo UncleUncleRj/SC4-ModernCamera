@@ -56,15 +56,8 @@ public:
     // Restores supported fresh-install defaults without writing them to disk.
     void RestoreDefaults();
 
-    // Returns whether the installed version has not acknowledged this plugin version.
-    bool NeedsVersionNotice() const;
-    // Stores the current plugin version as acknowledged and writes the settings file.
-    bool AcknowledgeCurrentVersion();
-
     // Returns the path retained for future Save calls.
     const std::filesystem::path& GetPath() const;
-    // Returns the installed-version marker from the last loaded settings document.
-    const std::string& GetInstalledVersion() const;
 
     // Selects Modern Camera or native Classic camera behavior.
     CameraMode cameraMode;
@@ -96,12 +89,10 @@ public:
     DebugLogging debugLogging;
 	// Enables Modern-mode numbered bookmark hotkeys.
 	bool bookmarksEnabled;
-	// Shows the version greeting and changelog after a plugin update.
-    bool showChangelogsOnUpdate;
+	// Announces a newer GitHub release in the news ticker.
+    bool notifyUpdatesInTicker;
 
 private:
-    // Source file used by Save and version-acknowledgement updates.
+    // Source file used by Save.
     std::filesystem::path path;
-    // Version recorded by the most recently loaded settings document.
-    std::string installedVersion;
 };

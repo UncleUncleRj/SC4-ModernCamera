@@ -1,7 +1,6 @@
 #include "PluginSettings.h"
 
 #include "Logger.h"
-#include "PluginVersion.h"
 
 #include <algorithm>
 #include <fstream>
@@ -116,7 +115,7 @@ void PluginSettings::RestoreDefaults()
 	invertWheelZoom = false;
 	debugLogging = DebugLogging::Normal;
 	bookmarksEnabled = true;
-	showChangelogsOnUpdate = true;
+	notifyUpdatesInTicker = true;
 }
 
 // Loads known fields while retaining defaults for missing or invalid values.
@@ -124,7 +123,6 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 {
 	path = settingsPath;
 	RestoreDefaults();
-	installedVersion.clear();
 
 	if (!std::filesystem::exists(path))
 	{
@@ -138,8 +136,6 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		Logger::GetInstance().WriteLine(LogLevel::Warning, "Settings file is empty or unreadable; using defaults.");
 		return false;
 	}
-
-	TryReadString(json, "installedVersion", installedVersion);
 
 	std::string value;
 	if (TryReadString(json, "mode", value))
@@ -168,7 +164,9 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 		else debugLogging = DebugLogging::Normal;
 	}
 	TryReadBool(json, "bookmarksEnabled", bookmarksEnabled);
-	TryReadBool(json, "showChangelogsOnUpdate", showChangelogsOnUpdate);
+	// Someone who turned off the old update popup also doesn't want the ticker message.
+	TryReadBool(json, "showChangelogsOnUpdate", notifyUpdatesInTicker);
+	TryReadBool(json, "notifyUpdatesInTicker", notifyUpdatesInTicker);
 
 	rotationSensitivity = std::clamp(rotationSensitivity, kMinimumSensitivity, kMaximumSensitivity);
 	zoomSensitivity = std::clamp(zoomSensitivity, kMinimumSensitivity, kMaximumSensitivity);
@@ -209,7 +207,6 @@ bool PluginSettings::Save() const
 
 	stream
 		<< "{\n"
-		<< "  \"installedVersion\": \"" << installedVersion << "\",\n"
 		<< "  \"camera\": {\n"
 		<< "    \"mode\": \"" << PluginSettingText::ToString(cameraMode) << "\",\n"
 		<< "    \"wasdMovement\": " << (wasdMovement ? "true" : "false") << ",\n"
@@ -232,7 +229,7 @@ bool PluginSettings::Save() const
 		<< "    \"bookmarksEnabled\": " << (bookmarksEnabled ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"ui\": {\n"
-		<< "    \"showChangelogsOnUpdate\": " << (showChangelogsOnUpdate ? "true" : "false") << "\n"
+		<< "    \"notifyUpdatesInTicker\": " << (notifyUpdatesInTicker ? "true" : "false") << "\n"
 		<< "  }\n"
 		<< "}\n";
 
@@ -261,27 +258,8 @@ bool PluginSettings::Save() const
 	return true;
 }
 
-// Returns whether the stored version differs from the current plugin version.
-bool PluginSettings::NeedsVersionNotice() const
-{
-	return installedVersion != PluginVersion::String;
-}
-
-// Records the current plugin version and saves the updated settings document.
-bool PluginSettings::AcknowledgeCurrentVersion()
-{
-	installedVersion = PluginVersion::String;
-	return Save();
-}
-
 // Returns the path retained for future Save calls.
 const std::filesystem::path& PluginSettings::GetPath() const
 {
 	return path;
-}
-
-// Returns the version marker retained from the loaded settings document.
-const std::string& PluginSettings::GetInstalledVersion() const
-{
-	return installedVersion;
 }

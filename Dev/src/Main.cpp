@@ -3355,6 +3355,7 @@ public:
             mpFrameWork->RemoveFromTick(&g_CameraTickService);
             g_CameraTickRegistered = false;
         }
+        g_WindowManager.ShutdownReleaseNotes();
         g_CameraBookmarks.Shutdown();
         logger.Shutdown();
         return true;
@@ -3363,6 +3364,7 @@ public:
     // Stops plugin writers before an abortive framework shutdown can unload code.
     bool AbortiveQuit() override
     {
+        g_WindowManager.ShutdownReleaseNotes();
         g_CameraBookmarks.Shutdown();
         Logger::GetInstance().RequestAbortiveStop();
         return true;

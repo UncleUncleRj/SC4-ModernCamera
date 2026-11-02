@@ -16,7 +16,11 @@
 #include "cIGZWinGen.h"
 #include "cIGZWinSlider.h"
 #include "cIGZWinText.h"
+#include "cIGZWinTextEdit.h"
+#include "cISC4AdvisorSystem.h"
 #include "cISC4App.h"
+#include "cISC4City.h"
+#include "cISCLua.h"
 #include "cRZAutoRefCount.h"
 #include "cRZBaseString.h"
 
@@ -59,10 +63,19 @@ namespace
 	constexpr uint32_t kBasicTextID = 0x3D0C0821;
 	constexpr uint32_t kBasicActionButtonID = 0x3D0C0830;
 	constexpr uint32_t kGreetingCloseXButtonID = 0x3D0C0840;
+	constexpr uint32_t kGreetingChangelogTextID = 0x3D0C0842;
+	constexpr char kReleaseNotesLoadingText[] = "Loading the latest release notes from GitHub...";
+	constexpr char kReleaseNotesFailedText[] =
+		"The release notes could not be loaded. Check your connection and reopen this window, or click Github to read them online.";
 	constexpr uint32_t kGreetingOKButtonID = 0x3D0C0843;
-	constexpr uint32_t kGreetingViewGithubButtonID = 0x3D0C0844;
+	constexpr uint32_t kGreetingGithubButtonID = 0x3D0C0844;
+	constexpr uint32_t kGreetingLatestVersionTextID = 0x3D0C084F;
+	constexpr uint32_t kGreetingUpdateAvailableTextID = 0x3D0C0854;
+	constexpr uint32_t kGreetingSimtropolisButtonID = 0x3D0C0855;
 	constexpr char kProjectGithubUrl[] = "https://github.com/UncleUncleRj/SC4-ModernCamera";
-	constexpr uint32_t kGreetingSuppressChangelogsButtonID = 0x3D0C0847;
+	constexpr char kProjectSimtropolisUrl[] = "https://community.simtropolis.com/files/file/37462-sc4-modern-camera/";
+	// Global the update notice's "See what's new" link calls in the advisors' Lua state.
+	constexpr char kOpenChangelogLuaFunction[] = "sc4moderncamera_open_changelog";
 	constexpr uint32_t kControlsCloseXButtonID = 0x3D0C0850;
 	constexpr uint32_t kControlsOKButtonID = 0x3D0C0853;
 	// The two menu controls occupy the same top-right button location. One is
@@ -116,7 +129,7 @@ namespace
 	constexpr uint32_t kAdvancedDebugLoggingOffButtonID = 0x3D0C0968;
 	constexpr uint32_t kAdvancedDebugLoggingNormalButtonID = 0x3D0C0969;
 	constexpr uint32_t kAdvancedDebugLoggingVerboseButtonID = 0x3D0C096A;
-	constexpr uint32_t kAdvancedShowChangelogsButtonID = 0x3D0C096E;
+	constexpr uint32_t kAdvancedNoUpdateNoticesButtonID = 0x3D0C096E;
 
 	// Inclusive block of control IDs that belong to one settings page. Pages are
 	// shown by ID range so a theme can add art to a page without code changes.
@@ -291,30 +304,21 @@ namespace
 	constexpr uint32_t kMessageTypeCommand = 3;
 	constexpr uint32_t kCommandButtonClicked = 0x287259F6;
 	constexpr uint32_t kCommandValueChanged = 0x887113A3;
-	// Native notification-dialog signature used by the supported executable.
-	using CreateSC4NotificationDialog = bool(__cdecl*)(cIGZString const& caption, cIGZString const& message);
-	// Native notification-dialog address used by that executable version.
-	constexpr uintptr_t kCreateSC4NotificationDialogAddress = 0x78DD80;
 	// Win32 timer delays. The one-millisecond timers defer window work until
 	// after the current SC4 command dispatch completes.
-	constexpr UINT kVersionNoticeDelayMs = 3000;
 	constexpr UINT kSettingsSliderSaveDelayMs = 200;
 	constexpr UINT kSettingsReopenDelayMs = 1;
 	constexpr UINT kDeferredWindowOpenDelayMs = 1;
-	// Owners of the currently armed one-shot timer callbacks.
-	SC4WindowManager* g_DelayedVersionNoticeManager = nullptr;
+	constexpr UINT kReleaseNotesPollMs = 250;
+	// Text-edit capacity kept beyond the text being displayed.
+	constexpr uint32_t kChangelogTextMargin = 512;
+	// Owners of the currently armed timer callbacks.
 	SettingsWindow* g_DelayedSettingsSaveWindow = nullptr;
 	SC4WindowManager* g_DelayedSettingsReopenManager = nullptr;
 	SC4WindowManager* g_DelayedWindowOpenManager = nullptr;
-
-	// Forwards the version-notice timer to its owning window manager.
-	VOID CALLBACK DelayedVersionNoticeTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
-	{
-		if (g_DelayedVersionNoticeManager)
-		{
-			g_DelayedVersionNoticeManager->OnVersionNoticeTimer();
-		}
-	}
+	SC4WindowManager* g_ReleaseNotesManager = nullptr;
+	// Window manager of the loaded city, which the Lua link below reaches.
+	SC4WindowManager* g_UpdateLinkManager = nullptr;
 
 	// Forwards the deferred settings-save timer to its owning settings window.
 	VOID CALLBACK DelayedSettingsSaveTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
@@ -340,6 +344,35 @@ namespace
 		if (g_DelayedWindowOpenManager)
 		{
 			g_DelayedWindowOpenManager->OnDeferredWindowOpenTimer();
+		}
+	}
+
+	/// <summary>Opens the changelog from the update notice's link. The deferred open lets
+	/// the advice list finish handling the click, as a settings button does.</summary>
+	int32_t OpenChangelogFromLua(lua_State*)
+	{
+		if (g_UpdateLinkManager)
+		{
+			g_UpdateLinkManager->ScheduleDeferredWindowOpen(DeferredWindowOpen::Changelog);
+		}
+		return 0;
+	}
+
+	/// <summary>Returns the Lua state the city's advisors run in, if a city is loaded.</summary>
+	cISCLua* GetCityAdvisorLua()
+	{
+		cISC4AppPtr app;
+		cISC4City* city = app ? app->GetCity() : nullptr;
+		cISC4AdvisorSystem* advisors = city ? city->GetAdvisorSystem() : nullptr;
+		return advisors ? advisors->GetScriptingContext() : nullptr;
+	}
+
+	/// <summary>Forwards the release notes poll to its owning window manager.</summary>
+	VOID CALLBACK ReleaseNotesTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
+	{
+		if (g_ReleaseNotesManager)
+		{
+			g_ReleaseNotesManager->OnReleaseNotesTimer();
 		}
 	}
 
@@ -716,8 +749,8 @@ namespace
 			buttons = {
 				kGreetingCloseXButtonID,
 				kGreetingOKButtonID,
-				kGreetingViewGithubButtonID,
-				kGreetingSuppressChangelogsButtonID,
+				kGreetingGithubButtonID,
+				kGreetingSimtropolisButtonID,
 			};
 			break;
 		case kControlsWindowResourceInstance:
@@ -760,7 +793,7 @@ namespace
 				kAdvancedDebugLoggingOffButtonID,
 				kAdvancedDebugLoggingNormalButtonID,
 				kAdvancedDebugLoggingVerboseButtonID,
-				kAdvancedShowChangelogsButtonID,
+				kAdvancedNoUpdateNoticesButtonID,
 			};
 			sliders = {
 				kSettingsRotationSliderID,
@@ -1850,7 +1883,7 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			const bool previousInvertWheelZoom = settings->invertWheelZoom;
 			const DebugLogging previousDebugLogging = settings->debugLogging;
 			const bool previousBookmarksEnabled = settings->bookmarksEnabled;
-			const bool previousShowChangelogs = settings->showChangelogsOnUpdate;
+			const bool previousNotifyUpdates = settings->notifyUpdatesInTicker;
 			settings->RestoreDefaults();
 			LogOptionChanged(
 				"Settings UI",
@@ -1929,12 +1962,13 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 				ToOnOffString(settings->bookmarksEnabled));
 			LogOptionChanged(
 				"Settings UI",
-				"Show Changelogs on Update",
-				ToOnOffString(previousShowChangelogs),
-				ToOnOffString(settings->showChangelogsOnUpdate));
+				"News Ticker Update Notices",
+				ToOnOffString(previousNotifyUpdates),
+				ToOnOffString(settings->notifyUpdatesInTicker));
 			ApplySettingsChange("restore defaults");
 			if (manager)
 			{
+				manager->RefreshUpdateNotification();
 				manager->RefreshSettingsWindows();
 				manager->ScheduleSettingsWindowReopen();
 			}
@@ -2075,8 +2109,8 @@ void SettingsWindow::SyncAdvancedControlsFromSettings()
 	ApplyButtonChoice(GetRootWindow(), selectedDebugLoggingID, debugLoggingIDs, 3);
 	SetButtonToggle(
 		GetRootWindow(),
-		kAdvancedShowChangelogsButtonID,
-		settings->showChangelogsOnUpdate);
+		kAdvancedNoUpdateNoticesButtonID,
+		!settings->notifyUpdatesInTicker);
 }
 
 // Applies Advanced page buttons, persists their new values immediately, and
@@ -2148,14 +2182,18 @@ bool SettingsWindow::ApplyAdvancedOption(uint32_t controlID)
 		settings->debugLogging = DebugLogging::Verbose;
 		debugLoggingChanged = true;
 		break;
-	case kAdvancedShowChangelogsButtonID:
+	case kAdvancedNoUpdateNoticesButtonID:
 		LogOptionChanged(
 			"Advanced Settings UI",
-			"Show Changelogs on Update",
-			ToOnOffString(settings->showChangelogsOnUpdate),
-			ToOnOffString(!settings->showChangelogsOnUpdate));
-		settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
-		reason = "changelog preference change";
+			"News Ticker Update Notices",
+			ToOnOffString(settings->notifyUpdatesInTicker),
+			ToOnOffString(!settings->notifyUpdatesInTicker));
+		settings->notifyUpdatesInTicker = !settings->notifyUpdatesInTicker;
+		reason = "update notice preference change";
+		if (manager)
+		{
+			manager->RefreshUpdateNotification();
+		}
 		break;
 	default:
 		break;
@@ -2355,73 +2393,78 @@ GreetingWindow::GreetingWindow()
 		kGreetingWindowResourceInstance,
 		kGreetingWindowCLSID,
 		kGreetingCloseXButtonID,
-		kGreetingOKButtonID),
-	manager(nullptr),
-	settings(nullptr)
+		kGreetingOKButtonID)
 {
 }
 
-// Retains the manager used to open the controls reference window.
-void GreetingWindow::SetWindowManager(SC4WindowManager* windowManager)
+bool GreetingWindow::SetChangelogText(const std::string& text)
 {
-	manager = windowManager;
-}
-
-// Retains the settings that hold the automatic-changelog preference.
-void GreetingWindow::SetSettings(PluginSettings* pluginSettings)
-{
-	settings = pluginSettings;
-}
-
-// Synchronizes the changelog preference as soon as the greeting is created.
-void GreetingWindow::OnCreated()
-{
-	RefreshFromSettings();
-}
-
-// Mirrors the automatic-changelog preference in the greeting toggle button.
-void GreetingWindow::RefreshFromSettings()
-{
-	SetButtonToggle(
-		GetRootWindow(),
-		kGreetingSuppressChangelogsButtonID,
-		settings && !settings->showChangelogsOnUpdate);
-}
-
-// Toggles automatic changelogs or opens the controls reference window, then
-// delegates ordinary close actions to the baked base class.
-bool GreetingWindow::OnButtonClick(uint32_t controlID)
-{
-	if (controlID == kGreetingSuppressChangelogsButtonID && settings)
+	cIGZWin* root = GetRootWindow();
+	if (!root)
 	{
-		settings->showChangelogsOnUpdate = !settings->showChangelogsOnUpdate;
-		if (!settings->Save())
-		{
-			Logger::GetInstance().WriteLine(
-				LogLevel::Warning,
-				"Changelog UI: failed to save the automatic changelog preference.");
-		}
-		RefreshFromSettings();
-		if (manager)
-		{
-			manager->RefreshSettingsWindows();
-		}
+		// Reopening the window shows the current text.
 		return true;
 	}
-	if (controlID == kGreetingViewGithubButtonID)
+	cRZAutoRefCount<cIGZWinTextEdit> textEdit;
+	if (!root->GetChildAsRecursive(kGreetingChangelogTextID, GZIID_cIGZWinTextEdit, textEdit.AsPPVoid()))
 	{
+		return false;
+	}
+
+	// The resource's baked capacity only fits its placeholder text.
+	const uint32_t requiredCapacity = static_cast<uint32_t>(text.size()) + kChangelogTextMargin;
+	if (textEdit->GetMaximumTextToAllow() < requiredCapacity)
+	{
+		textEdit->SetMaximumTextToAllow(requiredCapacity);
+	}
+	textEdit->SetText(cRZBaseString(text.c_str()), false);
+	textEdit->ScrollToStart();
+	return true;
+}
+
+void GreetingWindow::SetVersionStatus(const std::optional<std::string>& latestVersion, bool checking)
+{
+	cIGZWin* root = GetRootWindow();
+	if (!root)
+	{
+		return;
+	}
+
+	const std::string latest = latestVersion
+		? *latestVersion
+		: std::string(checking ? "checking..." : "unavailable");
+	SetTextCaption(root->GetChildWindowFromIDRecursive(kGreetingLatestVersionTextID), "Latest : " + latest);
+	SetControlVisible(
+		root,
+		kGreetingUpdateAvailableTextID,
+		latestVersion && IsNewerVersion(*latestVersion, PluginVersion::String));
+}
+
+// Opens a project page in the default browser, then delegates ordinary close
+// actions to the baked base class.
+bool GreetingWindow::OnButtonClick(uint32_t controlID)
+{
+	if (controlID == kGreetingGithubButtonID || controlID == kGreetingSimtropolisButtonID)
+	{
+		const bool github = controlID == kGreetingGithubButtonID;
+		const std::string pageName = github ? "GitHub" : "Simtropolis";
 		// ShellExecute reports success with any value above 32.
-		const auto result = reinterpret_cast<INT_PTR>(
-			ShellExecuteA(nullptr, "open", kProjectGithubUrl, nullptr, nullptr, SW_SHOWNORMAL));
+		const auto result = reinterpret_cast<INT_PTR>(ShellExecuteA(
+			nullptr,
+			"open",
+			github ? kProjectGithubUrl : kProjectSimtropolisUrl,
+			nullptr,
+			nullptr,
+			SW_SHOWNORMAL));
 		if (result > 32)
 		{
-			Logger::GetInstance().WriteLine(LogLevel::Info, "Greeting UI: opened the GitHub page in the browser.");
+			Logger::GetInstance().WriteLine(LogLevel::Info, "Greeting UI: opened the " + pageName + " page in the browser.");
 		}
 		else
 		{
 			Logger::GetInstance().WriteLine(
 				LogLevel::Warning,
-				"Greeting UI: could not open the GitHub page. ShellExecute returned " + std::to_string(result) + ".");
+				"Greeting UI: could not open the " + pageName + " page. ShellExecute returned " + std::to_string(result) + ".");
 		}
 		return true;
 	}
@@ -2943,8 +2986,7 @@ bool ControlLaboratoryWindow::DoWinMsg(cIGZWin* pWin, uint32_t messageID, uint32
 }
 
 // Starts the city UI session: selects a compatible theme, creates the compact
-// menu button, and schedules or suppresses the version greeting according to
-// the persisted changelog preference.
+// menu button, and prepares the news ticker update notice.
 void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 {
 	LoadThemeManifest();
@@ -2963,91 +3005,27 @@ void SC4WindowManager::OnCityLoaded(PluginSettings& settings)
 		menuButtonWindow.RefreshMode();
 	}
 
-	if (settings.NeedsVersionNotice() && !settings.showChangelogsOnUpdate)
+	g_UpdateLinkManager = this;
+	publishedUpdateVersion.clear();
+	cISCLua* lua = GetCityAdvisorLua();
+	updateNoticeReady = lua != nullptr;
+	if (lua)
+	{
+		lua->Register(OpenChangelogFromLua, kOpenChangelogLuaFunction);
+	}
+	else
 	{
 		Logger::GetInstance().WriteLine(
-			LogLevel::Info,
-			"Window Manager: automatic changelog suppressed; recording the installed version.");
-		settings.AcknowledgeCurrentVersion();
-		return;
+			LogLevel::Warning,
+			"Window Manager: the advisor scripting context was unavailable; update notices are off for this city.");
 	}
-
-	if (settings.NeedsVersionNotice())
-	{
-		CancelTimer(versionNoticeTimerID);
-
-		pendingVersionNoticeSettings = &settings;
-		g_DelayedVersionNoticeManager = this;
-		versionNoticeTimerID = static_cast<uintptr_t>(
-			SetTimer(NULL, 0, kVersionNoticeDelayMs, DelayedVersionNoticeTimerProc));
-		if (versionNoticeTimerID == 0)
-		{
-			Logger::GetInstance().WriteLine(
-				LogLevel::Warning,
-				"Window Manager: failed to start the delayed version notice timer; falling back to the native version notice.");
-			const std::string title = std::string("SC4 Modern Camera ") + PluginVersion::String;
-			const std::string message =
-				std::string("SC4-ModernCamera v") + PluginVersion::String + " installed!\n\n"
-				+ "Camera Options are available from the camera settings button in the upper right of the screen.\n\n"
-				+ "Controls:\n"
-				+ "WASD: Pan Camera\n"
-				+ "Shift + WASD: Pan Faster\n"
-				+ "WASD Movement can be disabled in settings.\n"
-				+ "Scroll Wheel: Zoom\n"
-				+ "Mouse 3 + Drag: Pan & Tilt\n"
-				+ "Alt: Hold Classic Angle\n\n"
-				+ "Changelog:\n"
-				+ "- Polished the welcome/changelog window and UI image handling.\n"
-				+ "- Added persistent JSON settings.\n"
-				+ "- Added version-aware first-install notice.\n"
-				+ "- Added native SC4 window manager foundation.\n"
-				+ "- Added optional WASD camera movement support groundwork.\n"
-				+ "- Added plugin data folder: Plugins/SC4-ModernCamera/.";
-			if (ShowNotification(title.c_str(), message.c_str()))
-			{
-				settings.AcknowledgeCurrentVersion();
-			}
-			pendingVersionNoticeSettings = nullptr;
-			if (g_DelayedVersionNoticeManager == this)
-			{
-				g_DelayedVersionNoticeManager = nullptr;
-			}
-		}
-		else
-		{
-			Logger::GetInstance().WriteLine(
-				LogLevel::Info,
-				"Window Manager: scheduled the version notice for 3 seconds after city load.");
-		}
-	}
+	RefreshUpdateNotification();
 }
 
 // Replaces the runtime callbacks used after UI-driven settings changes.
 void SC4WindowManager::SetCallbacks(SC4WindowManagerCallbacks managerCallbacks)
 {
 	callbacks = std::move(managerCallbacks);
-}
-
-// Consumes the delayed version-notice timer and opens the greeting when it is
-// still needed.
-void SC4WindowManager::OnVersionNoticeTimer()
-{
-	CancelTimer(versionNoticeTimerID);
-
-	PluginSettings* settings = pendingVersionNoticeSettings;
-	pendingVersionNoticeSettings = nullptr;
-	if (g_DelayedVersionNoticeManager == this)
-	{
-		g_DelayedVersionNoticeManager = nullptr;
-	}
-
-	if (settings)
-	{
-		Logger::GetInstance().WriteLine(
-			LogLevel::Info,
-			"Window Manager: delayed version notice timer fired.");
-		ShowVersionNoticeIfNeeded(*settings);
-	}
 }
 
 // Recreates the primary settings window after a deferred refresh request.
@@ -3090,6 +3068,130 @@ void SC4WindowManager::OnDeferredWindowOpenTimer()
 	default:
 		break;
 	}
+}
+
+void SC4WindowManager::OnReleaseNotesTimer()
+{
+	if (releaseNotes.IsDownloading())
+	{
+		return;
+	}
+
+	CancelTimer(releaseNotesTimerID);
+	if (g_ReleaseNotesManager == this)
+	{
+		g_ReleaseNotesManager = nullptr;
+	}
+	UpdateChangelogText();
+	PublishUpdateNotification();
+}
+
+void SC4WindowManager::RefreshUpdateNotification()
+{
+	if (pendingSettings && pendingSettings->notifyUpdatesInTicker)
+	{
+		BeginReleaseNotesUpdate();
+	}
+	else
+	{
+		PublishUpdateNotification();
+	}
+}
+
+void SC4WindowManager::PublishUpdateNotification()
+{
+	const std::optional<std::string> latest = releaseNotes.GetLatestVersion();
+	const bool notify = pendingSettings
+		&& pendingSettings->notifyUpdatesInTicker
+		&& latest
+		&& IsNewerVersion(*latest, PluginVersion::String);
+	const std::string version = notify ? *latest : std::string();
+	if (!updateNoticeReady || version == publishedUpdateVersion)
+	{
+		return;
+	}
+
+	cISCLua* lua = GetCityAdvisorLua();
+	if (!lua)
+	{
+		return;
+	}
+	// ExtractReleaseVersion only passes digits and dots. The guard covers a
+	// plugin DLL running without its companion DAT.
+	const std::string chunk =
+		"if sc4moderncamera then sc4moderncamera.update_version = \"" + version
+		+ "\"; sc4moderncamera.update_available = " + (version.empty() ? "0" : "1") + " end";
+	lua->DoString(chunk.c_str());
+	publishedUpdateVersion = version;
+	Logger::GetInstance().WriteLine(
+		LogLevel::Info,
+		version.empty()
+			? std::string("Update notice: cleared.")
+			: "Update notice: version " + version + " is available.");
+}
+
+void SC4WindowManager::ShutdownReleaseNotes()
+{
+	CancelTimer(releaseNotesTimerID);
+	if (g_ReleaseNotesManager == this)
+	{
+		g_ReleaseNotesManager = nullptr;
+	}
+	releaseNotes.Shutdown();
+}
+
+void SC4WindowManager::BeginReleaseNotesUpdate()
+{
+	releaseNotes.Start();
+	if (!UpdateChangelogText())
+	{
+		PublishUpdateNotification();
+		return;
+	}
+	if (releaseNotesTimerID != 0)
+	{
+		return;
+	}
+
+	g_ReleaseNotesManager = this;
+	releaseNotesTimerID = static_cast<uintptr_t>(
+		SetTimer(NULL, 0, kReleaseNotesPollMs, ReleaseNotesTimerProc));
+	if (releaseNotesTimerID == 0)
+	{
+		g_ReleaseNotesManager = nullptr;
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Changelog UI: failed to start the release notes timer.");
+		greetingWindow.SetChangelogText(kReleaseNotesFailedText);
+	}
+}
+
+bool SC4WindowManager::UpdateChangelogText()
+{
+	// Read in this order: a download finishing between the two reads must not
+	// look like a failure, and a true result always gets another update.
+	const bool downloading = releaseNotes.IsDownloading();
+	const std::optional<std::string> text = releaseNotes.GetText();
+	greetingWindow.SetVersionStatus(releaseNotes.GetLatestVersion(), downloading);
+
+	const std::string failure = releaseNotes.ConsumeFailure();
+	if (!failure.empty())
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Changelog UI: could not load the release notes: " + failure + ".");
+	}
+
+	const std::string displayed = text
+		? *text
+		: std::string(downloading ? kReleaseNotesLoadingText : kReleaseNotesFailedText);
+	if (!greetingWindow.SetChangelogText(displayed))
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			"Changelog UI: the greeting window has no changelog text control.");
+	}
+	return downloading;
 }
 
 // Creates a centered basic window with default options and returns its handle.
@@ -3150,14 +3252,18 @@ bool SC4WindowManager::CloseWindow(SC4WindowHandle handle)
 void SC4WindowManager::OnCityShutdown()
 {
 	CancelTimer(settingsReopenTimerID);
-	CancelTimer(versionNoticeTimerID);
 	CancelTimer(deferredWindowOpenTimerID);
-	pendingDeferredWindowOpen = DeferredWindowOpen::None;
-	pendingVersionNoticeSettings = nullptr;
-	pendingSettings = nullptr;
-	if (g_DelayedVersionNoticeManager == this)
+	CancelTimer(releaseNotesTimerID);
+	if (g_ReleaseNotesManager == this)
 	{
-		g_DelayedVersionNoticeManager = nullptr;
+		g_ReleaseNotesManager = nullptr;
+	}
+	pendingDeferredWindowOpen = DeferredWindowOpen::None;
+	pendingSettings = nullptr;
+	updateNoticeReady = false;
+	if (g_UpdateLinkManager == this)
+	{
+		g_UpdateLinkManager = nullptr;
 	}
 	if (g_DelayedSettingsReopenManager == this)
 	{
@@ -3170,69 +3276,21 @@ void SC4WindowManager::OnCityShutdown()
 	CloseAllWindows();
 }
 
-// Shows the native SC4 notification dialog on the supported executable. The
-// native Boolean return is not a success indicator, so a completed call is
-// reported as success.
-bool SC4WindowManager::ShowNotification(const char* caption, const char* message) const
-{
-	if (!caption || !message || !SC4VersionDetection::IsDigitalDistributionVersion())
-	{
-		return false;
-	}
-
-	const auto createDialog = reinterpret_cast<CreateSC4NotificationDialog>(
-		kCreateSC4NotificationDialogAddress);
-	cRZBaseString captionString(caption);
-	cRZBaseString messageString(message);
-	// The native function's Boolean return is not a success indicator.
-	createDialog(captionString, messageString);
-	return true;
-}
-
-// Shows the version greeting when needed, or acknowledges the installed
-// version immediately when automatic changelogs are disabled.
-bool SC4WindowManager::ShowVersionNoticeIfNeeded(PluginSettings& settings)
-{
-	if (!settings.NeedsVersionNotice())
-	{
-		return true;
-	}
-
-	if (!settings.showChangelogsOnUpdate)
-	{
-		return settings.AcknowledgeCurrentVersion();
-	}
-
-	if (!ShowGreetingWindow())
-	{
-		Logger::GetInstance().WriteLine(
-			LogLevel::Warning,
-			"The baked greeting window could not be displayed.");
-		return false;
-	}
-
-	if (!settings.AcknowledgeCurrentVersion())
-	{
-		Logger::GetInstance().WriteLine(
-			LogLevel::Warning,
-			"The version notice was shown, but its acknowledgement could not be saved.");
-		return false;
-	}
-	return true;
-}
-
 // Opens the authored native-control laboratory.
 bool SC4WindowManager::ShowControlLaboratory()
 {
 	return controlLaboratory.Create();
 }
 
-// Opens the greeting window with the current city settings.
+// Opens the greeting window and brings its release information up to date.
 bool SC4WindowManager::ShowGreetingWindow()
 {
-	greetingWindow.SetWindowManager(this);
-	greetingWindow.SetSettings(pendingSettings);
-	return greetingWindow.Create();
+	if (!greetingWindow.Create())
+	{
+		return false;
+	}
+	BeginReleaseNotesUpdate();
+	return true;
 }
 
 // Opens the read-only controls reference window.
@@ -3332,10 +3390,6 @@ void SC4WindowManager::RefreshSettingsWindows()
 	if (settingsWindow.IsVisible())
 	{
 		settingsWindow.RefreshFromSettings();
-	}
-	if (greetingWindow.IsVisible())
-	{
-		greetingWindow.RefreshFromSettings();
 	}
 }
 

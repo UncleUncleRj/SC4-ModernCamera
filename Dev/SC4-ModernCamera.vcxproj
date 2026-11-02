@@ -17,6 +17,7 @@
     <ClCompile Include="src\Main.cpp" />
     <ClCompile Include="src\PluginPaths.cpp" />
     <ClCompile Include="src\PluginSettings.cpp" />
+    <ClCompile Include="src\ReleaseNotesDownloader.cpp" />
     <ClCompile Include="src\Runtime\TimerManager.cpp" />
     <ClCompile Include="src\SC4CameraController.cpp" />
     <ClCompile Include="src\SC4VersionDetection.cpp" />
@@ -80,7 +81,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>version.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -118,7 +119,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>version.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -153,6 +154,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClInclude Include="src\PluginPaths.h" />
     <ClInclude Include="src\PluginSettings.h" />
     <ClInclude Include="src\PluginVersion.h" />
+    <ClInclude Include="src\ReleaseNotesDownloader.h" />
     <ClInclude Include="src\Runtime\TimerManager.h" />
     <ClInclude Include="src\SC4CameraController.h" />
     <ClInclude Include="src\SC4GameConstants.h" />
@@ -170,6 +172,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <None Include="ui\SC4-ModernCamera-TestUI.txt" />
     <None Include="..\docs\changelog.md" />
     <None Include="..\tools\build_sc4_ui_dat.py" />
+    <None Include="ui\SC4-ModernCamera-UpdateNotice.lua" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

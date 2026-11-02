@@ -51,7 +51,7 @@ REQUIRED_CONTROLS = {
         0x3D0C0840: "GZWinBtn",
         0x3D0C0843: "GZWinBtn",
         0x3D0C0844: "GZWinBtn",
-        0x3D0C0847: "GZWinBtn",
+        0x3D0C0855: "GZWinBtn",
     },
     "controls.txt": {
         0x3D0C0850: "GZWinBtn",
@@ -240,10 +240,9 @@ def build(theme_dir: Path, destination: Path) -> None:
 def export_template(destination: Path, group: int) -> None:
     repo = Path(__file__).resolve().parents[1]
     ui_source = repo / "Dev" / "ui" / "SC4-ModernCamera-ControlLaboratory.txt"
-    changelog = repo / "docs" / "changelog.md"
     version_header = repo / "Dev" / "src" / "PluginVersion.h"
     scripts = {
-        "greeting.txt": base.build_greeting_script(changelog, version_header),
+        "greeting.txt": base.build_greeting_script(version_header),
         "controls.txt": base.build_controls_script(),
         "menu-button.txt": base.build_menu_button_script(),
         "settings.txt": base.build_settings_script(version_header),

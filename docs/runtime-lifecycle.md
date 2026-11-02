@@ -43,6 +43,18 @@ The worker owns timestamp formatting, file writes, periodic flushing, and log
 closure. It must not call SimCity 4, GZCOM, UI, camera, or other game-state
 APIs.
 
+## Release notes download
+
+`ReleaseNotesDownloader` runs each download on an owned worker. The worker only
+uses WinHTTP and its own state; the game thread polls it from a timer, updates
+the window, and writes the log. City shutdown cancels the timer but leaves a
+running download to finish, and its result is kept for the session.
+
+`PreAppShutdown()` and `AbortiveQuit()` both join the worker. WinHTTP does not
+permit closing a synchronous request from another thread, so the wait is bounded
+by the network timeouts (3 to 5 seconds per step) and a stop flag checked between
+reads. It can only be felt when quitting during a stalled download.
+
 ## Shutdown
 
 `PreAppShutdown()` is the normal teardown point. It is available even when the

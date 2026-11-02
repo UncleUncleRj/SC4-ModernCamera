@@ -39,6 +39,9 @@
 	<ClCompile Include="src\CameraBookmarkStore.cpp">
 	  <Filter>Source Files</Filter>
 	</ClCompile>
+	<ClCompile Include="src\ReleaseNotesDownloader.cpp">
+	  <Filter>Source Files</Filter>
+	</ClCompile>
     <ClCompile Include="src\Hooks\VTableHook.cpp">
       <Filter>Source Files\Hooks</Filter>
     </ClCompile>
@@ -87,6 +90,9 @@
   </ItemGroup>
   <ItemGroup>
 	<ClInclude Include="src\CameraBookmarkStore.h">
+	  <Filter>Header Files</Filter>
+	</ClInclude>
+	<ClInclude Include="src\ReleaseNotesDownloader.h">
 	  <Filter>Header Files</Filter>
 	</ClInclude>
     <ClInclude Include="src\Hooks\VTableHook.h">
@@ -155,6 +161,9 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="..\tools\build_sc4_ui_dat.py">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="ui\SC4-ModernCamera-UpdateNotice.lua">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

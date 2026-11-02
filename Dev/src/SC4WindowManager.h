@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ReleaseNotesDownloader.h"
 #include "cIGZWinProc.h"
 
 #include <cstddef>
@@ -7,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -324,24 +326,18 @@ class GreetingWindow final : public BakedManagedWindow
 public:
 	// Creates the baked greeting window.
 	GreetingWindow();
-	// Supplies the manager that opens the selected greeting destination.
-	void SetWindowManager(class SC4WindowManager* manager);
-	// Supplies the settings object changed by the greeting's update-notice control.
-	void SetSettings(PluginSettings* settings);
-	// Synchronizes greeting controls with the supplied settings.
-	void RefreshFromSettings();
+	/// <summary>Replaces the scrollable changelog text and returns to its first line.</summary>
+	/// <param name="text">UTF-8 text to display.</param>
+	/// <returns>False only when an existing window has no changelog text control.</returns>
+	bool SetChangelogText(const std::string& text);
+	/// <summary>Shows the latest release's version and whether it is an update.</summary>
+	/// <param name="latestVersion">Detected version, if any.</param>
+	/// <param name="checking">Whether a download may still detect the version.</param>
+	void SetVersionStatus(const std::optional<std::string>& latestVersion, bool checking);
 
 protected:
-	// Synchronizes greeting controls after its baked resource is created.
-	void OnCreated() override;
-	// Handles greeting buttons such as changelog and settings.
+	// Handles the project page buttons.
 	bool OnButtonClick(uint32_t controlID) override;
-
-private:
-	// Manager that owns the target baked windows.
-	SC4WindowManager* manager;
-	// Settings object used by the update-changelog preference control.
-	PluginSettings* settings;
 };
 
 // Baked reference window describing Modern Camera controls.
@@ -468,17 +464,17 @@ public:
 	void OnCityLoaded(PluginSettings& settings);
 	// Closes every plugin window and releases city-specific state.
 	void OnCityShutdown();
-	// Shows the version notice when its deferred timer fires.
-	void OnVersionNoticeTimer();
 	// Reopens the settings window when its deferred timer fires.
 	void OnSettingsReopenTimer();
 	// Opens the queued baked window when its deferred timer fires.
 	void OnDeferredWindowOpenTimer();
+	/// <summary>Shows the release notes outcome once the download has finished.</summary>
+	void OnReleaseNotesTimer();
+	/// <summary>Stops the release notes poll and joins the download worker.</summary>
+	void ShutdownReleaseNotes();
+	/// <summary>Checks for a newer release when notices are on, or clears the notice when they are off.</summary>
+	void RefreshUpdateNotification();
 
-	// Shows the version notice when the settings require acknowledgement.
-	bool ShowVersionNoticeIfNeeded(PluginSettings& settings);
-	// Invokes the native notification dialog with the supplied caption and message.
-	bool ShowNotification(const char* caption, const char* message) const;
 	// Creates a default basic managed window and returns its handle.
 	SC4WindowHandle CreateManagedWindow();
 	// Creates a basic managed window from caller-supplied options.
@@ -530,6 +526,14 @@ private:
 		std::unique_ptr<BasicManagedWindow> window;
 	};
 
+	/// <summary>Starts the download if needed and polls until it finishes.</summary>
+	void BeginReleaseNotesUpdate();
+	/// <summary>Shows the downloaded notes, the loading message, or the failure message.</summary>
+	/// <returns>Whether the download was still running, which requires a later update.</returns>
+	bool UpdateChangelogText();
+	/// <summary>Raises or clears the news ticker notice through the advisors' Lua state.</summary>
+	void PublishUpdateNotification();
+
 	// Experimental native-control laboratory instance.
 	ControlLaboratoryWindow controlLaboratory;
 	// Baked greeting window instance.
@@ -544,18 +548,22 @@ private:
 	std::vector<BasicWindowEntry> basicWindows;
 	// Runtime callbacks applied after window-originated state changes.
 	SC4WindowManagerCallbacks callbacks;
-	// Settings object retained while a deferred version notice is pending.
+	// Settings object of the loaded city.
 	PluginSettings* pendingSettings = nullptr;
 	// Next nonzero handle allocated to a basic managed window.
 	SC4WindowHandle nextWindowHandle = 100;
-	// Settings object retained until the version-notice timer fires.
-	PluginSettings* pendingVersionNoticeSettings = nullptr;
-	// One-shot timer ID for deferred version notices. Zero means inactive.
-	uintptr_t versionNoticeTimerID = 0;
 	// One-shot timer ID for deferred settings reopen. Zero means inactive.
 	uintptr_t settingsReopenTimerID = 0;
 	// One-shot timer ID for deferred baked-window opening. Zero means inactive.
 	uintptr_t deferredWindowOpenTimerID = 0;
 	// Baked window request retained until deferredWindowOpenTimerID fires.
 	DeferredWindowOpen pendingDeferredWindowOpen = DeferredWindowOpen::None;
+	// Repeating poll for the release notes download. Zero means inactive.
+	uintptr_t releaseNotesTimerID = 0;
+	// Whether the loaded city's advisor Lua state can receive the update notice.
+	bool updateNoticeReady = false;
+	// Version last announced to that Lua state; empty means no notice.
+	std::string publishedUpdateVersion;
+	// Latest GitHub release notes shown by the greeting window.
+	ReleaseNotesDownloader releaseNotes;
 };

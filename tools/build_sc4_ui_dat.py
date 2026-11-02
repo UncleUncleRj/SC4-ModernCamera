@@ -29,24 +29,35 @@ MENU_BUTTON_INSTANCE_ID = 0x3D0C0901
 SETTINGS_INSTANCE_ID = 0x3D0C0903
 # 0x3D0C0905 held the separate Advanced Settings window, now a page of the settings window.
 HEADER_SIZE = 96
+# The game loads package scripts of this type and group into the advisors' Lua state.
+ADVISOR_SCRIPT_TYPE_ID = 0xCA63E2A3
+ADVISOR_SCRIPT_GROUP_ID = 0x4A5E8EF6
+UPDATE_NOTICE_SCRIPT_INSTANCE_ID = 0x3D0C0A01
+UPDATE_NOTICE_SCRIPT_NAME = "SC4-ModernCamera-UpdateNotice.lua"
+# Advice strings are only keys: the game looks up this type and group and flags anything missing.
+LTEXT_TYPE_ID = 0x2026960B
+ADVICE_TEXT_GROUP_ID = 0x6A231EA4
+UPDATE_NOTICE_TITLE_INSTANCE_ID = 0x3D0C0A03
+UPDATE_NOTICE_MESSAGE_INSTANCE_ID = 0x3D0C0A04
+UPDATE_NOTICE_TITLE = "Version #s@sc4moderncamera.update_version# of SC4-ModernCamera has been released!"
+UPDATE_NOTICE_MESSAGE = '<a href="#link_id#sc4moderncamera_open_changelog()">See what\'s new</a>'
 
 
 def get_build_inputs(source: Path) -> list[Path]:
     """Return every existing file whose content can change the built DAT."""
-    changelog_source = source.parents[2] / "docs" / "changelog.md"
     version_header = source.parents[1] / "src" / "PluginVersion.h"
     candidates = [
         Path(__file__),
         source,
+        version_header,
         source.with_name("SC4-ModernCamera-BasicUI.txt"),
+        source.with_name(UPDATE_NOTICE_SCRIPT_NAME),
         source.with_name(MENU_ICON_ON_SOURCE_NAME),
         source.with_name(MENU_ICON_OFF_SOURCE_NAME),
         source.with_name("menu-button-stages.png"),
         source.with_name("camicon.png"),
         source.with_name("camera_point.png"),
     ]
-    if changelog_source.is_file():
-        candidates.extend((changelog_source, version_header))
     return [path for path in candidates if path.is_file()]
 
 
@@ -329,6 +340,17 @@ def build_fsh_dxt3(width: int, height: int, pixels: list[tuple[int, int, int, in
 
 def build_fsh_dxt3_from_png(png_path: Path, image_id: bytes = b"MODCAMIC") -> bytes:
     width, height, pixels = read_png_rgba(png_path)
+    # DXT3 encodes 4x4 blocks, so round the size up with transparent pixels.
+    padded_width = (width + 3) // 4 * 4
+    padded_height = (height + 3) // 4 * 4
+    if (padded_width, padded_height) != (width, height):
+        clear = (0, 0, 0, 0)
+        padded: list[tuple[int, int, int, int]] = []
+        for y in range(height):
+            padded.extend(pixels[y * width:(y + 1) * width])
+            padded.extend([clear] * (padded_width - width))
+        padded.extend([clear] * (padded_width * (padded_height - height)))
+        width, height, pixels = padded_width, padded_height, padded
     return build_fsh_dxt3(width, height, pixels, image_id)
 
 
@@ -423,6 +445,12 @@ def build_menu_mode_toggle_hit_target_fsh() -> bytes:
     return build_fsh_dxt3(240, 72, [(0, 0, 0, 0)] * (240 * 72), b"MODCMTGT")
 
 
+def build_ltext(text: str) -> bytes:
+    """Return an LTEXT resource: a character count, the 0x1000 marker, then UTF-16LE text."""
+    encoded = text.encode("utf-16-le")
+    return struct.pack("<HH", len(encoded) // 2, 0x1000) + encoded
+
+
 def escape_ui_caption(text: str) -> str:
     return (
         text.replace('"', "'")
@@ -465,7 +493,9 @@ CHOICE_BUTTON_IMAGE = (PLUGIN_GROUP_ID, CHOICE_BUTTON_IMAGE_INSTANCE_ID)
 CAM_ICON_IMAGE = (PLUGIN_GROUP_ID, CAM_ICON_INSTANCE_ID)
 CAM_ICON_SIZE = (32, 32)
 CAMERA_POINT_IMAGE = (PLUGIN_GROUP_ID, CAMERA_POINT_INSTANCE_ID)
-CAMERA_POINT_SIZE = (84, 56)
+# camera_point.png is 102x68; the FSH builder pads it to whole 4x4 blocks.
+CAMERA_POINT_SIZE = (104, 68)
+UPDATE_AVAILABLE_COLOR = (232, 126, 16)
 BUTTON_CLICK_SOUND = (0xCA47EFD9, 0x4A5C31D7)
 CLOSE_X_CLICK_SOUND = (0x00000000, 0xCA5C3239)
 CHECKBOX_CLICK_SOUND = (0xCA4D1943, 0x8A5C324A)
@@ -474,6 +504,9 @@ WINDOW_FILL = (228, 231, 238)
 BUTTON_FILL = (204, 204, 204)
 NO_COLOR = (0, 0, 0)
 RULE_COLOR = (150, 160, 180)
+# The color WINDOW_FRAME_IMAGE draws for the panel, and where it draws its own line above the bottom edge.
+FRAME_PANEL_COLOR = (217, 223, 228)
+FRAME_LINE_ABOVE_BOTTOM = 62
 TEXT_COLOR = (32, 40, 80)
 MUTED_TEXT_COLOR = (72, 82, 112)
 NOTE_TEXT_COLOR = (96, 64, 32)
@@ -696,13 +729,13 @@ def picture(control_id: int, left: int, top: int, image: tuple[int, int], size: 
     )
 
 
-def rule(control_id: int, area: Area) -> str:
+def rule(control_id: int, area: Area, color: Color = RULE_COLOR) -> str:
     """Return a divider: a thin GZWinFlatRect that draws only its fill color."""
     return control_line(
         "GZWinFlatRect",
         control_id,
         area,
-        RULE_COLOR,
+        color,
         window_flags(moveable=False, inert=True),
         "colorleft=(0,0,0) colortop=(0,0,0) colorright=(0,0,0) colorbottom=(0,0,0)",
     )
@@ -1029,55 +1062,66 @@ ADVANCED_SECTIONS = (
         0x3D0C0965,
         0x3D0C0971,
         "Updates",
-        (CheckboxRow(0x3D0C096E, 0x3D0C0970, "Show Changelogs on Update"),),
+        (CheckboxRow(0x3D0C096E, 0x3D0C0970, "Don't notify me of updates in the news ticker"),),
     ),
 )
 
 
-def build_greeting_script(changelog_path: Path, version_header: Path) -> bytes:
+GREETING_HEIGHT = 342
+
+
+def build_greeting_script(version_header: Path) -> bytes:
     version = read_plugin_version(version_header)
-    changelog_body = changelog_path.read_text(encoding="utf-8").strip()
-    changelog = escape_ui_caption(changelog_body)
-    camera_note = escape_ui_caption(
-        "Use the upper-right camera button for camera options."
-    )
-    changelog_max_text = max(4096, len(changelog_body) + 512)
     return framed_window(
         0x3D0C0706,
         520,
-        320,
+        GREETING_HEIGHT,
         "SC4-ModernCamera Greeting",
         "first-install greeting window",
         [
             close_x_button(0x3D0C0840, 512),
             picture(0x3D0C0845, 18, 2, CAM_ICON_IMAGE, CAM_ICON_SIZE),
             text(0x3D0C0841, (58, 4, 478, 30), "Welcome!", font="GenHeader"),
-            text(0x3D0C0846, (24, 50, 286, 74), f"SC4-ModernCamera {version} Installed!"),
-            rule(0x3D0C0849, (292, 42, 294, 116)),
-            picture(0x3D0C084A, 400, 40, CAMERA_POINT_IMAGE, CAMERA_POINT_SIZE),
+            text(0x3D0C084E, (24, 51, 156, 73), "SC4-ModernCamera"),
+            # The plugin shows this once it finds a newer release.
+            text(
+                0x3D0C0854,
+                (160, 51, 286, 73),
+                "Update available!",
+                font="GenBodyLight",
+                color=UPDATE_AVAILABLE_COLOR,
+                visible=False,
+            ),
+            text(0x3D0C0846, (24, 77, 286, 97), f"Installed : {version}"),
+            # The plugin fills this in from the latest GitHub release.
+            text(0x3D0C084F, (24, 94, 286, 114), "Latest : checking..."),
+            rule(0x3D0C0849, (292, 38, 294, 118)),
+            picture(0x3D0C084A, 382, 36, CAMERA_POINT_IMAGE, CAMERA_POINT_SIZE),
+            # One control, so the native line spacing keeps the last line clear of the rest.
+            # PuckIndicator is GenBodyLight's Arta italic at size 11; the last line needs it to fit.
             text(
                 0x3D0C084B,
-                (304, 96, 496, 122),
-                camera_note,
-                font="GenBodyLight",
+                (296, 44, 498, 127),
+                "Open the settings\nmenu by clicking\non the icon in the\nupper right corner,\nor click on the small\nlight to fast enable/disable the modern camera.",
+                font="PuckIndicator",
                 align="lefttop",
                 color=MUTED_TEXT_COLOR,
                 wrapped=True,
             ),
             text(0x3D0C084C, (24, 112, 292, 134), "Changelog:"),
-            changelog_view(0x3D0C0842, (24, 132, 496, 258), changelog, changelog_max_text),
+            # The plugin fills this at runtime from the latest GitHub release.
+            changelog_view(0x3D0C0842, (24, 132, 496, 258), "Loading...", 4096),
             rule(0x3D0C084D, (24, 266, 496, 268)),
-            checkbox(0x3D0C0847, 190, 279),
-            text(
-                0x3D0C0848,
-                (212, 276, 334, 304),
-                "Don't show these again",
-                font="GenBodyLight",
-                color=CHECKBOX_LABEL_COLOR,
-                wrapped=True,
+            # Hides the frame's own line, which would otherwise run through the label below.
+            rule(
+                0x3D0C0857,
+                (13, GREETING_HEIGHT - FRAME_LINE_ABOVE_BOTTOM, 507, GREETING_HEIGHT - FRAME_LINE_ABOVE_BOTTOM + 2),
+                FRAME_PANEL_COLOR,
             ),
-            button(0x3D0C0844, (24, 276, 184, 304), "View Github"),
-            button(0x3D0C0843, (340, 276, 500, 304), "OK"),
+            text(0x3D0C0856, (24, 274, 292, 294), "Download from:"),
+            button(0x3D0C0844, (24, 298, 156, 326), "Github"),
+            button(0x3D0C0855, (178, 298, 318, 326), "Simtropolis"),
+            button(0x3D0C0843, (368, 298, 500, 326), "Dismiss"),
         ],
     )
 
@@ -1216,11 +1260,26 @@ def build(source: Path, destination: Path) -> None:
     basic_source = source.with_name("SC4-ModernCamera-BasicUI.txt")
     if basic_source.exists():
         resources.append((UI_SCRIPT_TYPE_ID, PLUGIN_GROUP_ID, BASIC_INSTANCE_ID, basic_source.read_bytes()))
-    changelog_source = source.parents[2] / "docs" / "changelog.md"
-    version_header = source.parents[1] / "src" / "PluginVersion.h"
-    if changelog_source.exists():
+    update_notice_source = source.with_name(UPDATE_NOTICE_SCRIPT_NAME)
+    if update_notice_source.exists():
         resources.append(
-            (UI_SCRIPT_TYPE_ID, PLUGIN_GROUP_ID, GREETING_INSTANCE_ID, build_greeting_script(changelog_source, version_header))
+            (
+                ADVISOR_SCRIPT_TYPE_ID,
+                ADVISOR_SCRIPT_GROUP_ID,
+                UPDATE_NOTICE_SCRIPT_INSTANCE_ID,
+                update_notice_source.read_bytes(),
+            )
+        )
+        resources.append(
+            (LTEXT_TYPE_ID, ADVICE_TEXT_GROUP_ID, UPDATE_NOTICE_TITLE_INSTANCE_ID, build_ltext(UPDATE_NOTICE_TITLE))
+        )
+        resources.append(
+            (LTEXT_TYPE_ID, ADVICE_TEXT_GROUP_ID, UPDATE_NOTICE_MESSAGE_INSTANCE_ID, build_ltext(UPDATE_NOTICE_MESSAGE))
+        )
+    version_header = source.parents[1] / "src" / "PluginVersion.h"
+    if version_header.exists():
+        resources.append(
+            (UI_SCRIPT_TYPE_ID, PLUGIN_GROUP_ID, GREETING_INSTANCE_ID, build_greeting_script(version_header))
         )
         resources.append((UI_SCRIPT_TYPE_ID, PLUGIN_GROUP_ID, CONTROLS_INSTANCE_ID, build_controls_script()))
         resources.append((UI_SCRIPT_TYPE_ID, PLUGIN_GROUP_ID, MENU_BUTTON_INSTANCE_ID, build_menu_button_script()))
