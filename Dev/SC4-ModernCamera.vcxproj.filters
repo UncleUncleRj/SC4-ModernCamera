@@ -63,6 +63,9 @@
     <ClCompile Include="src\SC4CameraController.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\SC4CityIcons.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\SC4VersionDetection.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -117,6 +120,12 @@
       <Filter>Header Files\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="src\SC4CameraController.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SC4CityIconRotation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SC4CityIcons.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\SC4GameConstants.h">

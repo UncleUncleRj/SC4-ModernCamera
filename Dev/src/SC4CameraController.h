@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SC4CityIcons.h"
 #include "cS3DVector2.h"
 #include "cS3DVector3.h"
 
@@ -282,6 +283,11 @@ public:
 	void AbandonSavePreviewNormalization();
 	// Returns whether save-preview normalization has retained restorable state.
 	bool IsSavePreviewNormalizationActive() const;
+	/// <summary>
+	/// Returns the list of city icons this controller keeps facing the camera.
+	/// </summary>
+	/// <returns>The tracked city icons.</returns>
+	SC4CityIcons& GetCityIcons();
 
 private:
 	// One complete view the Alt hold can save or move to. The focus is not part of it,
@@ -377,7 +383,14 @@ private:
 	void SyncAngles(const SC4CameraControlLayout& cameraControl);
 	// Restores camera-target fields captured at the start of rotation.
 	void RestoreRotationAnchor(SC4CameraControlLayout& cameraControl) const;
+	/// <summary>
+	/// Rotates the city icons to match the current camera. Runs before the render-grid
+	/// rebuild, which reads their bounds.
+	/// </summary>
+	void OrientCityIcons();
 
+	// City icons kept facing the camera.
+	SC4CityIcons cityIcons;
 	// Last valid Modern Camera pitch in radians.
 	float currentPitch;
 	// Last valid Modern Camera yaw in radians.

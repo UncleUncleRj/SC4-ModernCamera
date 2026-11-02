@@ -20,6 +20,7 @@
     <ClCompile Include="src\ReleaseNotesDownloader.cpp" />
     <ClCompile Include="src\Runtime\TimerManager.cpp" />
     <ClCompile Include="src\SC4CameraController.cpp" />
+    <ClCompile Include="src\SC4CityIcons.cpp" />
     <ClCompile Include="src\SC4VersionDetection.cpp" />
     <ClCompile Include="src\SC4WindowManager.cpp" />
   </ItemGroup>
@@ -157,6 +158,8 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClInclude Include="src\ReleaseNotesDownloader.h" />
     <ClInclude Include="src\Runtime\TimerManager.h" />
     <ClInclude Include="src\SC4CameraController.h" />
+    <ClInclude Include="src\SC4CityIconRotation.h" />
+    <ClInclude Include="src\SC4CityIcons.h" />
     <ClInclude Include="src\SC4GameConstants.h" />
     <ClInclude Include="src\SC4VersionDetection.h" />
     <ClInclude Include="src\SC4WindowManager.h" />

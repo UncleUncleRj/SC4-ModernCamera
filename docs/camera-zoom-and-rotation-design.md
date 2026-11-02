@@ -228,6 +228,36 @@ The broadcast update first sets the previous and pending zoom and rotation field
 the current values, so subscribers see no discrete change. It runs when a gesture
 ends so that view-dependent systems such as automata re-evaluate once.
 
+## City Icons
+
+The icons over buildings (No Power, No Water, No Work, and No Car) always look the way
+the Classic camera shows them, at every yaw and pitch. They turn with the camera, stay
+over their building, and keep their native size relative to the zoom.
+
+Native evidence for this section is in [default-camera.md](default-camera.md#city-icons).
+An icon is a 3D model baked to look flat from one direction, so an icon seen from any
+other direction folds out of shape. Each frame gives every icon model the rotation that
+keeps the camera on that direction:
+
+```text
+rotation = current camera-to-world * native camera world-to-camera at rotation 0
+```
+
+The native camera is the one at the current zoom stage's native pitch and yaw.
+
+- The result is a plain model rotation, so no hook or draw-time change is needed. At
+  Classic angles it equals the game's own transform, so nothing is written in Classic mode.
+- It runs in the camera frame, before the render-grid rebuild reads the icons' bounds and
+  before the draw system.
+- It checks every icon each frame, not only when the camera moves, because the game
+  rebuilds icon models on its own schedule after a zoom or rotation change, and a new
+  model starts with the native rotation. The check reads each transform and writes only a
+  rotation that differs.
+- Save-preview normalization flushes the camera frame at once, which returns the icons to
+  their native rotation before the preview renders.
+- Only occupant group `0x5001` is affected. Buildings, flora, and other props keep their
+  native transforms, because they are meant to be seen from their real direction.
+
 ## Acceptance Criteria
 
 - Zooming in and out never changes a player-selected pitch or yaw.
@@ -241,6 +271,8 @@ ends so that view-dependent systems such as automata re-evaluate once.
 - Camera movement does not unnecessarily remove buildings or introduce void
   artifacts.
 - No camera orientation can invert or enter an invalid singular state.
+- City icons keep their Classic shape at every yaw and pitch, including across zoom stages
+  and quarter-turn handoffs, and are unchanged in Classic mode and in region previews.
 
 ## Runtime Characteristics
 

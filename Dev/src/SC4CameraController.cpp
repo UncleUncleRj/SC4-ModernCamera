@@ -2,6 +2,7 @@
 
 #include "GZServPtrs.h"
 #include "Logger.h"
+#include "SC4CityIconRotation.h"
 #include "SC4GameConstants.h"
 #include "cIGZMessageServer2.h"
 #include "cIGZWin.h"
@@ -1212,6 +1213,12 @@ bool SC4CameraController::IsSavePreviewNormalizationActive() const
 	return savePreviewNormalizationActive;
 }
 
+// Returns the tracked city icons, which the director keeps up to date from occupant messages.
+SC4CityIcons& SC4CameraController::GetCityIcons()
+{
+	return cityIcons;
+}
+
 // Captures native target fields and scale before free-camera rotation begins.
 bool SC4CameraController::BeginRotationGesture()
 {
@@ -2092,6 +2099,8 @@ bool SC4CameraController::ForceFullRedraw()
 // costs at most one notification and one render-grid rebuild.
 void SC4CameraController::FlushPendingViewUpdates()
 {
+	OrientCityIcons();
+
 	if (!viewSettlePending && !cameraUpdatePending && !gridRebuildPending && !redrawPending) {
 		return;
 	}
@@ -2173,6 +2182,34 @@ void SC4CameraController::FlushPendingViewUpdates()
 			}
 			renderer->ForceFullRedraw();
 		}
+		return true;
+	});
+}
+
+// Rotates the city icons to match the current camera, using the render-grid state of this frame.
+void SC4CameraController::OrientCityIcons()
+{
+	if (cityIcons.GetCount() == 0) {
+		return;
+	}
+
+	WithRenderer([&](cISC43DRender* renderer) {
+		const SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			return false;
+		}
+
+		const size_t zoomIndex = static_cast<size_t>(
+			std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1)));
+		float iconRotation[3][3];
+		ComputeCityIconRotation(
+			cameraControl->rotation,
+			cameraControl->yaw,
+			cameraControl->pitch,
+			kDefaultYaw,
+			kNativePitchByZoom[zoomIndex],
+			iconRotation);
+		cityIcons.ApplyRotation(iconRotation, renderer, gridRebuildPending);
 		return true;
 	});
 }
@@ -2270,7 +2307,8 @@ bool SC4CameraController::DumpCameraInfo(const char* reason) const
 
 	log.WriteLine(LogLevel::Info, std::string("Camera Info Dump Begin: ") + (reason ? reason : "unspecified"));
 	log.WriteLine(LogLevel::Info, "Controller Pitch:" + std::to_string(currentPitch)
-		+ " Yaw:" + std::to_string(currentYaw));
+		+ " Yaw:" + std::to_string(currentYaw)
+		+ " CityIcons:" + std::to_string(cityIcons.GetCount()));
 
 	bool dumped = WithRenderer([&](cISC43DRender* renderer) {
 		uint32_t viewportWidth = 0;

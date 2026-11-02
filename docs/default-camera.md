@@ -149,6 +149,79 @@ for another orientation therefore misses models that are on screen.
 requests a full redraw. It returns without working if its previous and new rotation
 match, so a rebuild at the same rotation passes any other value as the previous one.
 
+## City icons
+
+These notes are binary-verified from the 641 executable, with mesh and exemplar facts read
+from `SimCity_1.dat`. Runtime behavior awaits in-game testing.
+
+The icons over buildings are ordinary prop occupants (type `0xA823821E`) in occupant group
+`0x5001`. The stock game has four, all in exemplar group `0xC977C536`:
+
+| Exemplar | Instance | S3D instance base |
+| --- | --- | --- |
+| `Zot_NoPower_0fd1` | `0x0FD10000` | `0x0FD10000` |
+| `Zot_NoWater_1c43` | `0x1C430000` | `0x1C430000` |
+| `Zot_NoWork_1c44` | `0x1C440000` | `0x1C440000` |
+| `Zot_NoCar_107A` | `0x107A0000` | `0x107A0000` |
+
+The lot developer (`0x6C98C0`) creates one 3 units above the top of the building.
+
+They are not sprites. All four have the same two mesh shapes (S3D type `0x5AD0E817`, group
+`0xBADB57F1`):
+
+| Zoom | Mesh | Shape |
+| ---: | --- | --- |
+| 0, 1 | 4 vertices | A vertical card with normal (0.383, 0, 0.924), which is the native -22.5 degree yaw |
+| 2, 3, 4 | 7 vertices | A box about 13.4 x 12.85 x 13.4: its top and two sides, with the picture projected across them |
+
+Each only reads as a flat picture from the direction it was baked for. That direction is the
+native camera at rotation 0: the mesh for every rotation index has the same orientation. The
+model maker keeps the native camera on that direction by turning each model about Y by
+`-rotation` quarter turns, when it makes the model (`0x48FA40`) and when the rotation changes
+(`0x495430`). This turn is applied to models without the `kSC4BuildingModelRotationProperty`
+property, and no zot has it.
+
+RKT1 picks the mesh by zoom and rotation (`0x496830`), so a zoom or rotation change normally
+destroys the icon's model and builds a new one with the native turn (`0x495430`). With the
+background loader on, that need not happen in the same frame: queued work runs on the game
+thread when `kSC4MessageAnimationTick` arrives (`0x48E170`). The model maker's worker
+(`0x48E460`) reads the zoom and rotation masks, and its callees `0x48DCD0` and `0x48D630` make no
+model-list write.
+
+Native `cS3DTransform` layout, from `0x48FA40`, the copies at `0x801B80` and `0x801BE0`, and the
+consumer at `0x7D3400`. A vertex `v` draws at `rotation * v * scale + translation`:
+
+| Offset | Field | Notes |
+| ---: | --- | --- |
+| `0x00` | Version byte | Incremented on each write |
+| `0x01` | Flags | `1` translation, `2` scale, `4` rotation |
+| `0x04` | Rotation | 3 x 3, row by row |
+| `0x28` | Translation | |
+| `0x34` | Uniform scale | Used only with flag `2` |
+
+`cIS3DModelInstance` implementations include vtables `0xAA7C70`, `0xABD018`, and `0xABD508`.
+Their `QueryInterface` reaches `0x8017B0`, which accepts `0x26A68449`. Slot 5 `GetCustomData`
+returns the render-grid entry. Slots 9 and 10 copy the transform and do nothing else. World
+bounds are computed from the current transform when asked for (`0x802010`).
+
+`cISC43DPlaceableObject` is only forward-declared in the SDK. `cISC4Occupant` slots 19 and 20
+return it. Its vtable is `0xAA4468` (constructor `0x5EC370`):
+
+| Slot | Address | Purpose |
+| ---: | --- | --- |
+| 3 | `0x5EBBF0` | Model count |
+| 4 | `0x5EBC00` | Copies up to `count` models, without references, and returns the number copied |
+| 5, 6 | `0x5EBE20`, `0x5EBE80` | Add and remove a model |
+| 11 | `0x5EC240` | Remove all models |
+| 12, 13 | `0x5EBD50`, `0x5EBD60` | Get and set the zoom mask |
+| 14, 15 | `0x5EBD80`, `0x5EBD90` | Get and set the rotation mask |
+
+`cISC43DRender::MoveModel` (slot 30, `0x7C9220`) recalculates a model's bounds and grid cells,
+and queues a redraw of the old and new areas when the model is static. It calls `InsertModel`
+for a model with no grid entry, so it must not be used on a model the game has not inserted.
+`IterateOccupants` slot 45 (`0x49DE40`) takes an occupant type, slot 44 (`0x4A1360`) a filter,
+and returning false from the callback stops the iteration.
+
 ## Region-preview implications
 
 The region preview can inherit a free-camera tilt when a city is saved while

@@ -48,12 +48,14 @@
 
 // Game lifecycle message identifiers
 // Reverse-engineered SimCity 4 message IDs for post-city initialization,
-// pre-city shutdown, pre-save, and post-save. The plugin subscribes to these
-// fixed IDs; it does not assign their values.
+// pre-city shutdown, pre-save, post-save, and occupant insertion and removal.
+// The plugin subscribes to these fixed IDs; it does not assign their values.
 static constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1;
 static constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
 static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 static constexpr uint32_t kSC4MessagePostSave = 0x26C63345;
+static constexpr uint32_t kSC4MessageInsertOccupant = 0x99EF1142;
+static constexpr uint32_t kSC4MessageRemoveOccupant = 0x99EF1143;
 
 // Reverse-engineered GZ window IDs used to resolve the SC4 application and 3D
 // view, and to recognize input targeting the full 3D surface.
@@ -2605,7 +2607,7 @@ bool CheckGameVersion()
     return supportedVersion;
 }
 
-// Subscribes the director to city lifecycle and save notifications.
+// Subscribes the director to city lifecycle, save, and occupant notifications.
 bool RegisterNotifications(cIGZMessageTarget2* target)
 {
     cIGZMessageServer2Ptr pMsgServ;
@@ -2614,8 +2616,11 @@ bool RegisterNotifications(cIGZMessageTarget2* target)
         const bool addedPreCityShutdown = pMsgServ->AddNotification(target, kSC4MessagePreCityShutdown);
         const bool addedPreSave = pMsgServ->AddNotification(target, kSC4MessagePreSave);
         const bool addedPostSave = pMsgServ->AddNotification(target, kSC4MessagePostSave);
+        const bool addedInsertOccupant = pMsgServ->AddNotification(target, kSC4MessageInsertOccupant);
+        const bool addedRemoveOccupant = pMsgServ->AddNotification(target, kSC4MessageRemoveOccupant);
 
-        return addedPostCityInit && addedPreCityShutdown && addedPreSave && addedPostSave;
+        return addedPostCityInit && addedPreCityShutdown && addedPreSave && addedPostSave
+            && addedInsertOccupant && addedRemoveOccupant;
     }
 
     return false;
@@ -3355,6 +3360,7 @@ public:
             mpFrameWork->RemoveFromTick(&g_CameraTickService);
             g_CameraTickRegistered = false;
         }
+        g_CameraController.GetCityIcons().Clear();
         g_WindowManager.ShutdownReleaseNotes();
         g_CameraBookmarks.Shutdown();
         logger.Shutdown();
@@ -3389,14 +3395,28 @@ public:
 
 private:
     /// <summary>
-    /// Applies one city lifecycle or save notification.
+    /// Applies one city lifecycle, save, or occupant notification.
     /// </summary>
     /// <param name="pMsg">Message delivered by the SimCity 4 message server.</param>
     void HandleMessage(cIGZMessage2* pMsg)
     {
         uint32_t msgType = pMsg->GetType();
 
-        if (msgType == kSC4MessagePostCityInit) {
+        if (msgType == kSC4MessageInsertOccupant || msgType == kSC4MessageRemoveOccupant) {
+            // Occupants that arrive while a city loads are collected when it finishes.
+            if (g_IsCityLoaded) {
+                auto* standardMsg = static_cast<cIGZMessage2Standard*>(pMsg);
+                auto* occupant = static_cast<cISC4Occupant*>(standardMsg->GetVoid1());
+                const auto occupantType = static_cast<uint32_t>(standardMsg->GetData3());
+                if (msgType == kSC4MessageInsertOccupant) {
+                    g_CameraController.GetCityIcons().OnOccupantInserted(occupant, occupantType);
+                }
+                else {
+                    g_CameraController.GetCityIcons().OnOccupantRemoved(occupant, occupantType);
+                }
+            }
+        }
+        else if (msgType == kSC4MessagePostCityInit) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating input handlers...");
             if (!ActivateCurrentBookmarkCity()) {
                 Logger::GetInstance().WriteLine(
@@ -3405,6 +3425,7 @@ private:
             }
             g_WindowManager.OnCityLoaded(g_Settings);
             g_IsCityLoaded = true;
+            g_CameraController.GetCityIcons().TrackExistingIcons();
             g_IsNativeUIHidden = false;
             g_SavePreviewRestorePending = false;
             ResetInputState();
@@ -3447,6 +3468,7 @@ private:
 			g_CameraBookmarks.DeactivateCity();
             g_SavePreviewRestorePending = false;
             g_CameraController.AbandonSavePreviewNormalization();
+            g_CameraController.GetCityIcons().Clear();
             g_IsCityLoaded = false;
             g_TimerManager.Stop(RuntimeTimer::CameraFrameFallback);
             UninstallSetScrollingHook();

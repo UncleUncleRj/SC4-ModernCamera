@@ -32,6 +32,18 @@ SC4's message server and tick loop catch nothing. An exception escaping a tick
 skips later services, so the tick, director messages, canvas filter, and low-level
 keyboard hook each stop and log C++ exceptions at their boundary.
 
+## City icon references
+
+`SC4CityIcons` holds one reference on each icon occupant it tracks, so a frame can
+never touch an occupant the game has freed. Tracking starts at post-city-init, with
+one pass over the city's props, and follows the occupant insert and remove messages
+after that. Insert messages that arrive while no city is loaded are ignored, because
+the pass collects those occupants.
+
+Pre-city-shutdown and `PreAppShutdown()` release the references while the game's
+services are still running. An abortive quit releases nothing. The list holds raw
+pointers, so no destructor calls into the game as the DLL unloads.
+
 ## Asynchronous logging
 
 Once the worker starts, the game thread creates a timestamped record and tries
