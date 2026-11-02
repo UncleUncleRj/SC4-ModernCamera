@@ -187,6 +187,8 @@ healthy and broken states before assigning unverified meanings to fields.
   Movement setting. In Modern camera mode, WASD movement and arrow-key panning
   share the same internal `SetScrolling` path so focus gating, panning speed,
   Shift boost, modifier pass-through, and map-boundary handling stay consistent.
+- A U-Drive-It drive hands all Modern Camera input to SC4 until it ends, without
+  changing the camera mode or the view. See [settings-workflow.md](settings-workflow.md#u-drive-it).
 - Native yaw uses a `[-70 degrees, +30 degrees]` hysteresis window. Building
   side meshes were observed disappearing when an exact 90-degree window mapped
   a healthy low-end orientation directly onto the opposite high-end boundary.
@@ -273,6 +275,8 @@ The native camera is the one at the current zoom stage's native pitch and yaw.
 - No camera orientation can invert or enter an invalid singular state.
 - City icons keep their Classic shape at every yaw and pitch, including across zoom stages
   and quarter-turn handoffs, and are unchanged in Classic mode and in region previews.
+- All camera controls reach SC4 during a U-Drive-It drive, so W/A/S/D drive the vehicle
+  instead of moving the camera, and Modern controls return when the drive ends.
 
 ## Runtime Characteristics
 

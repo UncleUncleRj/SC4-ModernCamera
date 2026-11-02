@@ -63,6 +63,10 @@ static constexpr uint32_t kGZWin_WinSC4App = 0x6104489A;
 static constexpr uint32_t kGZWin_SC4View3DWin = 0x9A47B417;
 static constexpr uint32_t kGZWin_SC4View3DSurface = 0x6A5E44B6;
 
+// View input control ID of the U-Drive-It vehicle tool, set by its constructor at
+// 0x565557 and the value cISC4AutomataManager::IsDrivingMode tests at 0x506940.
+static constexpr uint32_t kViewInputControlUDriveIt = 0x2B709676;
+
 // cISC4View3DWin vtable slots used to install the SetScrolling and MinimizeUI
 // hooks. They are valid only for the supported game executable and GZCOM layout.
 static constexpr size_t kView3DWinSetScrollingVTableIndex = 33;
@@ -108,6 +112,8 @@ static constexpr uint32_t kModernCameraWindowIDMax = 0x3D0C09FF;
 bool g_IsCityLoaded = false;
 // True when Modern Camera input and camera behavior are active.
 bool g_IsModernCamEnabled = true;
+// True while a U-Drive-It drive has temporarily handed Modern Camera input to the game.
+bool g_IsUDriveItActive = false;
 // True when SimCity 4's native UI has been minimized.
 bool g_IsNativeUIHidden = false;
 // Native MinimizeUI method signature captured by the vtable hook.
@@ -641,6 +647,16 @@ cISC4View3DWin* GetView3DWinForInput(const char* context)
     return view3D;
 }
 
+/// <summary>
+/// Returns whether Modern Camera owns player input, which it gives up in Classic mode
+/// and for the length of a U-Drive-It drive.
+/// </summary>
+/// <returns>True when Modern Camera may capture keyboard and mouse input.</returns>
+bool IsModernInputActive()
+{
+    return g_IsModernCamEnabled && !g_IsUDriveItActive;
+}
+
 // Returns a diagnostic label for a native view-tool reset.
 const char* GetView3DToolClearReasonName(View3DToolClearReason reason)
 {
@@ -670,6 +686,15 @@ void ClearNativeView3DToolState(View3DToolClearReason reason)
     }
 
     cISC4ViewInputControl* currentControl = view3D->GetCurrentViewInputControl();
+    // The vehicle is driven through this tool, so removing it would end the drive.
+    if (currentControl && currentControl->GetID() == kViewInputControlUDriveIt) {
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string(reasonName) + ": keeping the U-Drive-It tool for the current drive.");
+        view3D->Release();
+        return;
+    }
+
     if (currentControl) {
         Logger::GetInstance().WriteLine(
             LogLevel::Info,
@@ -1485,7 +1510,7 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
         : (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
     float adjustedX = x;
     bool blockedByBounds = false;
-    if (g_IsCityLoaded && g_IsModernCamEnabled && scrolling) {
+    if (g_IsCityLoaded && IsModernInputActive() && scrolling) {
         auto* renderer = view3D ? view3D->GetRenderer() : nullptr;
         const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(
             renderer,
@@ -2460,7 +2485,7 @@ LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
             if (foregroundProcessID == GetCurrentProcessId()) {
                 ObserveKeyTransition(keyboard->vkCode, isKeyDown);
 
-                if (!g_IsModernCamEnabled) {
+                if (!IsModernInputActive()) {
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
 
@@ -2638,6 +2663,58 @@ VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
 }
 
 /// <summary>
+/// Returns whether the U-Drive-It tool is the current native view tool.
+/// </summary>
+/// <returns>True while the player is driving a vehicle.</returns>
+bool IsUDriveItToolActive()
+{
+    cISC4View3DWin* view3D = GetView3DWinForInput("U-Drive-It check");
+    if (!view3D) {
+        return false;
+    }
+
+    cISC4ViewInputControl* control = view3D->GetCurrentViewInputControl();
+    const bool active = control && control->GetID() == kViewInputControlUDriveIt;
+    view3D->Release();
+    return active;
+}
+
+/// <summary>
+/// Hands Modern Camera input to the game when a U-Drive-It drive starts and takes it
+/// back when the drive ends. The camera mode, the view, and the saved settings are
+/// left alone, so the player returns to Modern controls exactly as they were.
+/// </summary>
+void UpdateUDriveItInputHandoff()
+{
+    const bool driving = g_IsModernCamEnabled && IsUDriveItToolActive();
+    if (driving == g_IsUDriveItActive) {
+        return;
+    }
+
+    g_IsUDriveItActive = driving;
+    if (driving) {
+        StopHeldKeyboardPan();
+        StopHeldKeyboardRotation("U-Drive-It started");
+        StopClassicAngleHold("U-Drive-It started");
+        StopMiddleMouseRotation("U-Drive-It started", false);
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            "U-Drive-It started; Modern Camera input is passed to the game until the drive ends.");
+        return;
+    }
+
+    // A movement key held as the drive ended can start native keyboard scrolling before
+    // this frame, and Modern Camera would then consume the release that stops it.
+    cISC4View3DWin* view3D = GetView3DWinForInput("U-Drive-It ended");
+    if (view3D) {
+        view3D->ScrollStop();
+        view3D->KillKeyboardScrolling();
+        view3D->Release();
+    }
+    Logger::GetInstance().WriteLine(LogLevel::Info, "U-Drive-It ended; Modern Camera input resumed.");
+}
+
+/// <summary>
 /// Runs one camera frame: applies held input and accumulated mouse rotation, then
 /// completes the requested native updates. Running this once before the draw system
 /// limits a frame to one render-grid rebuild however many input messages arrived.
@@ -2660,6 +2737,8 @@ void RunCameraFrame()
         g_SavePreviewRestorePending = false;
         g_CameraController.EndSavePreviewNormalization();
     }
+
+    UpdateUDriveItInputHandoff();
 
     if (g_IsModernCamEnabled) {
         if (HasHeldKeyboardPanKey() && ShouldCaptureHeldKeyboardPan()) {
@@ -2806,7 +2885,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         return 0;
     }
 
-    if (!g_IsModernCamEnabled) {
+    if (!IsModernInputActive()) {
         return 0;
     }
 
@@ -3470,6 +3549,7 @@ private:
             g_CameraController.AbandonSavePreviewNormalization();
             g_CameraController.GetCityIcons().Clear();
             g_IsCityLoaded = false;
+            g_IsUDriveItActive = false;
             g_TimerManager.Stop(RuntimeTimer::CameraFrameFallback);
             UninstallSetScrollingHook();
             UninstallMinimizeUIHook();

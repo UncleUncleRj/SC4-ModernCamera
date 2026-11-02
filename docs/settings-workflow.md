@@ -85,6 +85,16 @@ When WASD Movement is re-enabled while Modern camera is active, the plugin clear
 
 SC4's standard arrow-key panning remains available independently of the WASD Movement setting. In Modern camera mode, arrow-key panning and WASD Movement use the same internal `SetScrolling` path so panning speed, Shift boost, focus gating, modifier pass-through, and map-boundary handling stay consistent.
 
+## U-Drive-It
+
+While the player drives a U-Drive-It vehicle, Modern Camera gives its input to the game: W/A/S/D, the arrow keys, Q/E, Alt, bookmark hotkeys, the middle mouse button, and the wheel all reach SC4 exactly as they do in Classic mode. Modern controls come back when the drive ends.
+
+This is a temporary handoff that does not run the Camera Mode switch. `g_Settings.cameraMode`, the current view, and the saved preferences are untouched, and the switch's camera reset and tool clearing do not run. `RunCameraFrame` checks once per frame whether the current view tool's ID is `0x2B709676`, the same test as `cISC4AutomataManager::IsDrivingMode` (binary-verified at `0x506940`). `IsModernInputActive` is the gate for the keyboard hook, the canvas filter, and the `SetScrolling` bounds check.
+
+`ClearNativeView3DToolState` keeps this tool, because removing it would end the drive. Changing Camera Mode or WASD Movement during a drive leaves the player in the vehicle.
+
+If another tool is stacked over the drive tool, it is no longer the current tool, so Modern input resumes until that tool is removed. `IsDrivingMode` also reports false in that state.
+
 ## On Alt Release
 
 On Alt Release decides what releasing Alt does in Modern mode. Restore View, the default, returns to the view saved when Alt was pressed, and Keep View stays on the view Alt let go of. It is stored as `altCameraBungie` in the `camera` block of `SC4-ModernCamera.json`, `true` for Restore View. A change in the menu applies to the next Alt release. A file without the option gets it, at its default value, the next time the plugin loads. The Defaults button resets it to Restore View.
