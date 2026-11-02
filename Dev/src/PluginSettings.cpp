@@ -120,6 +120,7 @@ void PluginSettings::RestoreDefaults()
 	zoomSensitivity = kDefaultSensitivity;
 	panSensitivity = kDefaultSensitivity;
 	invertVertical = false;
+	altCameraBungie = true;
 	redrawAggression = RedrawAggression::Normal;
 	debugLogging = DebugLogging::Normal;
 	cameraDumpHotkey = true;
@@ -161,6 +162,7 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	TryReadFloat(json, "zoomSensitivity", zoomSensitivity);
 	TryReadFloat(json, "panSensitivity", panSensitivity);
 	TryReadBool(json, "invertVertical", invertVertical);
+	const bool hasAltCameraBungie = TryReadBool(json, "altCameraBungie", altCameraBungie);
 
 	if (TryReadString(json, "redrawAggression", value))
 	{
@@ -186,6 +188,12 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	panSensitivity = std::clamp(panSensitivity, kMinimumPanSensitivity, kMaximumPanSensitivity);
 
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Loaded settings from " + path.string());
+
+	// This option has no menu entry yet, so the settings file is the only place to find it.
+	if (!hasAltCameraBungie)
+	{
+		Save();
+	}
 	return true;
 }
 
@@ -215,7 +223,8 @@ bool PluginSettings::Save() const
 		<< "    \"rotationSensitivity\": " << rotationSensitivity << ",\n"
 		<< "    \"zoomSensitivity\": " << zoomSensitivity << ",\n"
 		<< "    \"panSensitivity\": " << panSensitivity << ",\n"
-		<< "    \"invertVertical\": " << (invertVertical ? "true" : "false") << "\n"
+		<< "    \"invertVertical\": " << (invertVertical ? "true" : "false") << ",\n"
+		<< "    \"altCameraBungie\": " << (altCameraBungie ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"rendering\": {\n"
 		<< "    \"redrawAggression\": \"" << PluginSettingText::ToString(redrawAggression) << "\"\n"

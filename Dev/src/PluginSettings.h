@@ -90,6 +90,8 @@ public:
     float panSensitivity;
     // Reverses the sign of vertical mouse rotation.
     bool invertVertical;
+    // True returns to the saved Modern view when Alt is released; false stays on the view Alt let go of.
+    bool altCameraBungie;
     // Controls idle and periodic redraw scheduling.
     RedrawAggression redrawAggression;
     // Controls the amount of diagnostic log output.

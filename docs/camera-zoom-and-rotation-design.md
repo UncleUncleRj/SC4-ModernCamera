@@ -69,6 +69,9 @@ This produces all desired view types without a forced zoom/pitch curve:
   level closest in on-screen size, and that level's native pitch. Classic zoom levels are
   stages 0 to 4 at magnification 1, plus stage 4 at magnification 2.
 - Releasing Alt moves back to the exact saved view, whatever was done during the hold.
+  With `altCameraBungie` set to `false` in the settings file, the camera stays on the view
+  it reached instead. A move still under way finishes, then the camera dips about 6 percent
+  closer and settles back on that view, so the release has visible feedback.
 - Each move takes 0.3 seconds, starts fast, passes its target slightly, and settles back.
   A press or release during a move continues from where the camera is, and the saved view
   stays the one from the first press. Free rotation and zoom input is ignored until a
@@ -79,8 +82,8 @@ This produces all desired view types without a forced zoom/pitch curve:
   Q and E, and each notch of the wheel, make one animated step. An M3 horizontal drag
   takes the nearest quarter turn to how far the mouse has moved, and M3 vertical movement
   is ignored.
-- Focus loss, a mode change, and a camera reset return to the saved view at once, because
-  frames may not run afterwards. A save or bookmark first completes any move in progress.
+- Focus loss, a mode change, and a camera reset return to the saved view at once under
+  either setting, because frames may not run afterwards and Alt+Tab should not change the view. A save or bookmark first completes any move in progress.
 - Leaves the Alt key visible to Windows, so Alt+Tab, Alt+F4, and other Alt chords
   keep working. The canvas filter consumes the Alt messages themselves so a plain
   press does not open the system menu.

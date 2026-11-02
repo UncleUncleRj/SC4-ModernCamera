@@ -2430,7 +2430,12 @@ void HandleClassicAngleKeyState(WPARAM key, bool pressed)
         g_CameraController.BeginClassicAngleHold("Alt key pressed");
     }
     else if (wasActive && !isActive) {
-        g_CameraController.EndClassicAngleHold("Alt key released", true);
+        if (g_Settings.altCameraBungie) {
+            g_CameraController.EndClassicAngleHold("Alt key released", true);
+        }
+        else {
+            g_CameraController.DropClassicAngleHold("Alt key released");
+        }
     }
 
     if (!pressed) {

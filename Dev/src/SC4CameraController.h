@@ -203,6 +203,13 @@ public:
 	/// <param name="animate">True to move there over the following frames, false to arrive now.</param>
 	/// <returns>True when the return started or completed.</returns>
 	bool EndClassicAngleHold(const char* source, bool animate);
+	/// <summary>
+	/// Ends the temporary Classic-angle hold and stays on the view it reached, with a small
+	/// drop of the camera as feedback.
+	/// </summary>
+	/// <param name="source">Label that identifies the caller in the log.</param>
+	/// <returns>True when the drop started.</returns>
+	bool DropClassicAngleHold(const char* source);
 	// Returns whether temporary Classic-angle mode is active.
 	bool IsClassicAngleHoldActive() const;
 	// Starts one Classic quarter turn for an Alt+Q or Alt+E press.
@@ -323,6 +330,11 @@ private:
 		const ClassicAngleView& target,
 		float yawTravel);
 	/// <summary>
+	/// Returns the turn the current Alt-hold move has left to make.
+	/// </summary>
+	/// <returns>The signed turn in radians, or 0 when no move is in progress.</returns>
+	float GetClassicTransitionRemainingYaw() const;
+	/// <summary>
 	/// Ends the current Alt-hold move on the exact target view and tells native subscribers.
 	/// </summary>
 	/// <param name="renderer">Active renderer.</param>
@@ -386,6 +398,8 @@ private:
 	float classicAngleHoldWheelNotches;
 	// Indicates that the camera is moving toward classicTransitionTarget.
 	bool classicTransitionActive;
+	// Indicates that the current move adds the small drop played when Alt is let go.
+	bool classicTransitionDrop;
 	// Time spent on the current move, in seconds.
 	float classicTransitionElapsed;
 	// Eased progress of the last frame of the current move.

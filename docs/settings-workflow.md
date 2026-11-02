@@ -78,6 +78,10 @@ When WASD Movement is re-enabled while Modern camera is active, the plugin clear
 
 SC4's standard arrow-key panning remains available independently of the WASD Movement setting. In Modern camera mode, arrow-key panning and WASD Movement use the same internal `SetScrolling` path so panning speed, Shift boost, focus gating, modifier pass-through, and map-boundary handling stay consistent.
 
+## Settings File Only
+
+`altCameraBungie` in the `camera` block of `SC4-ModernCamera.json` has no settings-window control yet. It decides what releasing Alt does in Modern mode: `true`, the default, returns to the view saved when Alt was pressed, and `false` stays on the view Alt let go of. The file is read at startup, so a change takes effect on the next launch. A file without the option gets it, at its default value, the next time the plugin loads. The Defaults button resets it to `true`.
+
 ## Slider Saves
 
 Sensitivity sliders update live but save with a short delay. This prevents a drag from writing many settings files in rapid succession.

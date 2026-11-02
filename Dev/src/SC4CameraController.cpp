@@ -118,6 +118,8 @@ namespace
 	constexpr float kClassicTransitionSeconds = 0.3f;
 	// Overshoot constant of the move's easing. This value passes the target by about 8 percent of the distance.
 	constexpr float kClassicTransitionOvershoot = 1.5f;
+	// Deepest point of the drop played when Alt is let go, in doublings of on-screen size. About 6 percent.
+	constexpr float kClassicDropZoomLevels = 0.08f;
 	// Center of the native yaw bucket used when rebasing quarter turns.
 	constexpr float kNativeYawAnchor = -SC4CameraController::kPi * 0.125f;
 	// Radians in one native camera quarter turn.
@@ -668,6 +670,19 @@ namespace
 			+ (kClassicTransitionOvershoot * remaining * remaining);
 	}
 
+	/// <summary>
+	/// Returns how far the camera has dropped when Alt is let go. It sinks quickly and
+	/// settles back to where it started.
+	/// </summary>
+	/// <param name="progress">Elapsed fraction of the move, from 0 to 1.</param>
+	/// <returns>Zoom to add, on the scale of GetOnScreenZoomLevel.</returns>
+	float GetClassicDropZoomLevels(float progress)
+	{
+		const float remaining = 1.0f - progress;
+		return kClassicDropZoomLevels
+			* std::sin(SC4CameraController::kPi * (1.0f - (remaining * remaining)));
+	}
+
 	// Formats a native four-float value for diagnostic output.
 	std::string FormatFloat4(const SC4Float4& value)
 	{
@@ -722,6 +737,7 @@ SC4CameraController::SC4CameraController()
 	  classicAngleHoldDragTurns(0),
 	  classicAngleHoldWheelNotches(0.0f),
 	  classicTransitionActive(false),
+	  classicTransitionDrop(false),
 	  classicTransitionElapsed(0.0f),
 	  classicTransitionEased(0.0f),
 	  classicTransitionFromAzimuth(0.0f),
@@ -767,6 +783,7 @@ void SC4CameraController::Reset()
 	classicAngleHoldDragTurns = 0;
 	classicAngleHoldWheelNotches = 0.0f;
 	classicTransitionActive = false;
+	classicTransitionDrop = false;
 	classicTransitionElapsed = 0.0f;
 	classicTransitionEased = 0.0f;
 	rotationGestureActive = false;
@@ -1592,9 +1609,7 @@ bool SC4CameraController::TurnClassicView(int32_t turns, const char* source)
 
 		// Added to what the current move has left, so quick presses add up instead of
 		// taking the short way round.
-		const float remainingTravel = classicTransitionActive
-			? classicTransitionYawTravel * (1.0f - classicTransitionEased)
-			: 0.0f;
+		const float remainingTravel = GetClassicTransitionRemainingYaw();
 		ClassicAngleView target = classicTransitionTarget;
 		target.rotation = WrapRotation(
 			(classicTransitionActive ? classicTransitionTarget.rotation : cameraControl->rotation) + turns);
@@ -1648,12 +1663,9 @@ bool SC4CameraController::StepClassicZoom(float wheelNotches, bool& changed)
 			zoomLevel.zoom,
 			zoomLevel.magnification,
 		};
-		const float remainingTravel = classicTransitionActive
-			? classicTransitionYawTravel * (1.0f - classicTransitionEased)
-			: 0.0f;
 
 		classicAngleHoldZoomLevel = zoomLevelIndex;
-		StartClassicAngleTransition(*cameraControl, target, remainingTravel);
+		StartClassicAngleTransition(*cameraControl, target, GetClassicTransitionRemainingYaw());
 		changed = true;
 
 		Logger::GetInstance().WriteLine(
@@ -1696,6 +1708,57 @@ bool SC4CameraController::EndClassicAngleHold(const char* source, bool animate)
 	});
 }
 
+// Ends the hold and stays on the view it reached, with a small drop of the camera.
+bool SC4CameraController::DropClassicAngleHold(const char* source)
+{
+	if (!classicAngleHoldActive) {
+		return true;
+	}
+
+	return WithRenderer([&](cISC43DRender* renderer) {
+		SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
+		if (!cameraControl) {
+			Logger::GetInstance().WriteLine(LogLevel::Warning, "Classic Angle Hold Drop: camera control unavailable.");
+			return false;
+		}
+
+		// A move still under way finishes, so a quick tap lands on a Classic view and not
+		// on a point between two views.
+		const ClassicAngleView target = classicTransitionActive
+			? classicTransitionTarget
+			: ClassicAngleView{
+				cameraControl->rotation,
+				cameraControl->yaw,
+				cameraControl->pitch,
+				cameraControl->zoom,
+				cameraControl->customMagnification,
+			};
+		const float remainingTravel = GetClassicTransitionRemainingYaw();
+
+		// A press during the drop has to come back to this view, not the old saved one.
+		classicAngleHoldSavedView = target;
+		classicAngleHoldActive = false;
+		StartClassicAngleTransition(*cameraControl, target, remainingTravel);
+		classicTransitionDrop = true;
+
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("Classic Angle Hold Drop: started. Source:") + (source ? source : "unknown")
+			+ " Rotation:" + std::to_string(target.rotation)
+			+ " Zoom:" + std::to_string(target.zoom)
+			+ " Magnification:" + std::to_string(target.magnification));
+		return true;
+	});
+}
+
+// Returns the turn the current move has left to make.
+float SC4CameraController::GetClassicTransitionRemainingYaw() const
+{
+	return classicTransitionActive
+		? classicTransitionYawTravel * (1.0f - classicTransitionEased)
+		: 0.0f;
+}
+
 // Records where a move starts and where it ends. The frames do the moving.
 void SC4CameraController::StartClassicAngleTransition(
 	const SC4CameraControlLayout& cameraControl,
@@ -1703,6 +1766,7 @@ void SC4CameraController::StartClassicAngleTransition(
 	float yawTravel)
 {
 	classicTransitionActive = true;
+	classicTransitionDrop = false;
 	classicTransitionElapsed = 0.0f;
 	classicTransitionEased = 0.0f;
 	classicTransitionFromAzimuth = GetViewAzimuth(cameraControl.rotation, cameraControl.yaw);
@@ -1736,7 +1800,8 @@ void SC4CameraController::AdvanceClassicAngleTransition(float elapsedSeconds)
 			return false;
 		}
 
-		classicTransitionEased = EaseClassicTransition(classicTransitionElapsed / kClassicTransitionSeconds);
+		const float progress = classicTransitionElapsed / kClassicTransitionSeconds;
+		classicTransitionEased = EaseClassicTransition(progress);
 		const float eased = classicTransitionEased;
 
 		// Crossing the Modern yaw window hands over to the next rotation index, exactly as
@@ -1754,7 +1819,8 @@ void SC4CameraController::AdvanceClassicAngleTransition(float elapsedSeconds)
 		// difference, including the fit factor of this frame's yaw.
 		const int32_t zoom = eased < 0.5f ? classicTransitionFromZoom : classicTransitionTarget.zoom;
 		const float zoomLevel = classicTransitionFromZoomLevel
-			+ ((classicTransitionToZoomLevel - classicTransitionFromZoomLevel) * eased);
+			+ ((classicTransitionToZoomLevel - classicTransitionFromZoomLevel) * eased)
+			+ (classicTransitionDrop ? GetClassicDropZoomLevels(progress) : 0.0f);
 		const float magnification = std::clamp(
 			std::pow(2.0f, zoomLevel - GetOnScreenZoomLevel(zoom, 1.0f, yaw)),
 			kMinimumMagnification,
