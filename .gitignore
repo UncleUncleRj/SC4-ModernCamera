@@ -61,3 +61,21 @@ __pycache__/
 
 # Generated UI resources
 Dev/ui/SC4-ModernCamera.dat
+
+# Not part of the plugin build. The repository holds what makes the plugin,
+# plus the README and licenses.
+/*.md
+!/README.md
+/docs/
+/theme-sdk/
+/tools/build_sc4_ui_theme.py
+/tools/test_*
+/Dev/ui/camglyphs2-0.png
+/Dev/ui/menu_glyphs.af
+/Dev/ui/menu_glyphs.png
+/Dev/ui/menu_glyphs_red.png
+/Dev/ui/menu_glyphs_red_small.png
+/Dev/ui/menu_glyphs_red_tiny.png
+/Dev/ui/menu_glyphs_small.png
+/Dev/ui/menu_glyphs_tiny.png
+/Dev/ui/moderncamera-menu-icon-old.png

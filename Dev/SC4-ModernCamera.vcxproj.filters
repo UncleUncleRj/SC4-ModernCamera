@@ -145,9 +145,6 @@
     <None Include="ui\menu_glyphs_red_very_small.png">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="ui\moderncamera-menu-icon-old.png">
-      <Filter>Resource Files</Filter>
-    </None>
     <None Include="ui\camera_point.png">
       <Filter>Resource Files</Filter>
     </None>
@@ -164,9 +161,6 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="ui\SC4-ModernCamera-TestUI.txt">
-      <Filter>Resource Files</Filter>
-    </None>
-    <None Include="..\docs\changelog.md">
       <Filter>Resource Files</Filter>
     </None>
     <None Include="..\tools\build_sc4_ui_dat.py">

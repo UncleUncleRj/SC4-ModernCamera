@@ -167,13 +167,11 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
   <ItemGroup>
     <None Include="ui\menu_glyphs_very_small.png" />
     <None Include="ui\menu_glyphs_red_very_small.png" />
-    <None Include="ui\moderncamera-menu-icon-old.png" />
     <None Include="ui\camera_point.png" />
     <None Include="ui\camicon.png" />
     <None Include="ui\menu-button-stages.png" />
     <None Include="ui\SC4-ModernCamera-BasicUI.txt" />
     <None Include="ui\SC4-ModernCamera-TestUI.txt" />
-    <None Include="..\docs\changelog.md" />
     <None Include="..\tools\build_sc4_ui_dat.py" />
     <None Include="ui\SC4-ModernCamera-UpdateNotice.lua" />
   </ItemGroup>
