@@ -62,11 +62,11 @@
     <PythonExe Condition="'$(PythonExe)'==''">py -3</PythonExe>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <IncludePath>$(ProjectDir)vendor\gzcom;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)sdk\include;$(IncludePath)</IncludePath>
     <TargetName>SC4-ModernCamera</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <IncludePath>$(ProjectDir)vendor\gzcom;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)sdk\include;$(IncludePath)</IncludePath>
     <TargetName>SC4-ModernCamera</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -141,12 +141,11 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
   </ItemDefinitionGroup>
   <ItemGroup>
 	<ClInclude Include="src\CameraBookmarkStore.h" />
-    <ClCompile Include="src\cRZBaseString.cpp" />
-    <ClCompile Include="src\cRZBaseUnknown.cpp" />
-    <ClCompile Include="src\cRZBaseVariant.cpp" />
-    <ClCompile Include="src\cRZCOMDllDirector.cpp" />
-    <ClCompile Include="src\cRZMessage2.cpp" />
-    <ClCompile Include="src\cRZMessage2Standard.cpp" />
+    <ClCompile Include="sdk\src\cRZBaseString.cpp" />
+    <ClCompile Include="sdk\src\cRZBaseVariant.cpp" />
+    <ClCompile Include="sdk\src\cRZCOMDllDirector.cpp" />
+    <ClCompile Include="sdk\src\cRZMessage2.cpp" />
+    <ClCompile Include="sdk\src\cRZMessage2Standard.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Hooks\VTableHook.h" />

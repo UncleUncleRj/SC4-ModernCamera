@@ -22,7 +22,7 @@
     <Filter Include="Source Files\Runtime">
       <UniqueIdentifier>{48512D4D-7F7D-4B4F-87D0-FE4582B2BFAE}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\Vendor">
+    <Filter Include="Source Files\SDK">
       <UniqueIdentifier>{5F9A64C7-C3BB-45BD-98CF-537626E4B873}</UniqueIdentifier>
     </Filter>
     <Filter Include="Header Files\Hooks">
@@ -72,23 +72,20 @@
     <ClCompile Include="src\SC4WindowManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\cRZBaseString.cpp">
-      <Filter>Source Files\Vendor</Filter>
+    <ClCompile Include="sdk\src\cRZBaseString.cpp">
+      <Filter>Source Files\SDK</Filter>
     </ClCompile>
-    <ClCompile Include="src\cRZBaseUnknown.cpp">
-      <Filter>Source Files\Vendor</Filter>
+    <ClCompile Include="sdk\src\cRZBaseVariant.cpp">
+      <Filter>Source Files\SDK</Filter>
     </ClCompile>
-    <ClCompile Include="src\cRZBaseVariant.cpp">
-      <Filter>Source Files\Vendor</Filter>
+    <ClCompile Include="sdk\src\cRZCOMDllDirector.cpp">
+      <Filter>Source Files\SDK</Filter>
     </ClCompile>
-    <ClCompile Include="src\cRZCOMDllDirector.cpp">
-      <Filter>Source Files\Vendor</Filter>
+    <ClCompile Include="sdk\src\cRZMessage2.cpp">
+      <Filter>Source Files\SDK</Filter>
     </ClCompile>
-    <ClCompile Include="src\cRZMessage2.cpp">
-      <Filter>Source Files\Vendor</Filter>
-    </ClCompile>
-    <ClCompile Include="src\cRZMessage2Standard.cpp">
-      <Filter>Source Files\Vendor</Filter>
+    <ClCompile Include="sdk\src\cRZMessage2Standard.cpp">
+      <Filter>Source Files\SDK</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

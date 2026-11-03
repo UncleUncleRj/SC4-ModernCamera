@@ -119,7 +119,8 @@ bool g_IsNativeUIHidden = false;
 // Native MinimizeUI method signature captured by the vtable hook.
 using MinimizeUIFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool minimize);
 // Native SetScrolling method signature captured by the vtable hook.
-using SetScrollingFunction = bool(__thiscall*)(cISC4View3DWin* view3D, bool scrolling, float x, float z);
+// The game's function returns nothing: 0x7F64F0 exits with the angle's float bits in EAX.
+using SetScrollingFunction = void(__thiscall*)(cISC4View3DWin* view3D, bool scrolling, float x, float z);
 // Owns the native UI-minimize vtable replacement.
 VTableHook g_MinimizeUIHook;
 // Owns the native scrolling vtable replacement.
@@ -296,7 +297,7 @@ bool ActivateCurrentBookmarkCity();
 // Mirrors native UI minimization to Modern Camera UI state.
 bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimize);
 // Limits native scrolling to the city bounds before forwarding it.
-bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z);
+void __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z);
 
 // Result of locating the native window under a wheel-input point.
 struct NativeWheelHitTest
@@ -340,8 +341,7 @@ bool GetActiveBookmarkCityKey(std::string& cityKey)
 	}
 	cISC4Nation* nation = app->GetNation();
 	SC4String* regionDirectory = nation ? nation->GetRegionDirectory() : nullptr;
-	const cIGZString* regionPath = regionDirectory ? regionDirectory->AsIGZString() : nullptr;
-	const char* regionText = regionPath ? regionPath->ToChar() : nullptr;
+	const char* regionText = regionDirectory ? regionDirectory->ToChar() : nullptr;
 	if (!regionText || !*regionText)
 	{
 		return false;
@@ -1495,14 +1495,14 @@ bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimiz
 }
 
 // Enforces city bounds before forwarding native camera scrolling.
-bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z)
+void __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrolling, float x, float z)
 {
     (void)edx;
 
     SetScrollingFunction original = reinterpret_cast<SetScrollingFunction>(g_SetScrollingHook.GetOriginal());
     if (!original) {
         Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: original function pointer was null.");
-        return false;
+        return;
     }
 
     const char* source = g_IsApplyingKeyboardPan
@@ -1520,7 +1520,7 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
             blockedByBounds,
             source);
         if (!boundsChecked || blockedByBounds) {
-            const bool stopped = original(view3D, false, 0.0f, 0.0f);
+            original(view3D, false, 0.0f, 0.0f);
             const LogLevel logLevel = boundsChecked ? LogLevel::Verbose : LogLevel::Warning;
             Logger::GetInstance().WriteLineLazy(logLevel, [&]() {
                 return std::string(boundsChecked
@@ -1528,25 +1528,21 @@ bool __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
                     : "View3D SetScrolling bounds preflight failed; stopping scroll. Source:")
                 + source
                 + " X:" + std::to_string(x)
-                + " Z:" + std::to_string(z)
-                + " StopResult:" + (stopped ? "true" : "false");
+                + " Z:" + std::to_string(z);
             });
-            return stopped;
+            return;
         }
     }
 
-    const bool result = original(view3D, scrolling, adjustedX, z);
+    original(view3D, scrolling, adjustedX, z);
     Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
         return std::string("View3D SetScrolling observed. Source:")
         + (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
         + " Scrolling:" + (scrolling ? "true" : "false")
         + " X:" + std::to_string(x)
         + " AdjustedX:" + std::to_string(adjustedX)
-        + " Z:" + std::to_string(z)
-        + " Result:" + (result ? "true" : "false");
+        + " Z:" + std::to_string(z);
     });
-
-    return result;
 }
 
 // Records native-UI toggle-zone clicks while the hook observes the result.
@@ -2184,7 +2180,7 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
         * g_CameraController.GetPanSpeedZoomScale();
 
     g_IsApplyingKeyboardPan = true;
-    const bool nativeScrollResult = view3D->SetScrolling(true, directionAngle, scrollSpeed);
+    view3D->SetScrolling(true, directionAngle, scrollSpeed);
     g_IsApplyingKeyboardPan = false;
 
     Logger::GetInstance().WriteLineLazy(successLogLevel, [&]() {
@@ -2193,12 +2189,11 @@ bool ApplyKeyboardPan(const char* source, LogLevel successLogLevel)
         + " RightSteps:" + std::to_string(rightSteps)
         + " ForwardSteps:" + std::to_string(forwardSteps)
         + " DirectionAngle:" + std::to_string(directionAngle)
-        + " ScrollSpeed:" + std::to_string(scrollSpeed)
-        + " Result:" + (nativeScrollResult ? "true" : "false");
+        + " ScrollSpeed:" + std::to_string(scrollSpeed);
     });
 
     view3D->Release();
-    return nativeScrollResult;
+    return true;
 }
 
 // Releases held movement keys and stops their periodic camera motion.

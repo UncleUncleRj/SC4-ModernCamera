@@ -1,0 +1,89 @@
+/*
+ * gzcom-dll - an open-source DLL Plugin SDK for SimCity 4
+ *
+ * cIGZApp.h
+ *
+ * Copyright (C) 2016 Nelson Gomez
+ *
+ * Modified for SC4-ModernCamera on 2026-11-02, from gzcom-dll adda27c: added the interface ID the game's QueryInterface code uses.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation, under
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+#include "cIGZUnknown.h"
+
+class cIGZFrameWork;
+class cIGZSystemService;
+
+static const uint32_t GZIID_cIGZApp = 0x00000066;
+
+/**
+ * @brief An interface for generic Gonzo applications
+ * @see cISC4App
+ *
+ * The Application is essentially a root service for games. The game should
+ * extend this interface and provide any provide any additional methods
+ * needed via another interface.
+ */
+class cIGZApp : public cIGZUnknown
+{
+	public:
+		// Declared in the game's vtable order: slots 3 to 14.
+		virtual cIGZSystemService* AsIGZSystemService(void) = 0;
+
+		virtual bool AddApplicationService(cIGZSystemService* pService) = 0;
+		virtual char const* ModuleName(void) = 0;
+
+		virtual bool PreFrameWorkInit(void) = 0;
+		virtual bool PostFrameWorkInit(void) = 0;
+
+		/**
+		 * In cIGZApp, this is a no-op and always returns false.
+		 */
+		virtual bool GZRun(void) = 0;
+
+		virtual bool PreFrameWorkShutdown(void) = 0;
+		virtual cIGZFrameWork* FrameWork(void) = 0;
+
+		// SimCity 4 implements the three hooks below (slots 11-13) as one
+		// shared empty function, so the game cannot show their order among
+		// themselves. This order is from the Mac build's debug symbols.
+
+		/**
+		 * A hardcoded point for EA/Maxis to load any dynamic libraries used
+		 * by the game upon initialization. Not used by our directors.
+		 */
+		virtual void AddDynamicLibrariesHere(void) = 0;
+
+		/**
+		 * A hardcoded point for EA/Maxis to initialize COM directors. Not
+		 * used by our directors.
+		 *
+		 * @see cISC4App::AddCOMDirectorsHere(void)
+		 */
+		virtual void AddCOMDirectorsHere(void) = 0;
+
+		/**
+		 * A hardcoded point for EA/Maxis to initialize application services.
+		 * Not used by our directors.
+		 */
+		virtual void AddApplicationServicesHere(void) = 0;
+
+		/**
+		 * In cIGZApp, this is a no-op and always returns true.
+		 * @see cISC4App::LoadRegistry(void)
+		 */
+		virtual bool LoadRegistry(void) = 0;
+};
