@@ -218,10 +218,11 @@ public:
 	// Starts one Classic quarter turn for an Alt+Q or Alt+E press.
 	bool RotateClassicStep(bool left, const char* source);
 	/// <summary>
-	/// Moves to the next Classic zoom level for each whole wheel notch during the Alt hold.
+	/// Snaps to the adjacent Classic zoom level for each wheel event during the Alt hold,
+	/// however many notches the event reports. Fractions of a notch add up across events.
 	/// </summary>
 	/// <param name="wheelNotches">Wheel movement in notches; positive zooms in.</param>
-	/// <param name="changed">Receives whether a move to another zoom level started.</param>
+	/// <param name="changed">Receives whether the zoom level changed.</param>
 	/// <returns>True when the hold consumed the wheel input.</returns>
 	bool StepClassicZoom(float wheelNotches, bool& changed);
 	/// <summary>

@@ -1642,7 +1642,7 @@ bool SC4CameraController::TurnClassicView(int32_t turns, const char* source)
 	});
 }
 
-// Moves to the next Classic zoom level for each whole wheel notch during the hold.
+// Snaps to the adjacent Classic zoom level for each wheel event during the hold.
 bool SC4CameraController::StepClassicZoom(float wheelNotches, bool& changed)
 {
 	changed = false;
@@ -1650,12 +1650,16 @@ bool SC4CameraController::StepClassicZoom(float wheelNotches, bool& changed)
 		return false;
 	}
 
-	// High-resolution wheels send fractions of a notch.
+	// High-resolution wheels send fractions of a notch. A fast spin can report several
+	// notches in one event; it still moves one level, so no Classic level is skipped.
 	classicAngleHoldWheelNotches += wheelNotches;
-	const int32_t notches = static_cast<int32_t>(classicAngleHoldWheelNotches);
-	classicAngleHoldWheelNotches -= static_cast<float>(notches);
+	if (std::abs(classicAngleHoldWheelNotches) < 1.0f) {
+		return true;
+	}
+	const int32_t step = classicAngleHoldWheelNotches > 0.0f ? 1 : -1;
+	classicAngleHoldWheelNotches = 0.0f;
 	const int32_t zoomLevelIndex = std::clamp(
-		classicAngleHoldZoomLevel + notches,
+		classicAngleHoldZoomLevel + step,
 		0,
 		static_cast<int32_t>(kClassicZoomLevelCount - 1));
 	if (zoomLevelIndex == classicAngleHoldZoomLevel) {
@@ -1670,16 +1674,31 @@ bool SC4CameraController::StepClassicZoom(float wheelNotches, bool& changed)
 		}
 
 		const ClassicZoomLevel& zoomLevel = kClassicZoomLevels[zoomLevelIndex];
-		const ClassicAngleView target = {
-			classicTransitionActive ? classicTransitionTarget.rotation : cameraControl->rotation,
-			kNativeYawAnchor,
-			kNativePitchByZoom[zoomLevel.zoom],
-			zoomLevel.zoom,
-			zoomLevel.magnification,
-		};
+		ClassicAngleView target = classicTransitionActive
+			? classicTransitionTarget
+			: ClassicAngleView{ cameraControl->rotation, kNativeYawAnchor, 0.0f, 0, 1.0f };
+		target.pitch = kNativePitchByZoom[zoomLevel.zoom];
+		target.zoom = zoomLevel.zoom;
+		target.magnification = zoomLevel.magnification;
 
+		// Zoom steps snap, as in Classic mode. A turn still under way carries on at the new
+		// level from its next frame.
+		if (classicTransitionActive) {
+			classicTransitionFromPitch = target.pitch;
+			classicTransitionFromZoom = target.zoom;
+			classicTransitionToZoomLevel = GetOnScreenZoomLevel(target.zoom, target.magnification, target.yaw);
+			classicTransitionFromZoomLevel = classicTransitionToZoomLevel;
+		}
+		else {
+			if (!ApplyClassicAngleView(renderer, target)) {
+				return false;
+			}
+			RequestViewSettle(true);
+		}
+
+		// Later Q/E turns take their zoom from the stored target.
+		classicTransitionTarget = target;
 		classicAngleHoldZoomLevel = zoomLevelIndex;
-		StartClassicAngleTransition(*cameraControl, target, GetClassicTransitionRemainingYaw());
 		changed = true;
 
 		Logger::GetInstance().WriteLine(

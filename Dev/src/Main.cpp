@@ -3177,7 +3177,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
         // Kept fractional: rounding could turn a small high-resolution wheel delta
         // into zero, which would hand the wheel to SC4's own stepped zoom.
-        // The Alt hold moves between Classic zoom levels, one for each notch of the wheel.
+        // The Alt hold moves between Classic zoom levels, one for each wheel event.
         bool zoomChanged = false;
         const float wheelDelta = static_cast<float>(zDelta) * (g_Settings.invertWheelZoom ? -1.0f : 1.0f);
         const float adjustedZoomDelta = wheelDelta * g_Settings.zoomSensitivity;
