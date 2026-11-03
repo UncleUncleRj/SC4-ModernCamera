@@ -15,6 +15,7 @@ namespace
 	constexpr const wchar_t* kSettingsFileName = L"SC4-ModernCamera.json";
 	constexpr const wchar_t* kBookmarksFileName = L"SC4-ModernCamera.bookmarks";
 	constexpr const wchar_t* kThemeManifestFileName = L"theme.json";
+	constexpr const wchar_t* kBuildingShapesFileName = L"building-shapes.json";
 	constexpr const wchar_t* kLogFileName = L"SC4-ModernCamera.log";
 	constexpr const wchar_t* kPreviousLogFileName = L"SC4-ModernCamera.last";
 	constexpr const wchar_t* kTestFileName = L"test.json";
@@ -158,6 +159,11 @@ std::filesystem::path PluginPaths::GetBookmarksPath()
 std::filesystem::path PluginPaths::GetThemeManifestPath()
 {
 	return GetDataDirectory() / kThemeManifestFileName;
+}
+
+std::filesystem::path PluginPaths::GetBuildingShapesPath()
+{
+	return GetDataDirectory() / kBuildingShapesFileName;
 }
 
 std::filesystem::path PluginPaths::GetLogPath()

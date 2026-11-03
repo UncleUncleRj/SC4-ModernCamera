@@ -1,0 +1,19 @@
+{
+  "formatVersion": 1,
+  "about": "True shapes of buildings whose pictures distort at free camera angles. Coordinates are model-space units (metres) of rotation 0, with y up.",
+  "models": [
+    {
+      "model": "0x5AD0E817-0xBADB57F1-0x030B0000",
+      "name": "Fire Station (four engines)",
+      "parts": [
+        { "name": "hall", "shape": "box", "bounds": { "min": [-15.0, 0.0, -15.0], "max": [15.0, 9.0, 11.5] } },
+        { "name": "hall roof", "shape": "hipRoof", "bounds": { "min": [-15.0, 9.0, -15.0], "max": [15.0, 15.45, 11.5] }, "top": { "min": [-6.0, -6.1], "max": [6.8, 1.6] } },
+        { "name": "tower", "shape": "box", "bounds": { "min": [-14.7, 0.0, -5.0], "max": [-8.95, 19.9, 0.55] } },
+        { "name": "tower roof", "shape": "hipRoof", "bounds": { "min": [-14.7, 19.9, -5.0], "max": [-8.95, 23.7, 0.55] }, "inset": 3.0 },
+        { "name": "left chimney", "shape": "box", "bounds": { "min": [-8.3, 9.0, -14.8], "max": [-6.85, 16.55, -13.85] } },
+        { "name": "right chimney", "shape": "box", "bounds": { "min": [7.45, 9.0, -14.7], "max": [8.9, 16.45, -13.75] } },
+        { "name": "apron", "shape": "ground", "bounds": { "min": [-15.0, 0.25, 11.5], "max": [15.0, 0.25, 15.0] } }
+      ]
+    }
+  ]
+}

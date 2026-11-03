@@ -3435,6 +3435,7 @@ public:
             g_CameraTickRegistered = false;
         }
         g_CameraController.GetCityIcons().Clear();
+        g_CameraController.GetBuildingComposer().Shutdown();
         g_WindowManager.ShutdownReleaseNotes();
         g_CameraBookmarks.Shutdown();
         logger.Shutdown();
@@ -3444,6 +3445,7 @@ public:
     // Stops plugin writers before an abortive framework shutdown can unload code.
     bool AbortiveQuit() override
     {
+        g_CameraController.GetBuildingComposer().RemoveHook();
         g_WindowManager.ShutdownReleaseNotes();
         g_CameraBookmarks.Shutdown();
         Logger::GetInstance().RequestAbortiveStop();
@@ -3500,6 +3502,7 @@ private:
             g_WindowManager.OnCityLoaded(g_Settings);
             g_IsCityLoaded = true;
             g_CameraController.GetCityIcons().TrackExistingIcons();
+            g_CameraController.GetBuildingComposer().Install();
             g_IsNativeUIHidden = false;
             g_SavePreviewRestorePending = false;
             ResetInputState();
@@ -3543,6 +3546,7 @@ private:
             g_SavePreviewRestorePending = false;
             g_CameraController.AbandonSavePreviewNormalization();
             g_CameraController.GetCityIcons().Clear();
+            g_CameraController.GetBuildingComposer().Shutdown();
             g_IsCityLoaded = false;
             g_IsUDriveItActive = false;
             g_TimerManager.Stop(RuntimeTimer::CameraFrameFallback);
