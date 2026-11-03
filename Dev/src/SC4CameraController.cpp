@@ -97,6 +97,12 @@ namespace
 		std::log2(2.613126f / 0.286370f),
 		std::log2(2.613126f / 0.143185f),
 	};
+	// Zoom, on the kZoomStageLevels scale, below which keyboard panning keeps its base
+	// on-screen speed: stage 2 at magnification 1, the middle of the native range.
+	constexpr float kPanSpeedReferenceZoomLevel = 2.0f;
+	// On-screen keyboard pan speed added for each doubling of size closer than the
+	// reference zoom. Without it a close view moves across the map at a crawl.
+	constexpr float kPanSpeedGainPerZoomLevel = 0.5f;
 	// One zoom level of the native Classic camera.
 	struct ClassicZoomLevel
 	{
@@ -2276,7 +2282,7 @@ void SC4CameraController::UpdateBuildingComposer()
 	});
 }
 
-// Returns the speed multiplier that cancels magnification for keyboard panning.
+// Returns the keyboard pan speed multiplier for the current zoom.
 float SC4CameraController::GetPanSpeedZoomScale() const
 {
 	float scale = 1.0f;
@@ -2286,7 +2292,13 @@ float SC4CameraController::GetPanSpeedZoomScale() const
 			return false;
 		}
 
-		scale = 1.0f / cameraControl->customMagnification;
+		// Dividing by magnification keeps the on-screen speed even across a stage. Closer
+		// views then gain speed at a linear rate per doubling of size.
+		const float zoomLevel = kZoomStageLevels[std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1))]
+			+ std::log2(cameraControl->customMagnification);
+		const float closeViewGain = 1.0f
+			+ (kPanSpeedGainPerZoomLevel * (std::max)(zoomLevel - kPanSpeedReferenceZoomLevel, 0.0f));
+		scale = closeViewGain / cameraControl->customMagnification;
 		return true;
 	});
 	return scale;

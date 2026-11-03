@@ -246,9 +246,10 @@ public:
 	/// </summary>
 	void FlushPendingViewUpdates();
 	/// <summary>
-	/// Returns the multiplier that keeps keyboard panning at a constant on-screen speed within a zoom stage.
+	/// Returns the keyboard pan speed multiplier for the current zoom. It keeps the on-screen
+	/// speed even within a zoom stage and raises it at a linear rate in views closer than stage 2.
 	/// </summary>
-	/// <returns>The reciprocal of the current magnification, or 1 when no usable camera is available.</returns>
+	/// <returns>The close-view gain divided by the current magnification, or 1 when no usable camera is available.</returns>
 	float GetPanSpeedZoomScale() const;
 	// Writes the active camera state to the diagnostic log.
 	bool DumpCameraInfo(const char* reason) const;
