@@ -1,11 +1,9 @@
 #pragma once
 
-#include "SC4BuildingComposer.h"
 #include "SC4CityIcons.h"
 #include "cS3DVector2.h"
 #include "cS3DVector3.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -292,11 +290,6 @@ public:
 	/// </summary>
 	/// <returns>The tracked city icons.</returns>
 	SC4CityIcons& GetCityIcons();
-	/// <summary>
-	/// Returns the object that draws baked models as complete buildings at free camera angles.
-	/// </summary>
-	/// <returns>The building composer.</returns>
-	SC4BuildingComposer& GetBuildingComposer();
 
 private:
 	// One complete view the Alt hold can save or move to. The focus is not part of it,
@@ -397,19 +390,9 @@ private:
 	/// rebuild, which reads their bounds.
 	/// </summary>
 	void OrientCityIcons();
-	/// <summary>
-	/// Tells the building composer about the current view. Runs before the pending redraw is read,
-	/// so a redraw it asks for happens in the same frame.
-	/// </summary>
-	void UpdateBuildingComposer();
 
 	// City icons kept facing the camera.
 	SC4CityIcons cityIcons;
-	// Draws baked models as complete buildings at free camera angles.
-	SC4BuildingComposer buildingComposer;
-	// Camera position, view target, magnification, yaw, and pitch at the last building composer
-	// update, for telling whether the view moved since.
-	std::array<float, 9> lastComposerView{};
 	// Last valid Modern Camera pitch in radians.
 	float currentPitch;
 	// Last valid Modern Camera yaw in radians.

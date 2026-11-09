@@ -52,8 +52,6 @@ namespace
 	constexpr uintptr_t kRebuildRenderGridAddress = 0x007CAB30;
 	// Renderer field holding the camera control (binary-verified: GetCameraControl 0x7C9FD0 returns it).
 	constexpr size_t kRendererCameraControlOffset = 0x8C;
-	// Largest difference in radians between an angle and its native value that still draws native models.
-	constexpr float kNativeViewAngleTolerance = 0.002f;
 	// Multiplier applied to custom magnification for each wheel notch.
 	constexpr float kMagnificationScalePerWheelNotch = 1.04f;
 	// Lowest custom magnification retained within a native zoom stage.
@@ -1222,11 +1220,6 @@ bool SC4CameraController::IsSavePreviewNormalizationActive() const
 }
 
 // Returns the tracked city icons, which the director keeps up to date from occupant messages.
-SC4BuildingComposer& SC4CameraController::GetBuildingComposer()
-{
-	return buildingComposer;
-}
-
 SC4CityIcons& SC4CameraController::GetCityIcons()
 {
 	return cityIcons;
@@ -2132,7 +2125,6 @@ bool SC4CameraController::ForceFullRedraw()
 void SC4CameraController::FlushPendingViewUpdates()
 {
 	OrientCityIcons();
-	UpdateBuildingComposer();
 
 	if (!viewSettlePending && !cameraUpdatePending && !gridRebuildPending && !redrawPending) {
 		return;
@@ -2243,41 +2235,6 @@ void SC4CameraController::OrientCityIcons()
 			kNativePitchByZoom[zoomIndex],
 			iconRotation);
 		cityIcons.ApplyRotation(iconRotation, renderer, gridRebuildPending);
-		return true;
-	});
-}
-
-// Tells the building composer whether the camera is at the current zoom stage's native angles,
-// and whether the view moved since the last frame.
-void SC4CameraController::UpdateBuildingComposer()
-{
-	WithRenderer([&](cISC43DRender* renderer) {
-		const SC4CameraControlLayout* cameraControl = GetCameraControl(renderer);
-		if (!cameraControl) {
-			return false;
-		}
-
-		const size_t zoomIndex = static_cast<size_t>(
-			std::clamp(cameraControl->zoom, 0, static_cast<int32_t>(kZoomCount - 1)));
-		const bool viewIsNative = std::abs(cameraControl->yaw - kDefaultYaw) <= kNativeViewAngleTolerance
-			&& std::abs(cameraControl->pitch - kNativePitchByZoom[zoomIndex]) <= kNativeViewAngleTolerance;
-		// Every change of zoom stage or rotation also moves the camera, so these cover them too.
-		const std::array<float, 9> view = {
-			cameraControl->cameraPosition.fX,
-			cameraControl->cameraPosition.fY,
-			cameraControl->cameraPosition.fZ,
-			cameraControl->viewTargetPosition.fX,
-			cameraControl->viewTargetPosition.fY,
-			cameraControl->viewTargetPosition.fZ,
-			cameraControl->customMagnification,
-			cameraControl->yaw,
-			cameraControl->pitch,
-		};
-		const bool viewMoved = view != lastComposerView;
-		lastComposerView = view;
-		if (buildingComposer.BeginFrame(viewIsNative, cameraControl->zoom, viewMoved)) {
-			redrawPending = true;
-		}
 		return true;
 	});
 }
