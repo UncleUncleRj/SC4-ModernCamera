@@ -2049,16 +2049,41 @@ void LogEscapePassThrough(UINT message, cIGZWin* focusedWindow, const char* sour
         + " ModernCameraEnabled:" + (g_IsModernCamEnabled ? "true" : "false"));
 }
 
-// Decides whether a movement key should be captured for Modern Camera.
-bool ShouldCaptureKeyboardPanKeyInFocus(WPARAM key, bool cameraFocus)
+/// <summary>
+/// Decides whether a movement key belongs to Modern Camera in the current focus and
+/// modifier state, before right-click scrolling is considered.
+/// </summary>
+/// <param name="key">Virtual key from a keyboard message.</param>
+/// <param name="cameraFocus">Whether the city 3D view has keyboard focus.</param>
+/// <returns>True when Modern Camera, not SC4, should receive the key.</returns>
+bool IsKeyboardPanKeyForCameraInFocus(WPARAM key, bool cameraFocus)
 {
     return g_IsCityLoaded
         && g_IsModernCamEnabled
         && (IsArrowVirtualKey(key) || (g_Settings.wasdMovement && IsWASDVirtualKey(key)))
         && IsCapturedKeyboardPanVirtualKey(key)
         && !IsCommandShortcutModifierDown()
-        && cameraFocus
+        && cameraFocus;
+}
+
+// Decides whether a movement key should be captured for Modern Camera.
+bool ShouldCaptureKeyboardPanKeyInFocus(WPARAM key, bool cameraFocus)
+{
+    return IsKeyboardPanKeyForCameraInFocus(key, cameraFocus)
         && !IsRightClickScrollingActive();
+}
+
+/// <summary>
+/// Decides whether a movement key is kept from SC4 while right-click scrolling pauses
+/// keyboard movement. Passing it on would run SC4's own W/A/S/D tool shortcuts.
+/// </summary>
+/// <param name="key">Virtual key from a keyboard message.</param>
+/// <param name="cameraFocus">Whether the city 3D view has keyboard focus.</param>
+/// <returns>True when the key should be consumed without moving the camera.</returns>
+bool ShouldWithholdKeyboardPanKeyDuringRightClickScroll(WPARAM key, bool cameraFocus)
+{
+    return IsKeyboardPanKeyForCameraInFocus(key, cameraFocus)
+        && IsRightClickScrollingActive();
 }
 
 // Decides whether held movement keys may continue moving the camera.
@@ -2073,15 +2098,20 @@ bool ShouldCaptureHeldKeyboardPan()
             || (g_Settings.wasdMovement && HasHeldWASDKeyboardPanKey()));
 }
 
-// Decides whether Q or E should control the camera while the 3D view has focus.
-bool ShouldCaptureKeyboardRotationKeyInFocus(WPARAM key, bool cameraFocus)
+/// <summary>
+/// Decides whether Q or E belongs to Modern Camera in the current focus and modifier
+/// state, before right-click scrolling is considered.
+/// </summary>
+/// <param name="key">Virtual key from a keyboard message.</param>
+/// <param name="cameraFocus">Whether the city 3D view has keyboard focus.</param>
+/// <returns>True when Modern Camera, not SC4, should receive the key.</returns>
+bool IsKeyboardRotationKeyForCameraInFocus(WPARAM key, bool cameraFocus)
 {
     if (!g_IsCityLoaded
         || !g_IsModernCamEnabled
         || !g_Settings.qeRotation
         || !IsKeyboardRotationVirtualKey(key)
-        || !cameraFocus
-        || IsRightClickScrollingActive()) {
+        || !cameraFocus) {
         return false;
     }
 
@@ -2099,6 +2129,42 @@ bool ShouldCaptureKeyboardRotationKeyInFocus(WPARAM key, bool cameraFocus)
     }
 
     return !IsVirtualKeyDown(VK_MENU);
+}
+
+// Decides whether Q or E should control the camera while the 3D view has focus.
+bool ShouldCaptureKeyboardRotationKeyInFocus(WPARAM key, bool cameraFocus)
+{
+    return IsKeyboardRotationKeyForCameraInFocus(key, cameraFocus)
+        && !IsRightClickScrollingActive();
+}
+
+/// <summary>
+/// Decides whether Q or E is kept from SC4 while right-click scrolling pauses keyboard
+/// rotation, so the key cannot reach SC4's own shortcuts.
+/// </summary>
+/// <param name="key">Virtual key from a keyboard message.</param>
+/// <param name="cameraFocus">Whether the city 3D view has keyboard focus.</param>
+/// <returns>True when the key should be consumed without rotating the camera.</returns>
+bool ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(WPARAM key, bool cameraFocus)
+{
+    return IsKeyboardRotationKeyForCameraInFocus(key, cameraFocus)
+        && IsRightClickScrollingActive();
+}
+
+/// <summary>
+/// Records a camera key consumed while right-click scrolling pauses keyboard camera control.
+/// </summary>
+/// <param name="key">Virtual key that was withheld.</param>
+/// <param name="message">Windows message that carried the key.</param>
+/// <param name="source">Input path that consumed the key.</param>
+void LogRightClickScrollKeyWithheld(WPARAM key, UINT message, const char* source)
+{
+    Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+        return std::string("Keyboard camera key withheld from SC4 during right-click scrolling. Source:")
+            + (source ? source : "unknown")
+            + " Key:" + FormatVirtualKey(key)
+            + " Message:" + std::to_string(message);
+    });
 }
 
 // Decides whether held Q/E keys may continue rotating the camera.
@@ -2551,6 +2617,13 @@ LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
                 StopHeldKeyboardRotation("keyboard capture interrupted");
+                if (ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(keyboard->vkCode, cameraFocus)) {
+                    LogRightClickScrollKeyWithheld(
+                        keyboard->vkCode,
+                        static_cast<UINT>(wParam),
+                        "low-level keyboard hook");
+                    return 1;
+                }
             }
             else if (isKeyUp && HasOwnedKeyboardRotationKey()) {
                 ObserveKeyTransition(keyboard->vkCode, false);
@@ -2585,6 +2658,13 @@ LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
                 StopHeldKeyboardPan();
+                if (ShouldWithholdKeyboardPanKeyDuringRightClickScroll(keyboard->vkCode, cameraFocus)) {
+                    LogRightClickScrollKeyWithheld(
+                        keyboard->vkCode,
+                        static_cast<UINT>(wParam),
+                        "low-level keyboard hook");
+                    return 1;
+                }
             }
             else if (isKeyUp && HasOwnedKeyboardPanKey()) {
                 ObserveKeyTransition(keyboard->vkCode, false);
@@ -2959,6 +3039,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             return 0;
         }
         StopHeldKeyboardRotation("canvas keyboard capture interrupted");
+        if (ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(wParam, cameraFocus)) {
+            LogRightClickScrollKeyWithheld(wParam, uMsg, "canvas WinProc filter");
+            handled = true;
+            return 0;
+        }
     }
     else if (isKeyboardInputMessage && IsCapturedKeyboardPanVirtualKey(wParam)) {
         if (IsCommandShortcutModifierDown()) {
@@ -2982,11 +3067,24 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 return 0;
             }
             StopHeldKeyboardPan();
+            if (ShouldWithholdKeyboardPanKeyDuringRightClickScroll(wParam, cameraFocus)) {
+                LogRightClickScrollKeyWithheld(wParam, uMsg, "canvas WinProc filter");
+                handled = true;
+                return 0;
+            }
         }
     }
     else if (isKeyboardCharacterMessage && IsWASDCharacter(wParam)) {
         const bool cameraFocus = IsCameraKeyboardFocus();
-        if (ShouldCaptureKeyboardPanKeyInFocus(wParam, cameraFocus)) {
+        // Character messages carry the typed letter, usually lowercase; the key checks
+        // expect the uppercase virtual key.
+        const WPARAM panKey = (wParam >= 'a' && wParam <= 'z') ? wParam - ('a' - 'A') : wParam;
+        if (ShouldCaptureKeyboardPanKeyInFocus(panKey, cameraFocus)) {
+            handled = true;
+            return 0;
+        }
+        if (ShouldWithholdKeyboardPanKeyDuringRightClickScroll(panKey, cameraFocus)) {
+            LogRightClickScrollKeyWithheld(panKey, uMsg, "canvas WinProc filter");
             handled = true;
             return 0;
         }
@@ -2995,6 +3093,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         const bool cameraFocus = IsCameraKeyboardFocus();
         const WPARAM rotationKey = wParam == 'q' ? 'Q' : (wParam == 'e' ? 'E' : wParam);
         if (ShouldCaptureKeyboardRotationKeyInFocus(rotationKey, cameraFocus)) {
+            handled = true;
+            return 0;
+        }
+        if (ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(rotationKey, cameraFocus)) {
+            LogRightClickScrollKeyWithheld(rotationKey, uMsg, "canvas WinProc filter");
             handled = true;
             return 0;
         }
