@@ -29,6 +29,43 @@ struct TrackedKeyState
 	KeyOwner owner = KeyOwner::None;
 };
 
+/// <summary>
+/// Returns the button GetAsyncKeyState must read for a mouse button. It reads physical
+/// buttons, so when the player has swapped them the logical right button is the physical
+/// left one, and the reverse.
+/// </summary>
+/// <param name="key">Virtual key, which may be a mouse button.</param>
+/// <param name="buttonsSwapped">Whether the primary and secondary buttons are swapped (SM_SWAPBUTTON).</param>
+/// <returns>The physical button for VK_LBUTTON or VK_RBUTTON; any other key unchanged.</returns>
+inline int GetPhysicalMouseButtonKey(int key, bool buttonsSwapped)
+{
+	if (!buttonsSwapped) {
+		return key;
+	}
+	if (key == VK_LBUTTON) {
+		return VK_RBUTTON;
+	}
+	if (key == VK_RBUTTON) {
+		return VK_LBUTTON;
+	}
+	return key;
+}
+
+/// <summary>
+/// Returns whether a queued key message is newer than the last event the low-level keyboard
+/// hook saw. The hook runs for every key event before its message is queued, and
+/// KBDLLHOOKSTRUCT::time equals the message's GetMessageTime, so a newer message means
+/// Windows removed the hook. It does that silently after the game thread stalls past the
+/// hook timeout.
+/// </summary>
+/// <param name="messageTime">GetMessageTime of the key message being handled.</param>
+/// <param name="lastHookEventTime">Time of the last event the hook saw.</param>
+/// <returns>True when the message is newer, measured across the tick counter's wrap.</returns>
+inline bool IsKeyboardMessageAheadOfHook(DWORD messageTime, DWORD lastHookEventTime)
+{
+	return static_cast<LONG>(messageTime - lastHookEventTime) > 0;
+}
+
 // Tracks observed virtual-key state and Modern Camera ownership claims.
 class KeyStateManager
 {
@@ -61,6 +98,13 @@ public:
 	KeyOwner GetOwner(WPARAM key) const;
 	// Clears every observed state and ownership claim.
 	void Clear();
+	/// <summary>
+	/// Clears any mouse button the tracker holds down that a mouse move reports as up. A
+	/// release the tracker missed, such as one over a plugin window, cannot then leave the
+	/// button down. A move never records a press.
+	/// </summary>
+	/// <param name="mouseKeyFlags">The MK_ button flags of a WM_MOUSEMOVE message.</param>
+	void ObserveMouseMoveButtons(WPARAM mouseKeyFlags);
 
 	// Returns whether an owned key in the supplied fixed group is still down.
 	template <size_t Count>

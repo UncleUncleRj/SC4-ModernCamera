@@ -369,13 +369,38 @@ bool CameraBookmarkStore::Load()
 		valid = valid && offset == bytes.size();
 	}
 
+	// The next save replaces the file, so one this version cannot read, from a newer version
+	// or damaged, is copied aside first. Without a copy, saving is blocked for the session.
+	std::filesystem::path keptAsidePath;
+	if (!valid) {
+		const std::filesystem::path asidePath = storagePath.wstring() + L".unreadable";
+		std::error_code copyError;
+		std::filesystem::copy_file(
+			storagePath,
+			asidePath,
+			std::filesystem::copy_options::overwrite_existing,
+			copyError);
+		if (!copyError) {
+			keptAsidePath = asidePath;
+		}
+	}
+
 	std::lock_guard lock(mutex);
 	loaded = true;
 	if (!valid) {
-		Logger::GetInstance().WriteLine(
-			LogLevel::Warning,
-			"Camera Bookmarks: ignored malformed or unsupported bookmark file; a new file will be created after the next change.");
 		cities.clear();
+		writesBlocked = keptAsidePath.empty();
+		if (writesBlocked) {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Error,
+				"Camera Bookmarks: could not read the bookmark file or keep a copy of it; bookmarks are not saved this session, so the file is left as it is.");
+		}
+		else {
+			Logger::GetInstance().WriteLine(
+				LogLevel::Warning,
+				"Camera Bookmarks: could not read the bookmark file; kept it as "
+				+ keptAsidePath.filename().string() + " and started a new one.");
+		}
 		return true;
 	}
 	cities = std::move(loadedCities);
@@ -384,12 +409,24 @@ bool CameraBookmarkStore::Load()
 
 std::vector<uint8_t> CameraBookmarkStore::SerializeLocked() const
 {
+	// Every city the player opens gets an entry, but only one with a bookmark is worth
+	// writing. Without this the file grows by one entry per city ever opened.
+	const auto hasBookmark = [](const CityBookmarks& city) {
+		return std::any_of(city.slots.begin(), city.slots.end(), [](const std::optional<CameraBookmark>& slot) {
+			return slot.has_value();
+		});
+	};
+	const size_t writtenCities = static_cast<size_t>(std::count_if(cities.begin(), cities.end(), hasBookmark));
+
 	std::vector<uint8_t> bytes;
-	bytes.reserve(12 + cities.size() * (8 + kSlotCount * (1 + sizeof(SC4NativeCameraState))));
+	bytes.reserve(12 + writtenCities * (8 + kSlotCount * (1 + sizeof(SC4NativeCameraState))));
 	Append(bytes, kFileMagic);
 	Append(bytes, kFileVersion);
-	Append(bytes, static_cast<uint32_t>(cities.size()));
+	Append(bytes, static_cast<uint32_t>(writtenCities));
 	for (const CityBookmarks& city : cities) {
+		if (!hasBookmark(city)) {
+			continue;
+		}
 		Append(bytes, static_cast<uint32_t>(city.key.size()));
 		bytes.insert(bytes.end(), city.key.begin(), city.key.end());
 		for (const std::optional<CameraBookmark>& slot : city.slots) {
@@ -406,6 +443,11 @@ std::vector<uint8_t> CameraBookmarkStore::SerializeLocked() const
 
 void CameraBookmarkStore::QueueWriteLocked()
 {
+	// The unreadable file could not be kept aside, so writing would destroy it.
+	if (writesBlocked) {
+		writeFailed.store(true, std::memory_order_relaxed);
+		return;
+	}
 	pendingWrite = SerializeLocked();
 	writeCondition.notify_one();
 }

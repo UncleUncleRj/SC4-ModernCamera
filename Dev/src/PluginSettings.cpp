@@ -80,17 +80,6 @@ const char* PluginSettingText::ToString(CameraMode value)
 	return value == CameraMode::Classic ? "Classic" : "Modern";
 }
 
-// Converts a diagnostics logging level to its persisted representation.
-const char* PluginSettingText::ToString(DebugLogging value)
-{
-	switch (value)
-	{
-	case DebugLogging::Off: return "Off";
-	case DebugLogging::Verbose: return "Verbose";
-	default: return "Normal";
-	}
-}
-
 // Initializes settings with the same values used for a fresh install.
 PluginSettings::PluginSettings()
 {
@@ -113,7 +102,8 @@ void PluginSettings::RestoreDefaults()
 	invertQE = false;
 	smoothWheelZoom = true;
 	invertWheelZoom = false;
-	debugLogging = DebugLogging::Normal;
+	// Off until a player turns logs on to report a problem.
+	writeLogs = false;
 	bookmarksEnabled = true;
 	notifyUpdatesInTicker = true;
 }
@@ -157,11 +147,12 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 	TryReadBool(json, "smoothWheelZoom", smoothWheelZoom);
 	TryReadBool(json, "invertWheelZoom", invertWheelZoom);
 
-	if (TryReadString(json, "logging", value))
+	const bool hasWriteLogs = TryReadBool(json, "writeLogs", writeLogs);
+	// Files from before Write Logs stored a level. Normal was its default and follows the new
+	// default; only Verbose was a deliberate choice to write logs.
+	if (!hasWriteLogs && TryReadString(json, "logging", value))
 	{
-		if (value == "Off") debugLogging = DebugLogging::Off;
-		else if (value == "Verbose") debugLogging = DebugLogging::Verbose;
-		else debugLogging = DebugLogging::Normal;
+		writeLogs = value == "Verbose";
 	}
 	TryReadBool(json, "bookmarksEnabled", bookmarksEnabled);
 	// Someone who turned off the old update popup also doesn't want the ticker message.
@@ -181,8 +172,9 @@ bool PluginSettings::Load(const std::filesystem::path& settingsPath)
 
 	Logger::GetInstance().WriteLine(LogLevel::Info, "Loaded settings from " + path.string());
 
-	// Settings files from before these options get them written at their starting values.
-	if (!hasAltCameraBungie || !hasQERotationSpeed)
+	// Settings files from before these options get them written at their starting values,
+	// and an old logging level is replaced by writeLogs.
+	if (!hasAltCameraBungie || !hasQERotationSpeed || !hasWriteLogs)
 	{
 		Save();
 	}
@@ -223,7 +215,7 @@ bool PluginSettings::Save() const
 		<< "    \"invertWheelZoom\": " << (invertWheelZoom ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"diagnostics\": {\n"
-		<< "    \"logging\": \"" << PluginSettingText::ToString(debugLogging) << "\"\n"
+		<< "    \"writeLogs\": " << (writeLogs ? "true" : "false") << "\n"
 		<< "  },\n"
 		<< "  \"bookmarks\": {\n"
 		<< "    \"bookmarksEnabled\": " << (bookmarksEnabled ? "true" : "false") << "\n"

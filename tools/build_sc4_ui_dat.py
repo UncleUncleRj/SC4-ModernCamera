@@ -755,19 +755,19 @@ def section_box(control_id: int, area: Area, visible: bool = True) -> str:
     )
 
 
-def changelog_view(control_id: int, area: Area, changelog: str, max_text: int) -> str:
-    """Return the read-only multiline GZWinTextEdit that scrolls the changelog."""
+def scrolling_text(control_id: int, area: Area, body: str, max_text: int, visible: bool = True) -> str:
+    """Return a read-only multiline GZWinTextEdit whose scrollbar lets long text fit a fixed area."""
     return control_line(
         "GZWinTextEdit",
         control_id,
         area,
         (242, 244, 248),
-        f'caption="{changelog}"',
+        f'caption="{body}"',
         "transparent",
-        window_flags(pbuff=True, alphablend=None, acceptfocus=None),
+        window_flags(visible=visible, pbuff=True, alphablend=None, acceptfocus=None),
         "editable=no wrapped=yes hscrollbar=no vscrollbar=yes outline=no opaque=yes",
         "caretvisible=no allowinsert=no allowundo=no singleline=no",
-        f'initvalue="{changelog}"',
+        f'initvalue="{body}"',
         "colorfontnormal=(32,40,80) colorfontdisabled=(32,40,80) colorfonthilited=(255,255,255)",
         "colorfontnormalbkg=(242,244,248) colorfontdisabledbkg=(242,244,248) colorfonthilitedbkg=(0,0,128)",
         "caretcolor=(32,40,80) highlightcolor=(0,0,128) outlinecolor=(112,124,152)",
@@ -1041,16 +1041,17 @@ ADVANCED_SECTIONS = (
         0x3D0C0966,
         "Diagnostics",
         (
+            # Write Logs keeps the old logging IDs: Enabled was Verbose, Disabled was Off.
+            # 0x3D0C0969, the old Normal button, stays retired.
             ChoiceRow(
-                (Choice(0x3D0C0968, "Off"), Choice(0x3D0C0969, "Normal"), Choice(0x3D0C096A, "Verbose")),
+                (Choice(0x3D0C096A, "Enabled"), Choice(0x3D0C0968, "Disabled")),
                 0x3D0C0967,
-                "Debug Logging:",
-                THREE_BUTTONS,
+                "Write Logs:",
             ),
             NoteRow(
                 0x3D0C096B,
                 escape_ui_caption(
-                    "Normal logs settings and camera changes. Verbose adds input traces.\n"
+                    "Disabling logging may help performance on some machines.\n"
                     "Ctrl+Alt+F8 writes a camera dump to the log.\n"
                     "Log: Plugins/SC4-ModernCamera/SC4-ModernCamera.log"
                 ),
@@ -1110,7 +1111,7 @@ def build_greeting_script(version_header: Path) -> bytes:
             ),
             text(0x3D0C084C, (24, 112, 292, 134), "Changelog:"),
             # The plugin fills this at runtime from the latest GitHub release.
-            changelog_view(0x3D0C0842, (24, 132, 496, 258), "Loading...", 4096),
+            scrolling_text(0x3D0C0842, (24, 132, 496, 258), "Loading...", 4096),
             rule(0x3D0C084D, (24, 266, 496, 268)),
             # Hides the frame's own line, which would otherwise run through the label below.
             rule(
@@ -1126,29 +1127,185 @@ def build_greeting_script(version_header: Path) -> bytes:
     )
 
 
+# ---------------------------------------------------------------------------
+# Help window
+#
+# Help mirrors the settings window: its General and Advanced tabs sit where the
+# settings tabs do, and each page explains that settings page's options in the
+# same order under the labels Settings shows. When an option is added or
+# renamed, update its entry here; tools/test_sc4_ui_layout.py checks that the
+# labels still match. The plugin shows one page's text at a time by control ID.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HelpEntry:
+    """One settings option: its label as Settings shows it, then what it does."""
+
+    label: str
+    text: str
+
+
+HELP_GENERAL_PAGE = (
+    HelpEntry(
+        "Camera mode",
+        "Modern lets you turn, tilt and zoom the camera freely and pan with the keyboard. "
+        "Classic switches back to SimCity 4's own camera. Your Modern options are kept while you "
+        "play in Classic. The small light on the camera button also switches modes.",
+    ),
+    HelpEntry(
+        "Reset Camera Location",
+        "Puts the camera back to SimCity 4's standard view. Use it if the view gets stuck or "
+        "looks wrong. It works in both modes.",
+    ),
+    "The options below work only in Modern mode and can't be changed in Classic.",
+    HelpEntry(
+        "WASD Movement",
+        "Pan the camera with W, A, S and D, and hold Shift to pan faster. Off gives these keys "
+        "back to SimCity 4's shortcuts. The arrow keys pan either way.",
+    ),
+    HelpEntry("Q/E Rotation", "Hold Q or E to turn the camera left or right. Off leaves Q and E to SimCity 4."),
+    HelpEntry(
+        "Invert vertical rotation",
+        "Reverses which way the camera tilts when you drag up or down with the middle mouse button.",
+    ),
+    HelpEntry(
+        "On Alt release",
+        "Holding Alt moves the camera to the nearest Classic angle and zoom level. Restore View "
+        "returns to your previous view when you let go of Alt. Keep View stays where the camera "
+        "is when you let go.",
+    ),
+    HelpEntry(
+        "Bookmark Hotkeys",
+        "Press Ctrl+1 to Ctrl+8 to save the current view, then press 1 to 8 to jump back to it. "
+        "Each city keeps its own eight bookmarks. Off leaves the number keys to SimCity 4.",
+    ),
+    HelpEntry(
+        "Rotation sensitivity",
+        "How fast the camera turns and tilts when you drag with the middle mouse button. Q and E "
+        "have their own speed on the Advanced tab.",
+    ),
+    HelpEntry(
+        "Zoom sensitivity",
+        "How far each notch of the mouse wheel zooms. It applies when Mouse wheel zoom on the "
+        "Advanced tab is set to Smooth.",
+    ),
+    HelpEntry(
+        "Panning speed",
+        "How fast W, A, S, D and the arrow keys move the camera. Right-click scrolling keeps "
+        "SimCity 4's own speed.",
+    ),
+    HelpEntry("Defaults", "Restores every option on both tabs to its original setting. Your bookmarks are kept."),
+    HelpEntry("Show Changelog", "Shows the notes for the latest release, with links to its download pages."),
+)
+
+HELP_ADVANCED_PAGE = (
+    "Camera Tuning options work only in Modern mode and can't be changed in Classic.",
+    HelpEntry(
+        "Q/E rotation speed",
+        "How fast Q and E turn the camera. Rotation sensitivity on the General tab sets the mouse "
+        "speed separately.",
+    ),
+    HelpEntry(
+        "Shift pan boost",
+        "How much faster the camera pans while you hold Shift, from no boost up to five times as fast.",
+    ),
+    HelpEntry(
+        "Invert Q/E",
+        "Swaps the directions Q and E turn the camera, including the quarter turns made while Alt is held.",
+    ),
+    HelpEntry(
+        "Mouse wheel zoom",
+        "Smooth zooms in small, continuous steps. Stepped jumps between SimCity 4's own zoom levels.",
+    ),
+    HelpEntry("Invert wheel zoom", "Reverses which way the mouse wheel zooms, in both Smooth and Stepped."),
+    HelpEntry(
+        "Write Logs",
+        "Enabled records what the camera does in a log file, which helps when you report a problem. "
+        "Leave it Disabled for everyday play, which may help performance on some machines.\n"
+        "The log is Plugins/SC4-ModernCamera/SC4-ModernCamera.log. Ctrl+Alt+F8 adds a camera report "
+        "to it at any time, even while Write Logs is Disabled.",
+    ),
+    HelpEntry(
+        "Don't notify me of updates in the news ticker",
+        "Stops the news ticker from announcing new versions of SC4-ModernCamera. Show Changelog "
+        "still shows the latest release.",
+    ),
+)
+
+HELP_CONTROLS_PAGE = (
+    "These controls work in Modern mode. Classic uses SimCity 4's own controls.",
+    "Keyboard\n"
+    "W, A, S, D or arrow keys: Pan the camera\n"
+    "Shift + pan keys: Pan faster\n"
+    "Q and E: Turn the camera\n"
+    "Hold Alt: Snap to the nearest Classic view\n"
+    "Ctrl+1 to Ctrl+8: Save the current view\n"
+    "1 to 8: Jump to a saved view\n"
+    "Ctrl+Alt+F8: Add a camera report to the log",
+    "Mouse\n"
+    "Mouse wheel: Zoom in and out\n"
+    "Middle button + drag: Turn and tilt the camera\n"
+    "Right button + drag: Scroll the map\n"
+    "Camera button (top right): Open Settings\n"
+    "Light on the camera button: Switch between Modern and Classic",
+    "Key combinations with Ctrl, Alt or the Windows key still reach SimCity 4, so its shortcuts "
+    "keep working. Camera keys pause while you type in a text box or dialog.",
+    "Cheat codes (Ctrl+X)\n"
+    "ModernCamera: Switch between Modern and Classic\n"
+    "ModernCameraFix: Reset the camera\n"
+    "ModernCameraDefaults: Restore every option\n"
+    "SC4MC also works as a short prefix, so SC4MCFix resets the camera too.",
+)
+
+HELP_WINDOW_WIDTH = 460
+HELP_WINDOW_HEIGHT = 420
+HELP_RIGHT = HELP_WINDOW_WIDTH - SECTION_LEFT
+# The text ends above the 2-pixel divider the frame draws over the footer.
+HELP_TEXT_AREA = (SECTION_LEFT, 88, HELP_RIGHT, HELP_WINDOW_HEIGHT - FRAME_FOOTER_LINE_OFFSET - 8)
+HELP_FOOTER_TOP = HELP_WINDOW_HEIGHT - 44
+# Tab button ID, caption, text ID, and blocks, in tab order. The first page is
+# shown until the plugin selects one.
+HELP_PAGES = (
+    (0x3D0C0859, "General", 0x3D0C085C, HELP_GENERAL_PAGE),
+    (0x3D0C085A, "Advanced", 0x3D0C085D, HELP_ADVANCED_PAGE),
+    (0x3D0C085B, "Controls", 0x3D0C085E, HELP_CONTROLS_PAGE),
+)
+# The same columns as the settings window's General and Advanced tabs.
+HELP_TAB_COLUMNS = ((24, 144), (152, 272), (280, 400))
+
+
+def help_page_text(blocks: tuple[object, ...]) -> str:
+    """Join a help page's notes and entries, one blank line apart, into its pane's text."""
+    parts = [f"{block.label}:\n{block.text}" if isinstance(block, HelpEntry) else block for block in blocks]
+    return escape_ui_caption("\n\n".join(parts))
+
+
 def build_controls_script() -> bytes:
-    controls = escape_ui_caption(
-        "Keyboard Controls:\n"
-        "WASD: Pan the camera\n"
-        "Shift + WASD: Pan faster\n\n"
-        "Q / E: Rotate the camera\n\n"
-        "Mouse Controls:\n"
-        "Mouse Wheel: Zoom\n"
-        "Middle Mouse Button + Drag: Pan & Tilt\n"
-        "Alt: Hold Classic angle\n"
-        "Camera Button: Opens camera settings"
-    )
+    """Return the help window, which keeps the controls window's resource and root IDs."""
+    # 0x3D0C0852 was the plain controls text. Keep it retired.
+    tabs = []
+    panes = []
+    for index, ((tab_id, caption, text_id, blocks), (left, right)) in enumerate(
+        zip(HELP_PAGES, HELP_TAB_COLUMNS, strict=True)
+    ):
+        body = help_page_text(blocks)
+        tabs.append(choice_button(tab_id, (left, 44, right, 72), caption))
+        panes.append(scrolling_text(text_id, HELP_TEXT_AREA, body, len(body) + 256, visible=index == 0))
     return framed_window(
         0x3D0C0708,
-        440,
-        280,
-        "SC4-ModernCamera Controls",
-        "controls help window",
+        HELP_WINDOW_WIDTH,
+        HELP_WINDOW_HEIGHT,
+        "SC4-ModernCamera Help",
+        "help window",
         [
-            close_x_button(0x3D0C0850, 432),
-            text(0x3D0C0851, (24, 4, 398, 30), "Controls", font="GenHeader"),
-            text(0x3D0C0852, (24, 48, 416, 220), controls, align="lefttop", wrapped=True),
-            button(0x3D0C0853, (256, 236, 416, 264), "OK"),
+            close_x_button(0x3D0C0850, HELP_WINDOW_WIDTH - 8),
+            picture(0x3D0C0858, 18, 2, CAM_ICON_IMAGE, CAM_ICON_SIZE),
+            text(0x3D0C0851, (58, 4, HELP_RIGHT - 30, 30), "SC4-ModernCamera Help", font="GenHeader"),
+            *tabs,
+            rule(0x3D0C085F, (SECTION_LEFT, 78, HELP_RIGHT, 80)),
+            *panes,
+            button(0x3D0C0853, (HELP_RIGHT - 100, HELP_FOOTER_TOP, HELP_RIGHT, HELP_FOOTER_TOP + 28), "Close"),
         ],
     )
 
@@ -1199,7 +1356,12 @@ def build_settings_script(version_header: Path) -> bytes:
             ),
             choice_button(0x3D0C0955, (24, 44, 144, 72), "General"),
             choice_button(0x3D0C0951, (152, 44, 272, 72), "Advanced"),
-            button(0x3D0C095A, (356, 44, SECTION_RIGHT, 72), "View Controls", tip="Show the camera controls"),
+            button(
+                0x3D0C095A,
+                (356, 44, SECTION_RIGHT, 72),
+                "View Help",
+                tip="Explain each option and the camera controls",
+            ),
             rule(0x3D0C0959, (SECTION_LEFT, 78, SECTION_RIGHT, 80)),
             *layout_sections(GENERAL_SECTIONS, SETTINGS_PAGE_TOP, True),
             *layout_sections(ADVANCED_SECTIONS, SETTINGS_PAGE_TOP, False),

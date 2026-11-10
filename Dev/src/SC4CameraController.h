@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 class cISC43DRender;
 
@@ -264,6 +265,17 @@ public:
 	bool ShowCameraBookmarkNotice(CameraBookmarkNotice notice, uint32_t slot) const;
 	// Clears the temporary bookmark confirmation UI.
 	bool ClearCameraBookmarkConfirmation() const;
+	/// <summary>
+	/// Shows a temporary message near the cursor reporting a cheat code's outcome.
+	/// </summary>
+	/// <param name="text">Message to show.</param>
+	/// <returns>True when SC4 accepted the cursor-text entry.</returns>
+	bool ShowCheatNotice(const std::string& text) const;
+	/// <summary>
+	/// Removes the cheat code message.
+	/// </summary>
+	/// <returns>True when SC4 removed the cursor-text entry.</returns>
+	bool ClearCheatNotice() const;
 	// Returns whether a restorable native camera state has been captured.
 	bool HasNativeCameraState() const;
 	// Returns the native camera snapshot retained by this controller.

@@ -15,6 +15,8 @@ enum class RuntimeTimer : size_t
 	CameraDumpConfirmation,
 	// One-shot timer that hides the camera-bookmark confirmation.
 	BookmarkConfirmation,
+	// One-shot timer that hides the message reporting a cheat code's outcome.
+	CheatConfirmation,
 	// One-shot restoration of 3D-view focus after a UI transition.
 	ModernCameraFocusRestore,
 	// Number of timer slots. This is not a valid timer.

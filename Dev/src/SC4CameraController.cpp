@@ -40,6 +40,10 @@ namespace
 	constexpr uint32_t kCameraBookmarkCursorTextId = 0x3D0C4D02;
 	// Cursor-text priority that keeps bookmark confirmations visible.
 	constexpr uint32_t kCameraBookmarkCursorTextPriority = 1000;
+	// Cursor-text identifier reserved for cheat code messages.
+	constexpr uint32_t kCheatCursorTextId = 0x3D0C4D03;
+	// Cursor-text priority that keeps cheat code messages visible.
+	constexpr uint32_t kCheatCursorTextPriority = 1000;
 	// Native camera-position update entry point for the supported executable.
 	constexpr uintptr_t kUpdateCameraPositionAddress = 0x007CCF80;
 	// Native custom-magnification entry point for the supported executable.
@@ -997,15 +1001,19 @@ bool SC4CameraController::RestoreCameraState(SC4NativeCameraState state, const c
 		currentPitch = SanitizePitch(state.pitch);
 		currentYaw = SanitizeYaw(state.yaw);
 		anglesInitialized = true;
-		rotationGestureActive = false;
-		rotationGestureChanged = false;
-		rotationOrthoScale = 0.0f;
-		rotationViewTarget = {};
-		rotationBaseTarget = {};
 
 		const bool refreshed = Refresh(*cameraControl);
 		if (refreshed) {
 			RequestViewSettle();
+		}
+
+		// An M3 or Q/E rotation the player is still holding goes on from the recalled view, as it
+		// does after an Alt switch. Ending it here, while the input side still holds it, would
+		// leave the rest of the gesture without its pivot, its zoom, or its final notification.
+		if (rotationGestureActive) {
+			rotationViewTarget = cameraControl->viewTargetPosition;
+			rotationBaseTarget = cameraControl->baseTargetForRotation;
+			rotationOrthoScale = cameraControl->orthoScale;
 		}
 		Logger::GetInstance().WriteLine(
 			refreshed ? LogLevel::Info : LogLevel::Warning,
@@ -2620,6 +2628,33 @@ bool SC4CameraController::ClearCameraBookmarkConfirmation() const
 {
 	return WithView3D([](cISC4View3DWin* view3D) {
 		return view3D->ClearCursorText(kCameraBookmarkCursorTextId);
+	});
+}
+
+// The view can keep the strings' pointers while the message shows, so they are static.
+// The old message is removed before its text changes, and the view never holds text that
+// is being replaced.
+bool SC4CameraController::ShowCheatNotice(const std::string& text) const
+{
+	return WithView3D([&text](cISC4View3DWin* view3D) {
+		static cRZBaseString title("SC4 Modern Camera");
+		static cRZBaseString body;
+		view3D->ClearCursorText(kCheatCursorTextId);
+		body = std::string_view(text);
+		return view3D->SetCursorText(
+			kCheatCursorTextId,
+			kCheatCursorTextPriority,
+			&title,
+			&body,
+			0);
+	});
+}
+
+// Removes the cursor-text message created for a cheat code.
+bool SC4CameraController::ClearCheatNotice() const
+{
+	return WithView3D([](cISC4View3DWin* view3D) {
+		return view3D->ClearCursorText(kCheatCursorTextId);
 	});
 }
 

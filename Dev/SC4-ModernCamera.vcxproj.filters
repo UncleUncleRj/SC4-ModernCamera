@@ -92,6 +92,9 @@
 	<ClInclude Include="src\CameraBookmarkStore.h">
 	  <Filter>Header Files</Filter>
 	</ClInclude>
+	<ClInclude Include="src\CheatCommands.h">
+	  <Filter>Header Files</Filter>
+	</ClInclude>
 	<ClInclude Include="src\ReleaseNotesDownloader.h">
 	  <Filter>Header Files</Filter>
 	</ClInclude>
@@ -112,6 +115,9 @@
     </ClInclude>
     <ClInclude Include="src\PluginVersion.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Runtime\NativeCallbackGuard.h">
+      <Filter>Header Files\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="src\Runtime\TimerManager.h">
       <Filter>Header Files\Runtime</Filter>

@@ -27,8 +27,8 @@ struct SC4WindowManagerCallbacks
 	std::function<void()> OnResetCameraRequested;
 	// Clears held input after an input setting changes.
 	std::function<void()> OnInputSettingsChanged;
-	// Applies the selected diagnostic logging verbosity.
-	std::function<void()> OnDebugLoggingChanged;
+	// Applies the Write Logs setting to the logger.
+	std::function<void()> OnWriteLogsChanged;
 	// Returns keyboard and mouse focus to the city after settings close.
 	std::function<void()> OnSettingsWindowClosed;
 };
@@ -340,12 +340,44 @@ protected:
 	bool OnButtonClick(uint32_t controlID) override;
 };
 
-// Baked reference window describing Modern Camera controls.
+/// <summary>
+/// Baked help window that explains each settings option and the camera controls. It keeps
+/// the controls window's resource, so its class and theme file keep that name.
+/// </summary>
 class ControlsWindow final : public BakedManagedWindow
 {
 public:
-	// Creates the baked controls-reference window.
+	/// <summary>Pages of the help window, one per tab.</summary>
+	enum class Page : uint8_t
+	{
+		/// <summary>The options on the settings window's General page.</summary>
+		General,
+		/// <summary>The options on the settings window's Advanced page.</summary>
+		Advanced,
+		/// <summary>Keyboard, mouse, and cheat-code controls.</summary>
+		Controls,
+	};
+
+	/// <summary>Creates the baked help window on its General page.</summary>
 	ControlsWindow();
+	/// <summary>Selects a page; an open window switches to it at once.</summary>
+	/// <param name="page">Page to show.</param>
+	void ShowPage(Page page);
+
+protected:
+	/// <summary>Shows the selected page once the baked resource exists.</summary>
+	void OnCreated() override;
+	/// <summary>Switches pages for a tab click and leaves the close buttons to the base class.</summary>
+	/// <param name="controlID">Clicked control ID.</param>
+	/// <returns>True when the click was handled.</returns>
+	bool OnButtonClick(uint32_t controlID) override;
+
+private:
+	/// <summary>Shows the active page's text, hides the others, and selects its tab.</summary>
+	void ApplyActivePage();
+
+	/// <summary>Page shown now, or when the window is next created.</summary>
+	Page activePage;
 };
 
 // Experimental native-control workspace used to inspect GZ UI behavior.
@@ -488,14 +520,33 @@ public:
 	bool ShowControlLaboratory();
 	// Opens the baked greeting window.
 	bool ShowGreetingWindow();
-	// Opens the baked controls-reference window.
-	bool ShowControlsWindow();
+	/// <summary>Opens the help window on a page, or switches an open one to it.</summary>
+	/// <param name="page">Page to show.</param>
+	/// <returns>False while a drive suspends the windows or the resource fails to load.</returns>
+	bool ShowControlsWindow(ControlsWindow::Page page);
 	// Opens the baked settings window.
 	bool ShowSettingsWindow();
 	// Opens settings when closed or closes it when already visible.
 	bool ToggleSettingsWindow();
 	// Switches between Modern and Classic camera modes from the floating menu button.
 	void ToggleCameraMode();
+	/// <summary>
+	/// Restores every setting to its default, saves the file, refreshes open windows, and
+	/// notifies the runtime of the mode, input, and logging changes.
+	/// </summary>
+	/// <param name="source">Label that names the caller in the log.</param>
+	/// <returns>True when the defaults were applied; false without a city or during a drive.</returns>
+	bool RestoreDefaultSettings(const char* source);
+	/// <summary>
+	/// Hides the open settings, controls, and changelog windows for a U-Drive-It drive, and
+	/// refuses to open them or change the camera mode until ResumeAfterDrive.
+	/// </summary>
+	/// <returns>True when at least one window was hidden.</returns>
+	bool SuspendForDrive();
+	/// <summary>
+	/// Shows again the windows SuspendForDrive hid, and allows windows and mode changes again.
+	/// </summary>
+	void ResumeAfterDrive();
 	// Shows or hides the floating camera menu button.
 	void SetMenuButtonVisible(bool visible);
 	// Synchronizes dependent windows and invokes the settings-close callback.
@@ -562,6 +613,12 @@ private:
 	uintptr_t releaseNotesTimerID = 0;
 	// Whether the loaded city's advisor Lua state can receive the update notice.
 	bool updateNoticeReady = false;
+	// True during a U-Drive-It drive, when no window opens and the camera mode cannot change.
+	bool driveSuspended = false;
+	// Windows hidden for the current drive, which ResumeAfterDrive shows again.
+	bool settingsHiddenForDrive = false;
+	bool controlsHiddenForDrive = false;
+	bool greetingHiddenForDrive = false;
 	// Version last announced to that Lua state; empty means no notice.
 	std::string publishedUpdateVersion;
 	// Latest GitHub release notes shown by the greeting window.

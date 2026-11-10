@@ -1,5 +1,6 @@
 #include "cIGZCanvas.h"
 #include "cIGZCanvasW32.h"
+#include "cIGZCheatCodeManager.h"
 #include "cIGZGraphicSystem.h"
 #include "cIGZMessage2Standard.h"
 #include "cIGZMessageServer2.h"
@@ -15,16 +16,19 @@
 #include "cISC4View3DWin.h"
 #include "cISC4ViewInputControl.h"
 #include "cRZAutoRefCount.h"
+#include "cRZBaseString.h"
 #include "cRZMessage2COMDirector.h"
 #include "SC4String.h"
 #include "GZServPtrs.h"
 #include "Hooks/VTableHook.h"
 #include "CameraBookmarkStore.h"
+#include "CheatCommands.h"
 #include "Input/KeyStateManager.h"
 #include "Logger.h"
 #include "PluginPaths.h"
 #include "PluginSettings.h"
 #include "PluginVersion.h"
+#include "Runtime/NativeCallbackGuard.h"
 #include "Runtime/TimerManager.h"
 #include "SC4CameraController.h"
 #include "SC4VersionDetection.h"
@@ -34,6 +38,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -45,6 +50,9 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <vector>
 
 // Game lifecycle message identifiers
 // Reverse-engineered SimCity 4 message IDs for post-city initialization,
@@ -56,6 +64,10 @@ static constexpr uint32_t kSC4MessagePreSave = 0x26C63343;
 static constexpr uint32_t kSC4MessagePostSave = 0x26C63345;
 static constexpr uint32_t kSC4MessageInsertOccupant = 0x99EF1142;
 static constexpr uint32_t kSC4MessageRemoveOccupant = 0x99EF1143;
+// Cheat issued (binary-verified: cGZCheatCodeManager::SendCheatNotifications at 0x920ECE
+// creates a message per subscriber with Data1 = matched cheat ID and Void2 = the typed line,
+// and calls DoMessage directly, so the line is valid for the whole call).
+static constexpr uint32_t kSC4MessageCheatIssued = 0x230E27AC;
 
 // Reverse-engineered GZ window IDs used to resolve the SC4 application and 3D
 // view, and to recognize input targeting the full 3D surface.
@@ -91,7 +103,11 @@ static constexpr float kKeyboardRotationRadiansPerSecond = SC4CameraController::
 static constexpr UINT kZoomIdleRedrawDelayMs = 1500; // Delay before redrawing after mouse-wheel zoom.
 static constexpr UINT kCameraDumpConfirmationDelayMs = 2500; // Lifetime of the dump confirmation.
 static constexpr UINT kBookmarkConfirmationDelayMs = 2500; // Lifetime of the bookmark confirmation.
+static constexpr UINT kCheatConfirmationDelayMs = 4000; // Lifetime of a cheat code message, which can be longer.
 static constexpr UINT kModernCameraFocusRestoreDelayMs = 150; // Delay before restoring 3D-view focus.
+// Shortest time between keyboard hook reinstallations. A key message another program posts
+// never passes the hook, and must not make the plugin reinstall it over and over.
+static constexpr ULONGLONG kKeyboardHookReinstallIntervalMs = 5000;
 
 // Plugin-owned identifier of the camera frame service on the framework tick list.
 static constexpr uint32_t kCameraTickServiceID = 0x3D0C4D10;
@@ -114,6 +130,9 @@ bool g_IsCityLoaded = false;
 bool g_IsModernCamEnabled = true;
 // True while a U-Drive-It drive has temporarily handed Modern Camera input to the game.
 bool g_IsUDriveItActive = false;
+// True while the U-Drive-It tool is the current view tool, in either camera mode. Plugin
+// windows stay hidden and camera mode changes are refused for as long as it is set.
+bool g_IsUDriveItToolActive = false;
 // True when SimCity 4's native UI has been minimized.
 bool g_IsNativeUIHidden = false;
 // Native MinimizeUI method signature captured by the vtable hook.
@@ -136,46 +155,13 @@ enum class View3DToolClearReason : uint8_t
     ClassicCameraEnabled,
 };
 
-// Reads the current physical state for a virtual key through Win32.
+// Reads the current physical state for a virtual key through Win32. GetAsyncKeyState reads
+// physical mouse buttons, so the left and right buttons are exchanged when the player has
+// swapped them, and VK_RBUTTON keeps meaning the button that scrolls the city.
 bool ReadPhysicalKeyState(int key)
 {
-    return (GetAsyncKeyState(key) & 0x8000) != 0;
-}
-
-/// <summary>
-/// Logs an exception stopped at a native callback boundary.
-/// </summary>
-/// <param name="callback">Name of the callback that failed.</param>
-/// <param name="detail">Description of the failure.</param>
-void LogNativeCallbackFailure(const char* callback, const char* detail) noexcept
-{
-    try {
-        Logger::GetInstance().WriteLine(LogLevel::Error, std::string(callback) + " failed: " + detail);
-    }
-    catch (...) {
-        // Logging is the last resort, and nothing may escape to the native caller.
-    }
-}
-
-/// <summary>
-/// Runs a callback that SC4 or Windows invoked without letting a C++ exception reach
-/// the caller. SC4's message server and tick loop catch nothing, so an escaping
-/// exception would skip other services or end the process.
-/// </summary>
-/// <param name="callback">Name logged if the callback fails.</param>
-/// <param name="function">Callback body.</param>
-template <typename Function>
-void RunGuardedNativeCallback(const char* callback, Function&& function) noexcept
-{
-    try {
-        function();
-    }
-    catch (const std::exception& exception) {
-        LogNativeCallbackFailure(callback, exception.what());
-    }
-    catch (...) {
-        LogNativeCallbackFailure(callback, "unknown exception");
-    }
+    const int physicalKey = GetPhysicalMouseButtonKey(key, GetSystemMetrics(SM_SWAPBUTTON) != 0);
+    return (GetAsyncKeyState(physicalKey) & 0x8000) != 0;
 }
 
 // Cinematic Camera State
@@ -226,8 +212,14 @@ bool g_RotationCursorHidden = false;
 bool g_KeyboardRotationGestureActive = false;
 // Last valid SC4 canvas window observed by the WinProc filter.
 HWND g_CanvasWindow = NULL;
+// True while a reversed wheel message is on its way to SC4's own stepped zoom.
+bool g_SendingReversedWheelToNative = false;
 // Low-level hook that observes keyboard state while Modern Camera is active.
 HHOOK g_KeyboardHook = NULL;
+// Message time of the last key event the low-level hook saw, or of its installation.
+DWORD g_LastKeyboardHookEventTime = 0;
+// GetTickCount64 value of the last hook reinstallation, used to space them out.
+ULONGLONG g_LastKeyboardHookReinstallTick = 0;
 // Owns Modern Camera state and direct native camera operations.
 SC4CameraController g_CameraController;
 // Owns persistent, per-city bookmark records and its asynchronous file writer.
@@ -258,6 +250,8 @@ VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PT
 VOID CALLBACK ClearCameraBookmarkConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Shows the bookmark confirmation for a short interval.
 void StartCameraBookmarkConfirmationTimer();
+// Clears the temporary cheat code message.
+VOID CALLBACK ClearCheatConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Returns focus to the 3D view after a UI transition.
 VOID CALLBACK ModernCameraFocusRestoreTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 // Observes global keyboard input and captures eligible camera controls.
@@ -1242,15 +1236,37 @@ void StartCameraBookmarkConfirmationTimer()
         ClearCameraBookmarkConfirmationTimerProc);
 }
 
+/// <summary>
+/// Stops the timer that hides the cheat code message.
+/// </summary>
+void KillCheatConfirmationTimer()
+{
+    g_TimerManager.Stop(RuntimeTimer::CheatConfirmation);
+}
+
+/// <summary>
+/// Starts, or restarts, the timer that hides the cheat code message.
+/// </summary>
+void StartCheatConfirmationTimer()
+{
+    KillCheatConfirmationTimer();
+    g_TimerManager.Start(
+        RuntimeTimer::CheatConfirmation,
+        kCheatConfirmationDelayMs,
+        ClearCheatConfirmationTimerProc);
+}
+
 // Returns focus to the 3D view when the scheduled restoration fires.
 VOID CALLBACK ModernCameraFocusRestoreTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
 {
-    if (g_TimerManager.IsCurrent(RuntimeTimer::ModernCameraFocusRestore, idEvent)) {
-        KillModernCameraFocusRestoreTimer();
-        if (g_IsCityLoaded && (!g_View3DFocusRestoreRequiresModern || g_IsModernCamEnabled)) {
-            FocusView3DForNativeInput(g_View3DFocusRestoreContext);
+    RunGuardedNativeCallback("Focus restore timer", [idEvent]() {
+        if (g_TimerManager.IsCurrent(RuntimeTimer::ModernCameraFocusRestore, idEvent)) {
+            KillModernCameraFocusRestoreTimer();
+            if (g_IsCityLoaded && (!g_View3DFocusRestoreRequiresModern || g_IsModernCamEnabled)) {
+                FocusView3DForNativeInput(g_View3DFocusRestoreContext);
+            }
         }
-    }
+    });
 }
 
 // Requests a full city redraw while Modern Camera is active.
@@ -1464,32 +1480,35 @@ bool __fastcall HookedMinimizeUI(cISC4View3DWin* view3D, void* edx, bool minimiz
 
     MinimizeUIFunction original = reinterpret_cast<MinimizeUIFunction>(g_MinimizeUIHook.GetOriginal());
     if (!original) {
-        Logger::GetInstance().WriteLine(LogLevel::Error, "Native UI MinimizeUI hook: original function pointer was null.");
+        LogNativeCallbackFailure("Native UI MinimizeUI hook", "original function pointer was null");
         return false;
     }
 
     const bool previousHidden = g_IsNativeUIHidden;
     const bool result = original(view3D, minimize);
 
-    if (g_IsCityLoaded) {
-        SyncMenuButtonToNativeUI(
-            !minimize,
-            minimize
-            ? "native MinimizeUI(true) observed; hiding camera settings button."
-            : "native MinimizeUI(false) observed; showing camera settings button.");
-    }
-    else {
-        g_IsNativeUIHidden = minimize;
-    }
+    // SC4's own call has run, so a failure here can only leave the menu button out of step.
+    RunGuardedNativeCallback("Native UI MinimizeUI hook", [&]() {
+        if (g_IsCityLoaded) {
+            SyncMenuButtonToNativeUI(
+                !minimize,
+                minimize
+                ? "native MinimizeUI(true) observed; hiding camera settings button."
+                : "native MinimizeUI(false) observed; showing camera settings button.");
+        }
+        else {
+            g_IsNativeUIHidden = minimize;
+        }
 
-    Logger::GetInstance().WriteLine(
-        LogLevel::Info,
-        std::string("Native UI MinimizeUI hook: Minimize:")
-        + (minimize ? "true" : "false")
-        + " PreviousTrackedState:" + (previousHidden ? "UIHidden" : "UIVisible")
-        + " NewTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
-        + " StateChanged:" + (previousHidden != g_IsNativeUIHidden ? "true" : "false")
-        + " Result:" + (result ? "true" : "false"));
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            std::string("Native UI MinimizeUI hook: Minimize:")
+            + (minimize ? "true" : "false")
+            + " PreviousTrackedState:" + (previousHidden ? "UIHidden" : "UIVisible")
+            + " NewTrackedState:" + (g_IsNativeUIHidden ? "UIHidden" : "UIVisible")
+            + " StateChanged:" + (previousHidden != g_IsNativeUIHidden ? "true" : "false")
+            + " Result:" + (result ? "true" : "false"));
+    });
 
     return result;
 }
@@ -1501,17 +1520,24 @@ void __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
 
     SetScrollingFunction original = reinterpret_cast<SetScrollingFunction>(g_SetScrollingHook.GetOriginal());
     if (!original) {
-        Logger::GetInstance().WriteLine(LogLevel::Error, "View3D SetScrolling hook: original function pointer was null.");
+        LogNativeCallbackFailure("View3D SetScrolling hook", "original function pointer was null");
         return;
     }
 
-    const char* source = g_IsApplyingKeyboardPan
-        ? "keyboard SetScrolling"
-        : (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
+    // The bounds check only decides what to forward. If it fails, the request goes through
+    // unchanged, which is what SC4 does without the hook.
     float adjustedX = x;
-    bool blockedByBounds = false;
-    if (g_IsCityLoaded && IsModernInputActive() && scrolling) {
+    bool stopAtBounds = false;
+    RunGuardedNativeCallback("View3D SetScrolling hook", [&]() {
+        if (!g_IsCityLoaded || !IsModernInputActive() || !scrolling) {
+            return;
+        }
+
+        const char* source = g_IsApplyingKeyboardPan
+            ? "keyboard SetScrolling"
+            : (IsRightClickScrollingActive() ? "right mouse SetScrolling" : "native SetScrolling");
         auto* renderer = view3D ? view3D->GetRenderer() : nullptr;
+        bool blockedByBounds = false;
         const bool boundsChecked = g_CameraController.AdjustScrollForCityBounds(
             renderer,
             x,
@@ -1519,8 +1545,8 @@ void __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
             adjustedX,
             blockedByBounds,
             source);
-        if (!boundsChecked || blockedByBounds) {
-            original(view3D, false, 0.0f, 0.0f);
+        stopAtBounds = !boundsChecked || blockedByBounds;
+        if (stopAtBounds) {
             const LogLevel logLevel = boundsChecked ? LogLevel::Verbose : LogLevel::Warning;
             Logger::GetInstance().WriteLineLazy(logLevel, [&]() {
                 return std::string(boundsChecked
@@ -1530,18 +1556,24 @@ void __fastcall HookedSetScrolling(cISC4View3DWin* view3D, void* edx, bool scrol
                 + " X:" + std::to_string(x)
                 + " Z:" + std::to_string(z);
             });
-            return;
         }
+    });
+
+    if (stopAtBounds) {
+        original(view3D, false, 0.0f, 0.0f);
+        return;
     }
 
     original(view3D, scrolling, adjustedX, z);
-    Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
-        return std::string("View3D SetScrolling observed. Source:")
-        + (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
-        + " Scrolling:" + (scrolling ? "true" : "false")
-        + " X:" + std::to_string(x)
-        + " AdjustedX:" + std::to_string(adjustedX)
-        + " Z:" + std::to_string(z);
+    RunGuardedNativeCallback("View3D SetScrolling hook", [&]() {
+        Logger::GetInstance().WriteLineLazy(LogLevel::Verbose, [&]() {
+            return std::string("View3D SetScrolling observed. Source:")
+            + (g_IsApplyingKeyboardPan ? "ModernCameraKeyboard" : "NativeOrOther")
+            + " Scrolling:" + (scrolling ? "true" : "false")
+            + " X:" + std::to_string(x)
+            + " AdjustedX:" + std::to_string(adjustedX)
+            + " Z:" + std::to_string(z);
+        });
     });
 }
 
@@ -1572,9 +1604,11 @@ void ResetInputState(bool resetCamera = true)
     ClearTrackedKeyStates("input reset");
     KillCameraDumpConfirmationTimer();
 	KillCameraBookmarkConfirmationTimer();
+    KillCheatConfirmationTimer();
     KillModernCameraFocusRestoreTimer();
     g_CameraController.ClearCameraDumpConfirmation();
 	g_CameraController.ClearCameraBookmarkConfirmation();
+    g_CameraController.ClearCheatNotice();
 
     if (resetCamera) {
         g_CameraController.Reset();
@@ -1620,6 +1654,9 @@ void ApplyModernCameraEnabled(bool enabled)
     StopClassicAngleHold("camera mode changed");
 
     if (!enabled) {
+        // Classic mode keeps no input handoff. Leaving the flag set would make the next frame
+        // take a drive still in progress for one that just ended.
+        g_IsUDriveItActive = false;
         UninstallKeyboardHook();
         UninstallSetScrollingHook();
         const bool restoredNativeCamera = g_CameraController.RestoreNativeCameraState("classic camera enabled");
@@ -1661,29 +1698,43 @@ void ApplyInputSettingsChange()
     }
 }
 
-// Maps the selected debug setting to the logger's active verbosity.
-void ApplyDebugLoggingChange()
+/// <summary>
+/// Applies the Write Logs setting: Enabled writes every record, including input traces, and
+/// Disabled writes nothing further. The change is recorded before logging stops.
+/// </summary>
+void ApplyWriteLogsChange()
 {
-    LogVerbosity verbosity = LogVerbosity::Normal;
-    const char* name = "Normal";
-    switch (g_Settings.debugLogging) {
-    case DebugLogging::Off:
-        verbosity = LogVerbosity::Off;
-        name = "Off";
-        break;
-    case DebugLogging::Verbose:
-        verbosity = LogVerbosity::Verbose;
-        name = "Verbose";
-        break;
-    default:
-        break;
+    Logger& logger = Logger::GetInstance();
+    if (!g_Settings.writeLogs) {
+        logger.WriteLine(LogLevel::Info, "Settings UI: Write Logs is Disabled; no further records are written.");
+        logger.SetVerbosity(LogVerbosity::Off);
+        return;
     }
 
-    Logger::GetInstance().WriteLine(
-        LogLevel::Info,
-        std::string("Settings UI: debug logging setting changed to ") + name + ".");
-    Logger::GetInstance().SetVerbosity(verbosity);
-    Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: debug logging is active.");
+    logger.SetVerbosity(LogVerbosity::Verbose);
+    logger.WriteLine(LogLevel::Info, "Settings UI: Write Logs is Enabled; records include input traces.");
+}
+
+/// <summary>
+/// Writes the camera diagnostics to the log for the Ctrl+Alt+F8 hotkey and the
+/// ModernCameraDump code. The dump is the point of both, so it is written even while Write
+/// Logs is Disabled.
+/// </summary>
+/// <param name="reason">Label that names the request in the dump.</param>
+void WriteCameraDump(const char* reason)
+{
+    Logger& logger = Logger::GetInstance();
+    const bool loggingOff = !logger.IsEnabled(LogLevel::Info);
+    if (loggingOff) {
+        logger.SetVerbosity(LogVerbosity::Normal);
+    }
+    g_CameraController.DumpCameraInfo(reason);
+    if (loggingOff) {
+        logger.SetVerbosity(LogVerbosity::Off);
+    }
+    if (g_CameraController.ShowCameraDumpConfirmation()) {
+        StartCameraDumpConfirmationTimer();
+    }
 }
 
 // Returns keyboard and mouse focus to the city after closing settings.
@@ -2074,12 +2125,14 @@ bool ShouldCaptureKeyboardPanKeyInFocus(WPARAM key, bool cameraFocus)
 }
 
 /// <summary>
-/// Decides whether a movement key is kept from SC4 while right-click scrolling pauses
-/// keyboard movement. Passing it on would run SC4's own W/A/S/D tool shortcuts.
+/// Decides whether a movement key press is kept from SC4 while right-click scrolling pauses
+/// keyboard movement. Passing it on would run SC4's own W/A/S/D tool shortcuts. Callers apply
+/// this to presses and characters only: SC4 may have seen the press, so the release still
+/// reaches it.
 /// </summary>
 /// <param name="key">Virtual key from a keyboard message.</param>
 /// <param name="cameraFocus">Whether the city 3D view has keyboard focus.</param>
-/// <returns>True when the key should be consumed without moving the camera.</returns>
+/// <returns>True when the press should be consumed without moving the camera.</returns>
 bool ShouldWithholdKeyboardPanKeyDuringRightClickScroll(WPARAM key, bool cameraFocus)
 {
     return IsKeyboardPanKeyForCameraInFocus(key, cameraFocus)
@@ -2139,12 +2192,13 @@ bool ShouldCaptureKeyboardRotationKeyInFocus(WPARAM key, bool cameraFocus)
 }
 
 /// <summary>
-/// Decides whether Q or E is kept from SC4 while right-click scrolling pauses keyboard
-/// rotation, so the key cannot reach SC4's own shortcuts.
+/// Decides whether a Q or E press is kept from SC4 while right-click scrolling pauses keyboard
+/// rotation, so the key cannot reach SC4's own shortcuts. Callers apply this to presses and
+/// characters only, so a release SC4 is waiting for still reaches it.
 /// </summary>
 /// <param name="key">Virtual key from a keyboard message.</param>
 /// <param name="cameraFocus">Whether the city 3D view has keyboard focus.</param>
-/// <returns>True when the key should be consumed without rotating the camera.</returns>
+/// <returns>True when the press should be consumed without rotating the camera.</returns>
 bool ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(WPARAM key, bool cameraFocus)
 {
     return IsKeyboardRotationKeyForCameraInFocus(key, cameraFocus)
@@ -2497,6 +2551,8 @@ void InstallKeyboardHook()
 
     g_KeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, moduleHandle, 0);
     if (g_KeyboardHook != NULL) {
+        // Key messages queued before this point never passed the hook and are not a sign of its loss.
+        g_LastKeyboardHookEventTime = GetTickCount();
         Logger::GetInstance().WriteLine(LogLevel::Info, "Registered low-level keyboard state observer.");
     }
     else {
@@ -2527,6 +2583,34 @@ void UninstallKeyboardHook()
 }
 
 /// <summary>
+/// Reinstalls the low-level keyboard hook when a key message shows that Windows removed it.
+/// Windows does that without notice when the game thread stalls past the hook timeout, for
+/// example during a long save, and the plugin would otherwise run without the hook until the
+/// next city load or mode switch.
+/// </summary>
+/// <param name="messageTime">GetMessageTime of the key message the canvas is handling.</param>
+void ReinstallKeyboardHookIfMissed(DWORD messageTime)
+{
+    if (g_KeyboardHook == NULL || !IsKeyboardMessageAheadOfHook(messageTime, g_LastKeyboardHookEventTime)) {
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (g_LastKeyboardHookReinstallTick != 0 && now - g_LastKeyboardHookReinstallTick < kKeyboardHookReinstallIntervalMs) {
+        return;
+    }
+    g_LastKeyboardHookReinstallTick = now;
+
+    // Unhooking a hook Windows already removed fails harmlessly.
+    UnhookWindowsHookEx(g_KeyboardHook);
+    g_KeyboardHook = NULL;
+    InstallKeyboardHook();
+    Logger::GetInstance().WriteLine(
+        LogLevel::Warning,
+        "Low-level keyboard hook missed a key, so Windows had removed it after a stall; reinstalled it.");
+}
+
+/// <summary>
 /// Observes one low-level keyboard event and captures eligible camera controls.
 /// </summary>
 /// <param name="nCode">Hook code supplied by Windows.</param>
@@ -2537,6 +2621,10 @@ LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION) {
         const KBDLLHOOKSTRUCT* keyboard = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        if (keyboard) {
+            // Proof that the hook is alive, read by ReinstallKeyboardHookIfMissed.
+            g_LastKeyboardHookEventTime = keyboard->time;
+        }
         const bool isKeyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool isKeyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
 
@@ -2617,7 +2705,7 @@ LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
                 StopHeldKeyboardRotation("keyboard capture interrupted");
-                if (ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(keyboard->vkCode, cameraFocus)) {
+                if (isKeyDown && ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(keyboard->vkCode, cameraFocus)) {
                     LogRightClickScrollKeyWithheld(
                         keyboard->vkCode,
                         static_cast<UINT>(wParam),
@@ -2658,7 +2746,7 @@ LRESULT HandleKeyboardHookEvent(int nCode, WPARAM wParam, LPARAM lParam)
                     return CallNextHookEx(g_KeyboardHook, nCode, wParam, lParam);
                 }
                 StopHeldKeyboardPan();
-                if (ShouldWithholdKeyboardPanKeyDuringRightClickScroll(keyboard->vkCode, cameraFocus)) {
+                if (isKeyDown && ShouldWithholdKeyboardPanKeyDuringRightClickScroll(keyboard->vkCode, cameraFocus)) {
                     LogRightClickScrollKeyWithheld(
                         keyboard->vkCode,
                         static_cast<UINT>(wParam),
@@ -2728,13 +2816,14 @@ bool RegisterNotifications(cIGZMessageTarget2* target)
 
 // Executes the delayed redraw.
 VOID CALLBACK RedrawTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    Logger& log = Logger::GetInstance();
-    if (g_TimerManager.IsCurrent(RuntimeTimer::IdleRedraw, idEvent)) {
-        log.WriteLine(LogLevel::Verbose, "Camera redraw timer fired.");
-        g_TimerManager.Stop(RuntimeTimer::IdleRedraw);
+    RunGuardedNativeCallback("Redraw timer", [idEvent]() {
+        if (g_TimerManager.IsCurrent(RuntimeTimer::IdleRedraw, idEvent)) {
+            Logger::GetInstance().WriteLine(LogLevel::Verbose, "Camera redraw timer fired.");
+            g_TimerManager.Stop(RuntimeTimer::IdleRedraw);
 
-        TriggerCityRedraw();
-    }
+            TriggerCityRedraw();
+        }
+    });
 }
 
 /// <summary>
@@ -2755,13 +2844,46 @@ bool IsUDriveItToolActive()
 }
 
 /// <summary>
+/// Hides open Modern Camera windows when a drive starts and shows them again when it ends.
+/// It applies in both camera modes, so no setting or camera mode can change during a drive.
+/// </summary>
+/// <param name="driveToolActive">Whether the U-Drive-It tool is the current view tool.</param>
+void UpdateUDriveItWindows(bool driveToolActive)
+{
+    if (driveToolActive == g_IsUDriveItToolActive) {
+        return;
+    }
+
+    g_IsUDriveItToolActive = driveToolActive;
+    if (driveToolActive) {
+        // A hidden window can keep the keyboard focus that the drive needs in the city view.
+        if (g_WindowManager.SuspendForDrive()) {
+            FocusView3DForNativeInput("U-Drive-It started focus handoff");
+        }
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            "U-Drive-It started; Modern Camera windows and codes are unavailable until the drive ends.");
+        return;
+    }
+
+    g_WindowManager.ResumeAfterDrive();
+    Logger::GetInstance().WriteLine(
+        LogLevel::Info,
+        "U-Drive-It ended; Modern Camera windows and codes are available again.");
+}
+
+/// <summary>
 /// Hands Modern Camera input to the game when a U-Drive-It drive starts and takes it
 /// back when the drive ends. The camera mode, the view, and the saved settings are
-/// left alone, so the player returns to Modern controls exactly as they were.
+/// left alone, so the player returns to Modern controls exactly as they were. Plugin
+/// windows are hidden for the drive in either camera mode.
 /// </summary>
 void UpdateUDriveItInputHandoff()
 {
-    const bool driving = g_IsModernCamEnabled && IsUDriveItToolActive();
+    const bool driveToolActive = IsUDriveItToolActive();
+    UpdateUDriveItWindows(driveToolActive);
+
+    const bool driving = g_IsModernCamEnabled && driveToolActive;
     if (driving == g_IsUDriveItActive) {
         return;
     }
@@ -2854,18 +2976,70 @@ VOID CALLBACK CameraFrameFallbackTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEven
 
 // Clears the camera-dump confirmation when its timer expires.
 VOID CALLBACK ClearCameraDumpConfirmationTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    if (g_TimerManager.IsCurrent(RuntimeTimer::CameraDumpConfirmation, idEvent)) {
-        KillCameraDumpConfirmationTimer();
-        g_CameraController.ClearCameraDumpConfirmation();
-    }
+    RunGuardedNativeCallback("Camera dump confirmation timer", [idEvent]() {
+        if (g_TimerManager.IsCurrent(RuntimeTimer::CameraDumpConfirmation, idEvent)) {
+            KillCameraDumpConfirmationTimer();
+            g_CameraController.ClearCameraDumpConfirmation();
+        }
+    });
 }
 
 // Clears the bookmark confirmation when its timer expires.
 VOID CALLBACK ClearCameraBookmarkConfirmationTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
 {
-    if (g_TimerManager.IsCurrent(RuntimeTimer::BookmarkConfirmation, idEvent)) {
-        KillCameraBookmarkConfirmationTimer();
-        g_CameraController.ClearCameraBookmarkConfirmation();
+    RunGuardedNativeCallback("Bookmark confirmation timer", [idEvent]() {
+        if (g_TimerManager.IsCurrent(RuntimeTimer::BookmarkConfirmation, idEvent)) {
+            KillCameraBookmarkConfirmationTimer();
+            g_CameraController.ClearCameraBookmarkConfirmation();
+        }
+    });
+}
+
+/// <summary>
+/// Hides the cheat code message when its timer expires.
+/// </summary>
+/// <param name="idEvent">Win32 timer ID, checked against the current cheat message timer.</param>
+VOID CALLBACK ClearCheatConfirmationTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD)
+{
+    RunGuardedNativeCallback("Cheat code message timer", [idEvent]() {
+        if (g_TimerManager.IsCurrent(RuntimeTimer::CheatConfirmation, idEvent)) {
+            KillCheatConfirmationTimer();
+            g_CameraController.ClearCheatNotice();
+        }
+    });
+}
+
+/// <summary>
+/// Hands camera keys held through a right-click scroll back to the camera when the button
+/// comes up, so movement and rotation resume at once instead of on the key's next auto-repeat,
+/// which may never come if another key was pressed since. SC4 never saw these presses: they
+/// were withheld during the scroll.
+/// </summary>
+void ResumeKeysHeldThroughRightClickScroll()
+{
+    if (!g_IsCityLoaded || !IsModernInputActive()) {
+        return;
+    }
+
+    const bool cameraFocus = IsCameraKeyboardFocus();
+    for (const WPARAM key : kKeyboardPanKeys) {
+        if (IsTrackedKeyDown(static_cast<int>(key))
+            && !IsKeyOwnedBy(key, KeyOwner::ModernCameraPan)
+            && ShouldCaptureKeyboardPanKeyInFocus(key, cameraFocus)) {
+            HandleKeyboardPanKeyState(key, true);
+        }
+    }
+
+    // During the Alt hold a Q or E press is a quarter turn, which a held key must not repeat.
+    if (g_CameraController.IsClassicAngleHoldActive()) {
+        return;
+    }
+    for (const WPARAM key : kKeyboardRotationKeys) {
+        if (IsTrackedKeyDown(static_cast<int>(key))
+            && g_KeyStateManager.GetOwner(key) == KeyOwner::None
+            && ShouldCaptureKeyboardRotationKeyInFocus(key, cameraFocus)) {
+            HandleKeyboardRotationKeyState(key, true);
+        }
     }
 }
 
@@ -2914,11 +3088,39 @@ bool RouteMouseInputToVisiblePluginWindow(
     return g_WindowManager.IsPointOverVisibleWindow(cursor.x, cursor.y);
 }
 
+/// <summary>
+/// Sends a wheel message back to SC4 with its direction reversed, so SC4's own stepped
+/// zoom runs the other way. SC4 has no invert of its own, and a filter cannot change the
+/// message it passes on. The reversed copy passes back through this filter untouched.
+/// </summary>
+/// <param name="hWnd">Canvas window that received the wheel message.</param>
+/// <param name="wParam">Key state and wheel delta of the original message.</param>
+/// <param name="lParam">Cursor position of the original message, in screen coordinates.</param>
+/// <returns>SC4's result for the reversed message.</returns>
+LRESULT SendReversedWheelToNative(HWND hWnd, WPARAM wParam, LPARAM lParam)
+{
+    // -32768 has no positive counterpart in a short, so it reverses to 32767.
+    const int reversedDelta = (std::min)(-static_cast<int>(GET_WHEEL_DELTA_WPARAM(wParam)), 0x7FFF);
+    const WPARAM reversedWParam = MAKEWPARAM(
+        GET_KEYSTATE_WPARAM(wParam),
+        static_cast<WORD>(static_cast<short>(reversedDelta)));
+
+    g_SendingReversedWheelToNative = true;
+    const LRESULT result = SendMessage(hWnd, WM_MOUSEWHEEL, reversedWParam, lParam);
+    g_SendingReversedWheelToNative = false;
+    return result;
+}
+
 // Routes canvas input between Modern Camera controls and native SC4 UI.
 LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool& handled)
 {
     if (hWnd && IsWindow(hWnd)) {
         g_CanvasWindow = hWnd;
+    }
+
+    // The reversed copy of an inverted stepped-zoom wheel message belongs to SC4 alone.
+    if (uMsg == WM_MOUSEWHEEL && g_SendingReversedWheelToNative) {
+        return 0;
     }
 
     if (!g_IsCityLoaded) {
@@ -2956,12 +3158,30 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         return 0;
     }
 
+    // A release over a plugin window, or during Classic mode or a drive, returns before the
+    // input is observed below. Record releases here, and let every move clear a button whose
+    // release was missed, so right-click scrolling never stays on and swallows camera keys.
+    const bool rightButtonWasDown = IsTrackedKeyDown(VK_RBUTTON);
+    if (uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONUP || uMsg == WM_MBUTTONUP) {
+        ObserveCanvasInputTransition(uMsg, wParam);
+    }
+    else if (uMsg == WM_MOUSEMOVE) {
+        g_KeyStateManager.ObserveMouseMoveButtons(wParam);
+    }
+    if (rightButtonWasDown && !IsRightClickScrollingActive()) {
+        ResumeKeysHeldThroughRightClickScroll();
+    }
+
     if (RouteMouseInputToVisiblePluginWindow(hWnd, uMsg, wParam, lParam, handled)) {
         return 0;
     }
 
     if (!IsModernInputActive()) {
         return 0;
+    }
+
+    if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP) {
+        ReinstallKeyboardHookIfMissed(static_cast<DWORD>(GetMessageTime()));
     }
 
     ObserveCanvasInputTransition(uMsg, wParam);
@@ -3039,7 +3259,8 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             return 0;
         }
         StopHeldKeyboardRotation("canvas keyboard capture interrupted");
-        if (ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(wParam, cameraFocus)) {
+        if ((uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN)
+            && ShouldWithholdKeyboardRotationKeyDuringRightClickScroll(wParam, cameraFocus)) {
             LogRightClickScrollKeyWithheld(wParam, uMsg, "canvas WinProc filter");
             handled = true;
             return 0;
@@ -3067,7 +3288,8 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 return 0;
             }
             StopHeldKeyboardPan();
-            if (ShouldWithholdKeyboardPanKeyDuringRightClickScroll(wParam, cameraFocus)) {
+            if ((uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN)
+                && ShouldWithholdKeyboardPanKeyDuringRightClickScroll(wParam, cameraFocus)) {
                 LogRightClickScrollKeyWithheld(wParam, uMsg, "canvas WinProc filter");
                 handled = true;
                 return 0;
@@ -3121,10 +3343,7 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             && !isRepeat
             && IsCameraKeyboardFocus()) {
             log.WriteLine(LogLevel::Info, "Canvas WinProc Filter: Ctrl+Alt+F8 pressed, dumping camera info.");
-            g_CameraController.DumpCameraInfo("Ctrl+Alt+F8 hotkey");
-            if (g_CameraController.ShowCameraDumpConfirmation()) {
-                StartCameraDumpConfirmationTimer();
-            }
+            WriteCameraDump("Ctrl+Alt+F8 hotkey");
             handled = true;
             return 0;
         }
@@ -3237,8 +3456,11 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         if (!g_IsModernCamEnabled) {
             break;
         }
-        // Stepped zoom leaves the wheel to SC4. The Alt hold keeps its own Classic steps.
-        if (!g_Settings.smoothWheelZoom && !g_CameraController.IsClassicAngleHoldActive()) {
+        // Stepped zoom leaves the wheel to SC4; an inverted wheel over the city goes back
+        // to SC4 reversed after the hit-test below. The Alt hold keeps its own Classic steps.
+        const bool nativeSteppedZoom = !g_Settings.smoothWheelZoom
+            && !g_CameraController.IsClassicAngleHoldActive();
+        if (nativeSteppedZoom && !g_Settings.invertWheelZoom) {
             break;
         }
 
@@ -3278,6 +3500,15 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             }
         }
 
+        if (nativeSteppedZoom) {
+            if (!hWnd) {
+                break;
+            }
+            log.WriteLine(LogLevel::Verbose, "Mouse wheel: sending the reversed wheel to SC4's stepped zoom.");
+            handled = true;
+            return SendReversedWheelToNative(hWnd, wParam, lParam);
+        }
+
         // Kept fractional: rounding could turn a small high-resolution wheel delta
         // into zero, which would hand the wheel to SC4's own stepped zoom.
         // The Alt hold moves between Classic zoom levels, one for each wheel event.
@@ -3301,6 +3532,269 @@ LRESULT HandleCanvasMouseMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     }
 
     return 0;
+}
+
+/// <summary>
+/// Shows a cheat code's outcome near the cursor for a few seconds and records it in the log.
+/// </summary>
+/// <param name="text">Outcome to show.</param>
+void ShowCheatOutcome(const std::string& text)
+{
+    Logger::GetInstance().WriteLine(LogLevel::Info, "Cheat Code: " + text);
+    g_CameraController.ShowCheatNotice(text);
+    StartCheatConfirmationTimer();
+}
+
+/// <summary>
+/// Formats a setting value with two decimals and a dot, whatever the system locale.
+/// </summary>
+/// <param name="value">Value to format.</param>
+/// <returns>The value as text.</returns>
+std::string FormatCheatValue(float value)
+{
+    char text[32];
+    const std::to_chars_result result = std::to_chars(
+        text,
+        text + sizeof(text),
+        value,
+        std::chars_format::fixed,
+        2);
+    return result.ec == std::errc() ? std::string(text, result.ptr) : std::string("?");
+}
+
+/// <summary>
+/// Saves the settings a cheat code changed and refreshes the settings window if it is open.
+/// </summary>
+void SaveCheatSettingChange()
+{
+    if (!g_Settings.Save()) {
+        Logger::GetInstance().WriteLine(LogLevel::Warning, "Cheat Code: failed to save the settings file.");
+    }
+    g_WindowManager.RefreshSettingsWindows();
+}
+
+/// <summary>
+/// Refuses a code that takes no value when the player typed one after it.
+/// </summary>
+/// <param name="command">Code the player typed.</param>
+/// <param name="arguments">Text after the code.</param>
+/// <returns>True when the code was refused.</returns>
+bool RejectCheatArguments(CheatCommands::Command command, const std::string& arguments)
+{
+    if (arguments.empty()) {
+        return false;
+    }
+    ShowCheatOutcome(CheatCommands::GetName(command) + " takes no value.");
+    return true;
+}
+
+/// <summary>
+/// Turns one on/off setting over for a code and saves it. The change only reaches the
+/// settings file in Classic mode, so it is already set when Modern is switched back on.
+/// </summary>
+/// <param name="command">Code the player typed.</param>
+/// <param name="arguments">Text after the code, which must be empty.</param>
+/// <param name="setting">Setting to turn over.</param>
+/// <returns>True when the setting changed.</returns>
+bool ApplyCheatToggle(CheatCommands::Command command, const std::string& arguments, bool& setting)
+{
+    if (RejectCheatArguments(command, arguments)) {
+        return false;
+    }
+    setting = !setting;
+    SaveCheatSettingChange();
+    return true;
+}
+
+/// <summary>
+/// Sets one numeric setting from a code's value, within the range of its settings slider.
+/// Without a value it reports the current one.
+/// </summary>
+/// <param name="command">Code the player typed.</param>
+/// <param name="arguments">Text after the code: the new value.</param>
+/// <param name="label">Player-facing name of the setting.</param>
+/// <param name="setting">Setting to change.</param>
+/// <param name="minimum">Lowest value the slider allows.</param>
+/// <param name="maximum">Highest value the slider allows.</param>
+void ApplyCheatValue(
+    CheatCommands::Command command,
+    const std::string& arguments,
+    const char* label,
+    float& setting,
+    float minimum,
+    float maximum)
+{
+    const std::string range = FormatCheatValue(minimum) + " to " + FormatCheatValue(maximum);
+    if (arguments.empty()) {
+        ShowCheatOutcome(std::string(label) + " is " + FormatCheatValue(setting) + ". Type "
+            + CheatCommands::GetName(command) + " and a number from " + range + ".");
+        return;
+    }
+
+    float value = 0.0f;
+    if (!CheatCommands::ParseNumber(arguments, value) || value < minimum || value > maximum) {
+        ShowCheatOutcome(std::string(label) + " must be a number from " + range + ".");
+        return;
+    }
+
+    setting = value;
+    SaveCheatSettingChange();
+    ShowCheatOutcome(std::string(label) + " set to " + FormatCheatValue(value) + ".");
+}
+
+/// <summary>
+/// Runs one Modern Camera code. Each code does what its settings control does, through the
+/// same functions, so a code and a click can never disagree.
+/// </summary>
+/// <param name="command">Code the player typed.</param>
+/// <param name="arguments">Text after the code.</param>
+void RunCheatCommand(CheatCommands::Command command, const std::string& arguments)
+{
+    using CheatCommands::Command;
+    const auto onOff = [](bool value) { return std::string(value ? "On." : "Off."); };
+
+    switch (command) {
+    case Command::ToggleMode:
+        if (!RejectCheatArguments(command, arguments)) {
+            g_WindowManager.ToggleCameraMode();
+            ShowCheatOutcome(std::string("Camera mode: ")
+                + (g_Settings.cameraMode == CameraMode::Modern ? "Modern." : "Classic."));
+        }
+        return;
+    case Command::Fix:
+        if (!RejectCheatArguments(command, arguments)) {
+            ResetCameraToNativeView();
+            ShowCheatOutcome("Camera reset.");
+        }
+        return;
+    case Command::Dump:
+        if (!RejectCheatArguments(command, arguments)) {
+            WriteCameraDump("ModernCameraDump code");
+        }
+        return;
+    case Command::Defaults:
+        if (!RejectCheatArguments(command, arguments)) {
+            ShowCheatOutcome(g_WindowManager.RestoreDefaultSettings("Cheat Code")
+                ? "Settings restored to their defaults."
+                : "Settings could not be restored right now.");
+        }
+        return;
+    case Command::WASD:
+        if (ApplyCheatToggle(command, arguments, g_Settings.wasdMovement)) {
+            ApplyInputSettingsChange();
+            ShowCheatOutcome("WASD movement: " + onOff(g_Settings.wasdMovement));
+        }
+        return;
+    case Command::QE:
+        if (ApplyCheatToggle(command, arguments, g_Settings.qeRotation)) {
+            ApplyInputSettingsChange();
+            ShowCheatOutcome("Q/E rotation: " + onOff(g_Settings.qeRotation));
+        }
+        return;
+    case Command::Zoom:
+        if (ApplyCheatToggle(command, arguments, g_Settings.smoothWheelZoom)) {
+            ShowCheatOutcome(std::string("Mouse wheel zoom: ")
+                + (g_Settings.smoothWheelZoom ? "Smooth." : "Stepped."));
+        }
+        return;
+    case Command::Bookmarks:
+        if (ApplyCheatToggle(command, arguments, g_Settings.bookmarksEnabled)) {
+            ShowCheatOutcome("Bookmark hotkeys: " + onOff(g_Settings.bookmarksEnabled));
+        }
+        return;
+    case Command::InvertQE:
+        if (ApplyCheatToggle(command, arguments, g_Settings.invertQE)) {
+            ShowCheatOutcome("Invert Q/E: " + onOff(g_Settings.invertQE));
+        }
+        return;
+    case Command::InvertM3:
+        if (ApplyCheatToggle(command, arguments, g_Settings.invertVertical)) {
+            ShowCheatOutcome("Invert vertical: " + onOff(g_Settings.invertVertical));
+        }
+        return;
+    case Command::InvertWheel:
+        if (ApplyCheatToggle(command, arguments, g_Settings.invertWheelZoom)) {
+            ShowCheatOutcome("Invert wheel zoom: " + onOff(g_Settings.invertWheelZoom));
+        }
+        return;
+    case Command::AltRestore:
+        if (ApplyCheatToggle(command, arguments, g_Settings.altCameraBungie)) {
+            ShowCheatOutcome(std::string("On Alt release: ")
+                + (g_Settings.altCameraBungie ? "Restore view." : "Keep view."));
+        }
+        return;
+    case Command::UpdateNotices:
+        if (ApplyCheatToggle(command, arguments, g_Settings.notifyUpdatesInTicker)) {
+            g_WindowManager.RefreshUpdateNotification();
+            ShowCheatOutcome("News ticker update notices: " + onOff(g_Settings.notifyUpdatesInTicker));
+        }
+        return;
+    case Command::PanSpeed:
+        ApplyCheatValue(
+            command, arguments, "Panning speed", g_Settings.panSensitivity,
+            PluginSettings::kMinimumPanSensitivity, PluginSettings::kMaximumPanSensitivity);
+        return;
+    case Command::ShiftBoost:
+        ApplyCheatValue(
+            command, arguments, "Shift boost", g_Settings.shiftPanBoost,
+            PluginSettings::kMinimumShiftPanBoost, PluginSettings::kMaximumShiftPanBoost);
+        return;
+    case Command::QESpeed:
+        ApplyCheatValue(
+            command, arguments, "Q/E rotation speed", g_Settings.qeRotationSpeed,
+            PluginSettings::kMinimumSensitivity, PluginSettings::kMaximumSensitivity);
+        return;
+    case Command::M3Speed:
+        ApplyCheatValue(
+            command, arguments, "Mouse rotation sensitivity", g_Settings.rotationSensitivity,
+            PluginSettings::kMinimumSensitivity, PluginSettings::kMaximumSensitivity);
+        return;
+    case Command::ZoomSpeed:
+        ApplyCheatValue(
+            command, arguments, "Zoom sensitivity", g_Settings.zoomSensitivity,
+            PluginSettings::kMinimumSensitivity, PluginSettings::kMaximumSensitivity);
+        return;
+    case Command::Log:
+        if (ApplyCheatToggle(command, arguments, g_Settings.writeLogs)) {
+            ApplyWriteLogsChange();
+            ShowCheatOutcome(std::string("Write Logs: ") + (g_Settings.writeLogs ? "Enabled." : "Disabled."));
+        }
+        return;
+    }
+}
+
+/// <summary>
+/// Reads one line from SC4's cheat console and runs it when it names a Modern Camera code.
+/// Codes are refused during a U-Drive-It drive, when no setting or camera mode may change.
+/// </summary>
+/// <param name="typed">Line the player typed. SC4 keeps it alive for the length of the call.</param>
+void HandleCheatCode(const cIGZString* typed)
+{
+    const char* text = typed ? typed->ToChar() : nullptr;
+    if (!text) {
+        return;
+    }
+
+    const std::string_view line(text, typed->Strlen());
+    CheatCommands::Command command{};
+    std::string arguments;
+    const CheatCommands::ParseResult result = CheatCommands::ParseLine(line, command, arguments);
+    if (result == CheatCommands::ParseResult::NotOurs || !g_IsCityLoaded) {
+        return;
+    }
+
+    const std::string trimmed(CheatCommands::Trim(line));
+    Logger::GetInstance().WriteLine(LogLevel::Info, "Cheat Code: received \"" + trimmed + "\".");
+    if (result == CheatCommands::ParseResult::Unknown) {
+        ShowCheatOutcome("Unknown Modern Camera code: " + trimmed);
+        return;
+    }
+    if (g_IsUDriveItToolActive || IsUDriveItToolActive()) {
+        ShowCheatOutcome("Modern Camera codes are off while you drive.");
+        return;
+    }
+
+    RunCheatCommand(command, arguments);
 }
 
 /// <summary>
@@ -3395,7 +3889,8 @@ public:
     // Initializes the COM director and exposes canvas-filter callbacks.
     cSC4ModernCameraDirector()
         : mpCanvasW32(nullptr),
-          m_FrameworkHookRegistered(false)
+          m_FrameworkHookRegistered(false),
+          m_CheatCodesRegistered(false)
     {
         AddRef();
         g_RegisterCanvasWinProcFilterCallback = [this]() { RegisterCanvasWinProcFilter(); };
@@ -3471,11 +3966,11 @@ public:
             ApplyModernCameraEnabled,
             ResetCameraToNativeView,
             ApplyInputSettingsChange,
-            ApplyDebugLoggingChange,
+            ApplyWriteLogsChange,
             RestoreWorldFocusAfterSettingsClosed,
             });
 
-        ApplyDebugLoggingChange();
+        ApplyWriteLogsChange();
 
         if (!mpFrameWork) {
             Logger::GetInstance().WriteLine(
@@ -3531,24 +4026,29 @@ public:
     // Stops and drains the asynchronous logger before application services are torn down.
     bool PreAppShutdown() override
     {
-        Logger& logger = Logger::GetInstance();
-        logger.WriteLine(LogLevel::Info, "Framework lifecycle: PreAppShutdown. Draining camera bookmarks and asynchronous logger.");
-        if (g_CameraTickRegistered && mpFrameWork) {
-            mpFrameWork->RemoveFromTick(&g_CameraTickService);
-            g_CameraTickRegistered = false;
-        }
-        g_CameraController.GetCityIcons().Clear();
-        g_WindowManager.ShutdownReleaseNotes();
-        g_CameraBookmarks.Shutdown();
-        logger.Shutdown();
+        // Each step is guarded on its own, so one failure cannot skip the teardown after it.
+        RunGuardedNativeCallback("PreAppShutdown", [this]() {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Info,
+                "Framework lifecycle: PreAppShutdown. Draining camera bookmarks and asynchronous logger.");
+            if (g_CameraTickRegistered && mpFrameWork) {
+                mpFrameWork->RemoveFromTick(&g_CameraTickService);
+                g_CameraTickRegistered = false;
+            }
+        });
+        RunGuardedNativeCallback("PreAppShutdown cheat codes", [this]() { UnregisterCheatCodes(); });
+        RunGuardedNativeCallback("PreAppShutdown city icons", []() { g_CameraController.GetCityIcons().Clear(); });
+        RunGuardedNativeCallback("PreAppShutdown release notes", []() { g_WindowManager.ShutdownReleaseNotes(); });
+        RunGuardedNativeCallback("PreAppShutdown bookmarks", []() { g_CameraBookmarks.Shutdown(); });
+        RunGuardedNativeCallback("PreAppShutdown logger", []() { Logger::GetInstance().Shutdown(); });
         return true;
     }
 
     // Stops plugin writers before an abortive framework shutdown can unload code.
     bool AbortiveQuit() override
     {
-        g_WindowManager.ShutdownReleaseNotes();
-        g_CameraBookmarks.Shutdown();
+        RunGuardedNativeCallback("AbortiveQuit release notes", []() { g_WindowManager.ShutdownReleaseNotes(); });
+        RunGuardedNativeCallback("AbortiveQuit bookmarks", []() { g_CameraBookmarks.Shutdown(); });
         Logger::GetInstance().RequestAbortiveStop();
         return true;
     }
@@ -3593,6 +4093,10 @@ private:
                 }
             }
         }
+        else if (msgType == kSC4MessageCheatIssued) {
+            const auto* standardMsg = static_cast<cIGZMessage2Standard*>(pMsg);
+            HandleCheatCode(static_cast<const cIGZString*>(standardMsg->GetVoid2()));
+        }
         else if (msgType == kSC4MessagePostCityInit) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Loaded! Activating input handlers...");
             if (!ActivateCurrentBookmarkCity()) {
@@ -3626,6 +4130,7 @@ private:
                 FocusView3DForNativeInput("Classic camera startup focus handoff");
                 ScheduleView3DFocusRestore(false, "Classic camera startup focus restore");
             }
+            RegisterCheatCodes();
         }
         else if (msgType == kSC4MessagePreSave) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "Pre-save notification received.");
@@ -3641,6 +4146,7 @@ private:
         }
         else if (msgType == kSC4MessagePreCityShutdown) {
             Logger::GetInstance().WriteLine(LogLevel::Info, "City Shutting Down. Deactivating input handlers...");
+            UnregisterCheatCodes();
             g_WindowManager.OnCityShutdown();
 			g_CameraBookmarks.DeactivateCity();
             g_SavePreviewRestorePending = false;
@@ -3648,6 +4154,7 @@ private:
             g_CameraController.GetCityIcons().Clear();
             g_IsCityLoaded = false;
             g_IsUDriveItActive = false;
+            g_IsUDriveItToolActive = false;
             g_TimerManager.Stop(RuntimeTimer::CameraFrameFallback);
             UninstallSetScrollingHook();
             UninstallMinimizeUIHook();
@@ -3699,9 +4206,81 @@ private:
         Logger::GetInstance().WriteLine(LogLevel::Info, "Unregistered canvas WinProc filter.");
     }
 
+    /// <summary>
+    /// Registers every Modern Camera code with SC4's cheat console, under both prefixes, and
+    /// subscribes to issued codes. The subscription uses ID 0, which receives every code: SC4
+    /// sends a line under the first registered name that is a prefix of it (binary-verified:
+    /// DoesCheatCodeMatch at 0x92184B), and that can be another plugin's ID.
+    /// </summary>
+    void RegisterCheatCodes()
+    {
+        if (m_CheatCodesRegistered) {
+            return;
+        }
+
+        cISC4AppPtr app;
+        cIGZCheatCodeManager* manager = app ? app->GetCheatCodeManager() : nullptr;
+        if (!manager) {
+            Logger::GetInstance().WriteLine(
+                LogLevel::Warning,
+                "Cheat Codes: the cheat code manager is unavailable; Modern Camera codes are off for this city.");
+            return;
+        }
+
+        const std::vector<CheatCommands::Registration> registrations = CheatCommands::GetRegistrations();
+        size_t registered = 0;
+        for (const CheatCommands::Registration& registration : registrations) {
+            const cRZBaseString name(registration.name);
+            if (manager->RegisterCheatCode(registration.id, name)) {
+                ++registered;
+            }
+            else {
+                Logger::GetInstance().WriteLine(
+                    LogLevel::Warning,
+                    "Cheat Codes: could not register " + registration.name
+                    + "; another plugin may already use that name.");
+            }
+        }
+        if (!manager->AddNotification2(this, 0)) {
+            Logger::GetInstance().WriteLine(LogLevel::Warning, "Cheat Codes: could not subscribe to issued codes.");
+        }
+
+        m_CheatCodesRegistered = true;
+        Logger::GetInstance().WriteLine(
+            LogLevel::Info,
+            "Cheat Codes: registered " + std::to_string(registered) + " of "
+            + std::to_string(registrations.size()) + " Modern Camera code names.");
+    }
+
+    /// <summary>
+    /// Removes the codes and the subscription RegisterCheatCodes added, while the game's
+    /// services still run.
+    /// </summary>
+    void UnregisterCheatCodes()
+    {
+        if (!m_CheatCodesRegistered) {
+            return;
+        }
+        m_CheatCodesRegistered = false;
+
+        cISC4AppPtr app;
+        cIGZCheatCodeManager* manager = app ? app->GetCheatCodeManager() : nullptr;
+        if (!manager) {
+            return;
+        }
+
+        manager->RemoveNotification2(this, 0);
+        for (const CheatCommands::Registration& registration : CheatCommands::GetRegistrations()) {
+            manager->UnregisterCheatCode(registration.id);
+        }
+        Logger::GetInstance().WriteLine(LogLevel::Info, "Cheat Codes: unregistered Modern Camera codes.");
+    }
+
     cIGZCanvasW32* mpCanvasW32;
     // Records whether this director is subscribed to framework lifecycle callbacks.
     bool m_FrameworkHookRegistered;
+    // Records whether the Modern Camera cheat codes are registered with the cheat console.
+    bool m_CheatCodesRegistered;
 };
 
 // Returns the singleton COM director exported by this plugin DLL.

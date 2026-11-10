@@ -141,6 +141,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
   </ItemDefinitionGroup>
   <ItemGroup>
 	<ClInclude Include="src\CameraBookmarkStore.h" />
+	<ClInclude Include="src\CheatCommands.h" />
     <ClCompile Include="sdk\src\cRZBaseString.cpp" />
     <ClCompile Include="sdk\src\cRZBaseVariant.cpp" />
     <ClCompile Include="sdk\src\cRZCOMDllDirector.cpp" />
@@ -155,6 +156,7 @@ if exist "$(PLUGINS_FOLDER)\SC4-3DMouseCam-TestUI.dat" del /Q "$(PLUGINS_FOLDER)
     <ClInclude Include="src\PluginSettings.h" />
     <ClInclude Include="src\PluginVersion.h" />
     <ClInclude Include="src\ReleaseNotesDownloader.h" />
+    <ClInclude Include="src\Runtime\NativeCallbackGuard.h" />
     <ClInclude Include="src\Runtime\TimerManager.h" />
     <ClInclude Include="src\SC4CameraController.h" />
     <ClInclude Include="src\SC4CityIconRotation.h" />

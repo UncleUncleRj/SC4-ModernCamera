@@ -5,6 +5,7 @@
 #include "PluginPaths.h"
 #include "PluginSettings.h"
 #include "PluginVersion.h"
+#include "Runtime/NativeCallbackGuard.h"
 #include "SC4GameConstants.h"
 #include "SC4VersionDetection.h"
 #include "cGZMessage.h"
@@ -76,8 +77,17 @@ namespace
 	constexpr char kProjectSimtropolisUrl[] = "https://community.simtropolis.com/files/file/37462-sc4-modern-camera/";
 	// Global the update notice's "See what's new" link calls in the advisors' Lua state.
 	constexpr char kOpenChangelogLuaFunction[] = "sc4moderncamera_open_changelog";
+	// The help window keeps the controls window's resource, root, and close IDs.
 	constexpr uint32_t kControlsCloseXButtonID = 0x3D0C0850;
+	// 0x3D0C0852 was the plain controls text. Keep it retired.
 	constexpr uint32_t kControlsOKButtonID = 0x3D0C0853;
+	constexpr uint32_t kHelpGeneralTabButtonID = 0x3D0C0859;
+	constexpr uint32_t kHelpAdvancedTabButtonID = 0x3D0C085A;
+	constexpr uint32_t kHelpControlsTabButtonID = 0x3D0C085B;
+	// Each tab shows one of these read-only scrolling texts.
+	constexpr uint32_t kHelpGeneralTextID = 0x3D0C085C;
+	constexpr uint32_t kHelpAdvancedTextID = 0x3D0C085D;
+	constexpr uint32_t kHelpControlsTextID = 0x3D0C085E;
 	// The two menu controls occupy the same top-right button location. One is
 	// shown for Modern mode and the other for Classic mode.
 	constexpr uint32_t kMenuButtonID = 0x3D0C0910;
@@ -125,10 +135,13 @@ namespace
 	constexpr uint32_t kSettingsCloseButtonID = 0x3D0C0953;
 	// 0x3D0C0954 was the single Bookmark Hotkeys toggle. Keep it retired.
 	constexpr uint32_t kSettingsGeneralTabButtonID = 0x3D0C0955;
-	constexpr uint32_t kSettingsViewControlsButtonID = 0x3D0C095A;
-	constexpr uint32_t kAdvancedDebugLoggingOffButtonID = 0x3D0C0968;
-	constexpr uint32_t kAdvancedDebugLoggingNormalButtonID = 0x3D0C0969;
-	constexpr uint32_t kAdvancedDebugLoggingVerboseButtonID = 0x3D0C096A;
+	constexpr uint32_t kSettingsViewHelpButtonID = 0x3D0C095A;
+	// Write Logs keeps the IDs of the old logging choice: Disabled was Off, Enabled was Verbose.
+	constexpr uint32_t kAdvancedWriteLogsDisabledButtonID = 0x3D0C0968;
+	constexpr uint32_t kAdvancedWriteLogsEnabledButtonID = 0x3D0C096A;
+	// 0x3D0C0969 was the Normal logging button. Keep it retired; a 2.x theme may still have it,
+	// so the settings window hides it.
+	constexpr uint32_t kRetiredLoggingNormalButtonID = 0x3D0C0969;
 	constexpr uint32_t kAdvancedNoUpdateNoticesButtonID = 0x3D0C096E;
 
 	// Inclusive block of control IDs that belong to one settings page. Pages are
@@ -323,38 +336,47 @@ namespace
 	// Forwards the deferred settings-save timer to its owning settings window.
 	VOID CALLBACK DelayedSettingsSaveTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
-		if (g_DelayedSettingsSaveWindow)
-		{
-			g_DelayedSettingsSaveWindow->OnDelayedSettingsSaveTimer();
-		}
+		RunGuardedNativeCallback("Settings save timer", []() {
+			if (g_DelayedSettingsSaveWindow)
+			{
+				g_DelayedSettingsSaveWindow->OnDelayedSettingsSaveTimer();
+			}
+		});
 	}
 
 	// Reopens the settings window after the current settings command finishes.
 	VOID CALLBACK DelayedSettingsReopenTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
-		if (g_DelayedSettingsReopenManager)
-		{
-			g_DelayedSettingsReopenManager->OnSettingsReopenTimer();
-		}
+		RunGuardedNativeCallback("Settings reopen timer", []() {
+			if (g_DelayedSettingsReopenManager)
+			{
+				g_DelayedSettingsReopenManager->OnSettingsReopenTimer();
+			}
+		});
 	}
 
 	// Opens a secondary window after the originating button command finishes.
 	VOID CALLBACK DeferredWindowOpenTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
-		if (g_DelayedWindowOpenManager)
-		{
-			g_DelayedWindowOpenManager->OnDeferredWindowOpenTimer();
-		}
+		RunGuardedNativeCallback("Deferred window timer", []() {
+			if (g_DelayedWindowOpenManager)
+			{
+				g_DelayedWindowOpenManager->OnDeferredWindowOpenTimer();
+			}
+		});
 	}
 
 	/// <summary>Opens the changelog from the update notice's link. The deferred open lets
 	/// the advice list finish handling the click, as a settings button does.</summary>
 	int32_t OpenChangelogFromLua(lua_State*)
 	{
-		if (g_UpdateLinkManager)
-		{
-			g_UpdateLinkManager->ScheduleDeferredWindowOpen(DeferredWindowOpen::Changelog);
-		}
+		// Lua calls this through C frames that cannot pass a C++ exception.
+		RunGuardedNativeCallback("Update notice link", []() {
+			if (g_UpdateLinkManager)
+			{
+				g_UpdateLinkManager->ScheduleDeferredWindowOpen(DeferredWindowOpen::Changelog);
+			}
+		});
 		return 0;
 	}
 
@@ -370,10 +392,12 @@ namespace
 	/// <summary>Forwards the release notes poll to its owning window manager.</summary>
 	VOID CALLBACK ReleaseNotesTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	{
-		if (g_ReleaseNotesManager)
-		{
-			g_ReleaseNotesManager->OnReleaseNotesTimer();
-		}
+		RunGuardedNativeCallback("Release notes timer", []() {
+			if (g_ReleaseNotesManager)
+			{
+				g_ReleaseNotesManager->OnReleaseNotesTimer();
+			}
+		});
 	}
 
 	// Maps one primary settings slider to its setting, valid range, and logging
@@ -592,6 +616,12 @@ namespace
 		return value ? "On" : "Off";
 	}
 
+	// Returns the label of a Write Logs choice, as its buttons show it.
+	const char* ToEnabledString(bool value)
+	{
+		return value ? "Enabled" : "Disabled";
+	}
+
 	// Formats a sensitivity value with stable two-decimal precision.
 	std::string FormatSettingFloat(float value)
 	{
@@ -754,7 +784,13 @@ namespace
 			};
 			break;
 		case kControlsWindowResourceInstance:
-			buttons = { kControlsCloseXButtonID, kControlsOKButtonID };
+			buttons = {
+				kControlsCloseXButtonID,
+				kControlsOKButtonID,
+				kHelpGeneralTabButtonID,
+				kHelpAdvancedTabButtonID,
+				kHelpControlsTabButtonID,
+			};
 			break;
 		case kMenuButtonResourceInstance:
 			buttons = {
@@ -782,7 +818,7 @@ namespace
 				kSettingsGeneralTabButtonID,
 				kSettingsAdvancedTabButtonID,
 				kSettingsReadChangelogButtonID,
-				kSettingsViewControlsButtonID,
+				kSettingsViewHelpButtonID,
 				kSettingsCloseButtonID,
 				kAdvancedInvertQEOnButtonID,
 				kAdvancedInvertQEOffButtonID,
@@ -790,9 +826,8 @@ namespace
 				kAdvancedWheelSteppedButtonID,
 				kAdvancedInvertWheelOnButtonID,
 				kAdvancedInvertWheelOffButtonID,
-				kAdvancedDebugLoggingOffButtonID,
-				kAdvancedDebugLoggingNormalButtonID,
-				kAdvancedDebugLoggingVerboseButtonID,
+				kAdvancedWriteLogsEnabledButtonID,
+				kAdvancedWriteLogsDisabledButtonID,
 				kAdvancedNoUpdateNoticesButtonID,
 			};
 			sliders = {
@@ -1296,14 +1331,17 @@ bool BakedManagedWindow::ContainsPoint(int32_t parentX, int32_t parentY) const
 	return WindowContainsParentPoint(rootWindow, parentX, parentY);
 }
 
-// Routes GZ command messages to the subclass command handler.
+// Routes GZ command messages to the subclass command handler. SC4's window procedure calls
+// this, so a failure leaves the message unhandled instead of reaching the game.
 bool BakedManagedWindow::DoWinProcMessage(cIGZWin*, cGZMessage& msg)
 {
-	if (msg.dwMessageType == kMessageTypeCommand)
+	if (msg.dwMessageType != kMessageTypeCommand)
 	{
-		return OnCommandMessage(msg);
+		return false;
 	}
-	return false;
+	bool handled = false;
+	RunGuardedNativeCallback(logName, [&]() { handled = OnCommandMessage(msg); });
+	return handled;
 }
 
 // Leaves low-level GZ messages for the native baked-window path.
@@ -1414,6 +1452,8 @@ void SettingsWindow::ApplyActivePage()
 	const bool advanced = activePage == Page::Advanced;
 	SetPageRangesVisible(GetRootWindow(), kGeneralPageRanges, !advanced);
 	SetPageRangesVisible(GetRootWindow(), kAdvancedPageRanges, advanced);
+	// Showing the Advanced range would bring back a theme's retired Normal logging button.
+	SetControlVisible(GetRootWindow(), kRetiredLoggingNormalButtonID, false);
 	const uint32_t tabIDs[2] = { kSettingsGeneralTabButtonID, kSettingsAdvancedTabButtonID };
 	ApplyChoice(advanced ? kSettingsAdvancedTabButtonID : kSettingsGeneralTabButtonID, tabIDs, 2);
 }
@@ -1523,8 +1563,7 @@ void SettingsWindow::ApplySettingsChange(const char* reason, bool saveImmediatel
 		+ " invertQE=" + (settings->invertQE ? "true" : "false")
 		+ " smoothWheelZoom=" + (settings->smoothWheelZoom ? "true" : "false")
 		+ " invertWheelZoom=" + (settings->invertWheelZoom ? "true" : "false")
-		+ " debugLogging="
-		+ PluginSettingText::ToString(settings->debugLogging));
+		+ " writeLogs=" + (settings->writeLogs ? "true" : "false"));
 
 	if (!saveImmediately)
 	{
@@ -1867,125 +1906,11 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 			return true;
 		}
 		case kSettingsRestoreDefaultsButtonID:
-		{
-			const CameraMode previousCameraMode = settings->cameraMode;
-			const bool previousWASD = settings->wasdMovement;
-			const bool previousQERotation = settings->qeRotation;
-			const float previousRotationSensitivity = settings->rotationSensitivity;
-			const float previousZoomSensitivity = settings->zoomSensitivity;
-			const float previousPanSensitivity = settings->panSensitivity;
-			const bool previousInvertVertical = settings->invertVertical;
-			const bool previousAltCameraBungie = settings->altCameraBungie;
-			const float previousQERotationSpeed = settings->qeRotationSpeed;
-			const float previousShiftPanBoost = settings->shiftPanBoost;
-			const bool previousInvertQE = settings->invertQE;
-			const bool previousSmoothWheelZoom = settings->smoothWheelZoom;
-			const bool previousInvertWheelZoom = settings->invertWheelZoom;
-			const DebugLogging previousDebugLogging = settings->debugLogging;
-			const bool previousBookmarksEnabled = settings->bookmarksEnabled;
-			const bool previousNotifyUpdates = settings->notifyUpdatesInTicker;
-			settings->RestoreDefaults();
-			LogOptionChanged(
-				"Settings UI",
-				"Camera Mode",
-				PluginSettingText::ToString(previousCameraMode),
-				PluginSettingText::ToString(settings->cameraMode));
-			LogOptionChanged(
-				"Settings UI",
-				"WASD Movement",
-				ToOnOffString(previousWASD),
-				ToOnOffString(settings->wasdMovement));
-			LogOptionChanged(
-				"Settings UI",
-				"Q/E Rotation",
-				ToOnOffString(previousQERotation),
-				ToOnOffString(settings->qeRotation));
-			LogOptionChanged(
-				"Settings UI",
-				"Rotation Sensitivity",
-				FormatSettingFloat(previousRotationSensitivity),
-				FormatSettingFloat(settings->rotationSensitivity));
-			LogOptionChanged(
-				"Settings UI",
-				"Zoom Sensitivity",
-				FormatSettingFloat(previousZoomSensitivity),
-				FormatSettingFloat(settings->zoomSensitivity));
-			LogOptionChanged(
-				"Settings UI",
-				"Panning Speed",
-				FormatSettingFloat(previousPanSensitivity),
-				FormatSettingFloat(settings->panSensitivity));
-			LogOptionChanged(
-				"Settings UI",
-				"Invert Vertical",
-				ToOnOffString(previousInvertVertical),
-				ToOnOffString(settings->invertVertical));
-			LogOptionChanged(
-				"Settings UI",
-				"Alt Release",
-				ToAltReleaseString(previousAltCameraBungie),
-				ToAltReleaseString(settings->altCameraBungie));
-			LogOptionChanged(
-				"Settings UI",
-				"Q/E Rotation Speed",
-				FormatSettingFloat(previousQERotationSpeed),
-				FormatSettingFloat(settings->qeRotationSpeed));
-			LogOptionChanged(
-				"Settings UI",
-				"Shift Pan Boost",
-				FormatSettingFloat(previousShiftPanBoost),
-				FormatSettingFloat(settings->shiftPanBoost));
-			LogOptionChanged(
-				"Settings UI",
-				"Invert Q/E",
-				ToOnOffString(previousInvertQE),
-				ToOnOffString(settings->invertQE));
-			LogOptionChanged(
-				"Settings UI",
-				"Mouse Wheel Zoom",
-				ToWheelZoomString(previousSmoothWheelZoom),
-				ToWheelZoomString(settings->smoothWheelZoom));
-			LogOptionChanged(
-				"Settings UI",
-				"Invert Wheel Zoom",
-				ToOnOffString(previousInvertWheelZoom),
-				ToOnOffString(settings->invertWheelZoom));
-			LogOptionChanged(
-				"Settings UI",
-				"Diagnostics Logging",
-				PluginSettingText::ToString(previousDebugLogging),
-				PluginSettingText::ToString(settings->debugLogging));
-			LogOptionChanged(
-				"Settings UI",
-				"Bookmarks Enabled",
-				ToOnOffString(previousBookmarksEnabled),
-				ToOnOffString(settings->bookmarksEnabled));
-			LogOptionChanged(
-				"Settings UI",
-				"News Ticker Update Notices",
-				ToOnOffString(previousNotifyUpdates),
-				ToOnOffString(settings->notifyUpdatesInTicker));
-			ApplySettingsChange("restore defaults");
 			if (manager)
 			{
-				manager->RefreshUpdateNotification();
-				manager->RefreshSettingsWindows();
-				manager->ScheduleSettingsWindowReopen();
-			}
-			if (callbacks && callbacks->OnCameraModeChanged)
-			{
-				callbacks->OnCameraModeChanged(settings->cameraMode == CameraMode::Modern);
-			}
-			if (callbacks && callbacks->OnInputSettingsChanged)
-			{
-				callbacks->OnInputSettingsChanged();
-			}
-			if (callbacks && callbacks->OnDebugLoggingChanged)
-			{
-				callbacks->OnDebugLoggingChanged();
+				manager->RestoreDefaultSettings("Settings UI");
 			}
 			return true;
-		}
 		case kSettingsResetCameraButtonID:
 			if (callbacks && callbacks->OnResetCameraRequested)
 			{
@@ -2017,11 +1942,13 @@ bool SettingsWindow::OnButtonClick(uint32_t controlID)
 		return true;
 	}
 
-	if (controlID == kSettingsViewControlsButtonID)
+	if (controlID == kSettingsViewHelpButtonID)
 	{
 		if (manager)
 		{
-			manager->ShowControlsWindow();
+			// Help opens on the page being read; its Controls tab is one click away.
+			manager->ShowControlsWindow(
+				activePage == Page::Advanced ? ControlsWindow::Page::Advanced : ControlsWindow::Page::General);
 		}
 		return true;
 	}
@@ -2072,41 +1999,16 @@ void SettingsWindow::SyncAdvancedControlsFromSettings()
 		kAdvancedInvertQEOffButtonID,
 		kAdvancedWheelSmoothButtonID,
 		kAdvancedWheelSteppedButtonID,
+		kAdvancedInvertWheelOnButtonID,
+		kAdvancedInvertWheelOffButtonID,
 	};
 	SetControlsEnabled(
 		GetRootWindow(),
 		cameraTuningIDs,
 		sizeof(cameraTuningIDs) / sizeof(cameraTuningIDs[0]),
 		modernCameraActive);
-	// SC4's stepped zoom cannot be inverted, so this choice only applies to smooth zoom.
-	const uint32_t invertWheelIDs[] = {
-		kAdvancedInvertWheelOnButtonID,
-		kAdvancedInvertWheelOffButtonID,
-	};
-	SetControlsEnabled(
-		GetRootWindow(),
-		invertWheelIDs,
-		sizeof(invertWheelIDs) / sizeof(invertWheelIDs[0]),
-		modernCameraActive && settings->smoothWheelZoom);
 
-	const uint32_t debugLoggingIDs[3] = {
-		kAdvancedDebugLoggingOffButtonID,
-		kAdvancedDebugLoggingNormalButtonID,
-		kAdvancedDebugLoggingVerboseButtonID,
-	};
-	uint32_t selectedDebugLoggingID = kAdvancedDebugLoggingNormalButtonID;
-	switch (settings->debugLogging)
-	{
-	case DebugLogging::Off:
-		selectedDebugLoggingID = kAdvancedDebugLoggingOffButtonID;
-		break;
-	case DebugLogging::Verbose:
-		selectedDebugLoggingID = kAdvancedDebugLoggingVerboseButtonID;
-		break;
-	default:
-		break;
-	}
-	ApplyButtonChoice(GetRootWindow(), selectedDebugLoggingID, debugLoggingIDs, 3);
+	ApplyBooleanPair(kAdvancedWriteLogsEnabledButtonID, kAdvancedWriteLogsDisabledButtonID, settings->writeLogs);
 	SetButtonToggle(
 		GetRootWindow(),
 		kAdvancedNoUpdateNoticesButtonID,
@@ -2131,8 +2033,7 @@ bool SettingsWindow::ApplyAdvancedOption(uint32_t controlID)
 	}
 
 	const char* reason = nullptr;
-	bool debugLoggingChanged = false;
-	const DebugLogging previousDebugLogging = settings->debugLogging;
+	bool writeLogsChanged = false;
 	switch (controlID)
 	{
 	case kAdvancedInvertQEOnButtonID:
@@ -2170,18 +2071,20 @@ bool SettingsWindow::ApplyAdvancedOption(uint32_t controlID)
 		reason = "invert wheel zoom change";
 		break;
 	}
-	case kAdvancedDebugLoggingOffButtonID:
-		settings->debugLogging = DebugLogging::Off;
-		debugLoggingChanged = true;
+	case kAdvancedWriteLogsEnabledButtonID:
+	case kAdvancedWriteLogsDisabledButtonID:
+	{
+		const bool enabled = controlID == kAdvancedWriteLogsEnabledButtonID;
+		LogOptionChanged(
+			"Advanced Settings UI",
+			"Write Logs",
+			ToEnabledString(settings->writeLogs),
+			ToEnabledString(enabled));
+		settings->writeLogs = enabled;
+		writeLogsChanged = true;
+		reason = "Write Logs change";
 		break;
-	case kAdvancedDebugLoggingNormalButtonID:
-		settings->debugLogging = DebugLogging::Normal;
-		debugLoggingChanged = true;
-		break;
-	case kAdvancedDebugLoggingVerboseButtonID:
-		settings->debugLogging = DebugLogging::Verbose;
-		debugLoggingChanged = true;
-		break;
+	}
 	case kAdvancedNoUpdateNoticesButtonID:
 		LogOptionChanged(
 			"Advanced Settings UI",
@@ -2199,15 +2102,6 @@ bool SettingsWindow::ApplyAdvancedOption(uint32_t controlID)
 		break;
 	}
 
-	if (debugLoggingChanged)
-	{
-		LogOptionChanged(
-			"Advanced Settings UI",
-			"Diagnostics Logging",
-			PluginSettingText::ToString(previousDebugLogging),
-			PluginSettingText::ToString(settings->debugLogging));
-		reason = "diagnostics logging change";
-	}
 	if (!reason)
 	{
 		return false;
@@ -2230,9 +2124,9 @@ bool SettingsWindow::ApplyAdvancedOption(uint32_t controlID)
 	{
 		manager->RefreshSettingsWindows();
 	}
-	if (debugLoggingChanged && callbacks && callbacks->OnDebugLoggingChanged)
+	if (writeLogsChanged && callbacks && callbacks->OnWriteLogsChanged)
 	{
-		callbacks->OnDebugLoggingChanged();
+		callbacks->OnWriteLogsChanged();
 	}
 	return true;
 }
@@ -2471,15 +2365,79 @@ bool GreetingWindow::OnButtonClick(uint32_t controlID)
 	return BakedManagedWindow::OnButtonClick(controlID);
 }
 
-// Configures the read-only baked reference panel for the camera controls.
+/// <summary>Configures the baked help window, which loads from the controls resource.</summary>
 ControlsWindow::ControlsWindow()
 	: BakedManagedWindow(
-		"Controls UI",
+		"Help UI",
 		kControlsWindowResourceInstance,
 		kControlsWindowCLSID,
 		kControlsCloseXButtonID,
-		kControlsOKButtonID)
+		kControlsOKButtonID),
+	activePage(Page::General)
 {
+}
+
+/// <summary>Selects a page; an open window switches to it at once.</summary>
+/// <param name="page">Page to show.</param>
+void ControlsWindow::ShowPage(Page page)
+{
+	activePage = page;
+	ApplyActivePage();
+}
+
+/// <summary>Shows the selected page once the baked resource exists.</summary>
+void ControlsWindow::OnCreated()
+{
+	ApplyActivePage();
+}
+
+/// <summary>Switches pages for a tab click and leaves the close buttons to the base class.</summary>
+/// <param name="controlID">Clicked control ID.</param>
+/// <returns>True when the click was handled.</returns>
+bool ControlsWindow::OnButtonClick(uint32_t controlID)
+{
+	switch (controlID)
+	{
+	case kHelpGeneralTabButtonID:
+		ShowPage(Page::General);
+		return true;
+	case kHelpAdvancedTabButtonID:
+		ShowPage(Page::Advanced);
+		return true;
+	case kHelpControlsTabButtonID:
+		ShowPage(Page::Controls);
+		return true;
+	default:
+		return BakedManagedWindow::OnButtonClick(controlID);
+	}
+}
+
+/// <summary>
+/// Shows the active page's text, hides the others, and selects its tab. A tab click only
+/// changes visibility, so this is safe inside the tab's own button callback.
+/// </summary>
+void ControlsWindow::ApplyActivePage()
+{
+	cIGZWin* root = GetRootWindow();
+	if (!root)
+	{
+		return;
+	}
+
+	SetControlVisible(root, kHelpGeneralTextID, activePage == Page::General);
+	SetControlVisible(root, kHelpAdvancedTextID, activePage == Page::Advanced);
+	SetControlVisible(root, kHelpControlsTextID, activePage == Page::Controls);
+	const uint32_t tabIDs[3] = { kHelpGeneralTabButtonID, kHelpAdvancedTabButtonID, kHelpControlsTabButtonID };
+	uint32_t selectedTabID = kHelpGeneralTabButtonID;
+	if (activePage == Page::Advanced)
+	{
+		selectedTabID = kHelpAdvancedTabButtonID;
+	}
+	else if (activePage == Page::Controls)
+	{
+		selectedTabID = kHelpControlsTabButtonID;
+	}
+	ApplyButtonChoice(root, selectedTabID, tabIDs, 3);
 }
 
 // Initializes an empty control laboratory with no retained native interfaces
@@ -3053,6 +3011,10 @@ void SC4WindowManager::OnDeferredWindowOpenTimer()
 
 	DeferredWindowOpen window = pendingDeferredWindowOpen;
 	pendingDeferredWindowOpen = DeferredWindowOpen::None;
+	if (driveSuspended)
+	{
+		return;
+	}
 
 	switch (window)
 	{
@@ -3261,6 +3223,10 @@ void SC4WindowManager::OnCityShutdown()
 	pendingDeferredWindowOpen = DeferredWindowOpen::None;
 	pendingSettings = nullptr;
 	updateNoticeReady = false;
+	driveSuspended = false;
+	settingsHiddenForDrive = false;
+	controlsHiddenForDrive = false;
+	greetingHiddenForDrive = false;
 	if (g_UpdateLinkManager == this)
 	{
 		g_UpdateLinkManager = nullptr;
@@ -3285,7 +3251,7 @@ bool SC4WindowManager::ShowControlLaboratory()
 // Opens the greeting window and brings its release information up to date.
 bool SC4WindowManager::ShowGreetingWindow()
 {
-	if (!greetingWindow.Create())
+	if (driveSuspended || !greetingWindow.Create())
 	{
 		return false;
 	}
@@ -3293,9 +3259,17 @@ bool SC4WindowManager::ShowGreetingWindow()
 	return true;
 }
 
-// Opens the read-only controls reference window.
-bool SC4WindowManager::ShowControlsWindow()
+/// <summary>Opens the help window on a page, or switches an open one to it.</summary>
+/// <param name="page">Page to show.</param>
+/// <returns>False while a drive suspends the windows or the resource fails to load.</returns>
+bool SC4WindowManager::ShowControlsWindow(ControlsWindow::Page page)
 {
+	if (driveSuspended)
+	{
+		return false;
+	}
+	// A window that already exists switches now; a new one applies the page when created.
+	controlsWindow.ShowPage(page);
 	return controlsWindow.Create();
 }
 
@@ -3303,6 +3277,12 @@ bool SC4WindowManager::ShowControlsWindow()
 // changes.
 bool SC4WindowManager::ShowSettingsWindow()
 {
+	if (driveSuspended)
+	{
+		Logger::GetInstance().WriteLine(LogLevel::Info, "Settings UI: not opened during a U-Drive-It drive.");
+		menuButtonWindow.SetSettingsOpen(false);
+		return false;
+	}
 	settingsWindow.SetWindowManager(this);
 	settingsWindow.SetSettings(pendingSettings);
 	settingsWindow.SetCallbacks(&callbacks);
@@ -3337,6 +3317,13 @@ void SC4WindowManager::ToggleCameraMode()
 	{
 		return;
 	}
+	if (driveSuspended)
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			"Menu Button UI: camera mode change ignored during a U-Drive-It drive.");
+		return;
+	}
 
 	const CameraMode previous = pendingSettings->cameraMode;
 	pendingSettings->cameraMode = previous == CameraMode::Modern
@@ -3359,6 +3346,183 @@ void SC4WindowManager::ToggleCameraMode()
 		callbacks.OnCameraModeChanged(pendingSettings->cameraMode == CameraMode::Modern);
 	}
 	menuButtonWindow.RefreshCursor();
+}
+
+// Applies the fresh-install settings with the same logging, refresh, and runtime
+// notifications the Restore Defaults button has always used. The settings window is
+// rebuilt only when it is open, so a cheat code never opens it.
+bool SC4WindowManager::RestoreDefaultSettings(const char* source)
+{
+	if (!pendingSettings || driveSuspended)
+	{
+		return false;
+	}
+
+	PluginSettings& settings = *pendingSettings;
+	const PluginSettings previous = settings;
+	settings.RestoreDefaults();
+	LogOptionChanged(
+		source,
+		"Camera Mode",
+		PluginSettingText::ToString(previous.cameraMode),
+		PluginSettingText::ToString(settings.cameraMode));
+	LogOptionChanged(source, "WASD Movement", ToOnOffString(previous.wasdMovement), ToOnOffString(settings.wasdMovement));
+	LogOptionChanged(source, "Q/E Rotation", ToOnOffString(previous.qeRotation), ToOnOffString(settings.qeRotation));
+	LogOptionChanged(
+		source,
+		"Rotation Sensitivity",
+		FormatSettingFloat(previous.rotationSensitivity),
+		FormatSettingFloat(settings.rotationSensitivity));
+	LogOptionChanged(
+		source,
+		"Zoom Sensitivity",
+		FormatSettingFloat(previous.zoomSensitivity),
+		FormatSettingFloat(settings.zoomSensitivity));
+	LogOptionChanged(
+		source,
+		"Panning Speed",
+		FormatSettingFloat(previous.panSensitivity),
+		FormatSettingFloat(settings.panSensitivity));
+	LogOptionChanged(
+		source,
+		"Invert Vertical",
+		ToOnOffString(previous.invertVertical),
+		ToOnOffString(settings.invertVertical));
+	LogOptionChanged(
+		source,
+		"Alt Release",
+		ToAltReleaseString(previous.altCameraBungie),
+		ToAltReleaseString(settings.altCameraBungie));
+	LogOptionChanged(
+		source,
+		"Q/E Rotation Speed",
+		FormatSettingFloat(previous.qeRotationSpeed),
+		FormatSettingFloat(settings.qeRotationSpeed));
+	LogOptionChanged(
+		source,
+		"Shift Pan Boost",
+		FormatSettingFloat(previous.shiftPanBoost),
+		FormatSettingFloat(settings.shiftPanBoost));
+	LogOptionChanged(source, "Invert Q/E", ToOnOffString(previous.invertQE), ToOnOffString(settings.invertQE));
+	LogOptionChanged(
+		source,
+		"Mouse Wheel Zoom",
+		ToWheelZoomString(previous.smoothWheelZoom),
+		ToWheelZoomString(settings.smoothWheelZoom));
+	LogOptionChanged(
+		source,
+		"Invert Wheel Zoom",
+		ToOnOffString(previous.invertWheelZoom),
+		ToOnOffString(settings.invertWheelZoom));
+	LogOptionChanged(source, "Write Logs", ToEnabledString(previous.writeLogs), ToEnabledString(settings.writeLogs));
+	LogOptionChanged(
+		source,
+		"Bookmarks Enabled",
+		ToOnOffString(previous.bookmarksEnabled),
+		ToOnOffString(settings.bookmarksEnabled));
+	LogOptionChanged(
+		source,
+		"News Ticker Update Notices",
+		ToOnOffString(previous.notifyUpdatesInTicker),
+		ToOnOffString(settings.notifyUpdatesInTicker));
+
+	// A slider save still waiting on its timer is written now, then replaced by the defaults.
+	settingsWindow.OnDelayedSettingsSaveTimer();
+	if (!settings.Save())
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Warning,
+			std::string(source ? source : "Settings UI") + ": failed to save settings after restore defaults.");
+	}
+	else
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string(source ? source : "Settings UI") + ": saved settings after restore defaults.");
+	}
+
+	RefreshUpdateNotification();
+	RefreshSettingsWindows();
+	if (settingsWindow.IsVisible())
+	{
+		ScheduleSettingsWindowReopen();
+	}
+	if (callbacks.OnCameraModeChanged)
+	{
+		callbacks.OnCameraModeChanged(settings.cameraMode == CameraMode::Modern);
+	}
+	if (callbacks.OnInputSettingsChanged)
+	{
+		callbacks.OnInputSettingsChanged();
+	}
+	if (callbacks.OnWriteLogsChanged)
+	{
+		callbacks.OnWriteLogsChanged();
+	}
+	return true;
+}
+
+// Hides each open window without closing it, so its page and pending state survive the drive.
+bool SC4WindowManager::SuspendForDrive()
+{
+	if (driveSuspended)
+	{
+		return false;
+	}
+
+	driveSuspended = true;
+	settingsHiddenForDrive = settingsWindow.IsVisible();
+	controlsHiddenForDrive = controlsWindow.IsVisible();
+	greetingHiddenForDrive = greetingWindow.IsVisible();
+	settingsWindow.SetVisible(false);
+	controlsWindow.SetVisible(false);
+	greetingWindow.SetVisible(false);
+	CancelTimer(deferredWindowOpenTimerID);
+	if (g_DelayedWindowOpenManager == this)
+	{
+		g_DelayedWindowOpenManager = nullptr;
+	}
+	pendingDeferredWindowOpen = DeferredWindowOpen::None;
+
+	const bool hidden = settingsHiddenForDrive || controlsHiddenForDrive || greetingHiddenForDrive;
+	if (hidden)
+	{
+		Logger::GetInstance().WriteLine(
+			LogLevel::Info,
+			std::string("Window Manager: hid open windows for the drive. Settings:")
+			+ (settingsHiddenForDrive ? "true" : "false")
+			+ " Controls:" + (controlsHiddenForDrive ? "true" : "false")
+			+ " Changelog:" + (greetingHiddenForDrive ? "true" : "false"));
+	}
+	return hidden;
+}
+
+// Shows the windows the drive hid, in the order they normally stack.
+void SC4WindowManager::ResumeAfterDrive()
+{
+	if (!driveSuspended)
+	{
+		return;
+	}
+
+	driveSuspended = false;
+	if (settingsHiddenForDrive)
+	{
+		settingsWindow.SetVisible(true);
+		settingsWindow.RefreshFromSettings();
+		menuButtonWindow.SetSettingsOpen(true);
+	}
+	if (controlsHiddenForDrive)
+	{
+		controlsWindow.SetVisible(true);
+	}
+	if (greetingHiddenForDrive)
+	{
+		greetingWindow.SetVisible(true);
+	}
+	settingsHiddenForDrive = false;
+	controlsHiddenForDrive = false;
+	greetingHiddenForDrive = false;
 }
 
 // Shows or hides the compact camera-settings menu button.

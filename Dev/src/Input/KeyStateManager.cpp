@@ -128,6 +128,26 @@ void KeyStateManager::Clear()
 	}
 }
 
+// Clears each tracked mouse button that the move reports as up; a move never records a press.
+void KeyStateManager::ObserveMouseMoveButtons(WPARAM mouseKeyFlags)
+{
+	struct ButtonFlag
+	{
+		WPARAM key;
+		WPARAM flag;
+	};
+	static constexpr ButtonFlag kButtons[] = {
+		{ VK_LBUTTON, MK_LBUTTON },
+		{ VK_RBUTTON, MK_RBUTTON },
+		{ VK_MBUTTON, MK_MBUTTON },
+	};
+	for (const ButtonFlag& button : kButtons) {
+		if ((mouseKeyFlags & button.flag) == 0) {
+			mKeyStates[button.key].down = false;
+		}
+	}
+}
+
 // Returns whether an owned key in the supplied group is still held.
 bool KeyStateManager::AnyDownOwnedBy(const WPARAM* keys, size_t count, KeyOwner owner) const
 {

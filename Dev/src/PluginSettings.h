@@ -11,22 +11,10 @@ enum class CameraMode
     Classic
 };
 
-enum class DebugLogging
-{
-    // Disables all plugin log output after startup.
-    Off,
-    // Records lifecycle events, settings changes, and warnings.
-    Normal,
-    // Includes input and camera diagnostics intended for troubleshooting.
-    Verbose
-};
-
 namespace PluginSettingText
 {
     // Returns the persisted label for a camera mode.
     const char* ToString(CameraMode value);
-    // Returns the persisted label for a diagnostics logging level.
-    const char* ToString(DebugLogging value);
 }
 
 // Loads, validates, and saves user-configurable plugin settings.
@@ -85,8 +73,9 @@ public:
     bool smoothWheelZoom;
     // Reverses the direction of wheel zoom handled by this plugin.
     bool invertWheelZoom;
-    // Controls the amount of diagnostic log output.
-    DebugLogging debugLogging;
+    // Writes every diagnostic record, including input traces, when true; writes nothing after
+    // startup when false, the default.
+    bool writeLogs;
 	// Enables Modern-mode numbered bookmark hotkeys.
 	bool bookmarksEnabled;
 	// Announces a newer GitHub release in the news ticker.

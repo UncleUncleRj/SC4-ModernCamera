@@ -66,6 +66,7 @@ Dev/ui/SC4-ModernCamera.dat
 # plus the README and licenses.
 /*.md
 !/README.md
+!/RESKINNING.md
 /docs/
 /theme-sdk/
 /tools/build_sc4_ui_theme.py

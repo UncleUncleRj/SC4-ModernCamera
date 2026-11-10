@@ -89,4 +89,6 @@ private:
 	bool initialized = false;
 	bool loaded = false;
 	bool stopping = false;
+	// Set when an unreadable file could not be copied aside, so no save may replace it.
+	bool writesBlocked = false;
 };
