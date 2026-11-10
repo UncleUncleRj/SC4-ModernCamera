@@ -9,7 +9,7 @@ A DLL plugin that gives SimCity 4 Deluxe Edition a modern, mouse-controlled city
 <a href="https://ko-fi.com/V6N721RG6K"><strong>Support Development!</strong></a>
 <br clear="left">
 <p><br></p>
-Visit the <a href="https://http://simcity4-dev.neocities.org/"><strong>SC4 Engine Atlas</strong></a>!
+Visit the <a href="https://simcity4-dev.neocities.org/"><strong>SC4 Engine Atlas</strong></a>!
 
 ## Requirements
 
