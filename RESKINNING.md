@@ -14,8 +14,9 @@ The mod's own look always stays installed. If part of your theme is broken, only
 ## What you need
 
 - **Python 3.10 or newer.** On Windows, `py -3` runs it.
-- **The source code of the release you're theming.** Clone the repository at that release's tag, or download *Source code (zip)* from the release page. The theme tool exports its starting files from this source, so the version needs to match the one your players run.
-- **The theme tool, `build_sc4_ui_theme.py`.** Download it from the [latest release](https://github.com/UncleUncleRj/SC4-ModernCamera/releases/latest) on GitHub. Put it in the source code's `tools` folder, next to `build_sc4_ui_dat.py`, because it needs that file to run.
+- **The source code of the release you're theming.** Download *Source code (zip)* from that release's page, or clone the repository at the release's tag. The theme tool, `tools/build_sc4_ui_theme.py`, comes with it. The tool exports its starting files from this source, so the version needs to match the one your players run.
+
+Version 2.0.0's release source doesn't include the theme tool. Until the next release, download the source from the repository page with *Code › Download ZIP* instead.
 
 ## Quick start
 
@@ -215,7 +216,7 @@ Within version 2 of the theme format, the controls your theme already has keep t
 
 After each mod release:
 
-1. Get that release's source code, and the theme tool from the same release.
+1. Get that release's source code, which includes the theme tool.
 2. Export a fresh template.
 3. Compare the new `ui/*.txt` files with yours and carry your changes over.
 

@@ -69,7 +69,6 @@ Dev/ui/SC4-ModernCamera.dat
 !/RESKINNING.md
 /docs/
 /theme-sdk/
-/tools/build_sc4_ui_theme.py
 /tools/test_*
 /Dev/ui/camglyphs2-0.png
 /Dev/ui/menu_glyphs.af
