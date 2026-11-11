@@ -21,6 +21,10 @@ CONTRACT_MAJOR = 2
 # The plugin follows this same redirect to find the newest release.
 LATEST_RELEASE_URL = "https://github.com/UncleUncleRj/SC4-ModernCamera/releases/latest"
 RELEASE_CHECK_TIMEOUT_SECONDS = 5
+RELEASE_CHECK_FAILED_MESSAGE = (
+    "Could not check the latest plugin version. Make sure you're making a theme "
+    "for the correct version of the plugin!"
+)
 SCRIPT_RESOURCES = {
     "greeting.txt": (base.GREETING_INSTANCE_ID, 0x3D0C0706),
     "controls.txt": (base.CONTROLS_INSTANCE_ID, 0x3D0C0708),
@@ -357,22 +361,18 @@ def check_for_newer_release() -> None:
     try:
         source_version = base.read_plugin_version(version_header)
     except (OSError, RuntimeError):
-        print(
-            "Note: couldn't read this source code's version, so the check for a newer "
-            "release was skipped.",
-            file=sys.stderr,
-        )
+        print(RELEASE_CHECK_FAILED_MESSAGE, file=sys.stderr)
         return
+    failed_message = f"{RELEASE_CHECK_FAILED_MESSAGE}\nThis source code is version {source_version}."
     try:
         latest_version = fetch_latest_release_version(
             f"SC4-ModernCamera-theme-tool/{source_version}"
         )
-    except (OSError, http.client.HTTPException) as error:
-        reason = getattr(error, "reason", error)
-        print(f"Note: couldn't check GitHub for a newer release ({reason}).", file=sys.stderr)
+    except (OSError, http.client.HTTPException):
+        print(failed_message, file=sys.stderr)
         return
     if latest_version is None:
-        print("Note: couldn't read the latest release's version from GitHub.", file=sys.stderr)
+        print(failed_message, file=sys.stderr)
         return
     warning = newer_release_warning(source_version, latest_version)
     if warning:
