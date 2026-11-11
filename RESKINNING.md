@@ -214,6 +214,8 @@ Set Write Logs back to Disabled when you're done.
 
 Within version 2 of the theme format, the controls your theme already has keep their IDs. A new version of the mod can still add required controls, though. If it does, the affected window uses the built-in look until you update your theme.
 
+Each time the theme tool runs, it asks GitHub for the latest release. If that release is newer than your source code, the tool warns you, then finishes the command anyway. Without an internet connection, it says it couldn't check.
+
 After each mod release:
 
 1. Get that release's source code, which includes the theme tool.

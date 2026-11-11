@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 import shutil
 import struct
+import sys
+import urllib.request
 from pathlib import Path
 
 import build_sc4_ui_dat as base
@@ -15,6 +18,9 @@ import build_sc4_ui_dat as base
 
 CONTRACT_VERSION = "2.0"
 CONTRACT_MAJOR = 2
+# The plugin follows this same redirect to find the newest release.
+LATEST_RELEASE_URL = "https://github.com/UncleUncleRj/SC4-ModernCamera/releases/latest"
+RELEASE_CHECK_TIMEOUT_SECONDS = 5
 SCRIPT_RESOURCES = {
     "greeting.txt": (base.GREETING_INSTANCE_ID, 0x3D0C0706),
     "controls.txt": (base.CONTROLS_INSTANCE_ID, 0x3D0C0708),
@@ -277,6 +283,102 @@ def export_template(destination: Path, group: int) -> None:
     print(f"Exported theme template to {destination}")
 
 
+def release_version_from_url(url: str) -> str | None:
+    """Reads the version from a release URL such as ".../releases/tag/v2.0.0".
+
+    Mirrors the plugin's ExtractReleaseVersion. Returns None for a tag that
+    isn't made of digits and dots.
+    """
+    marker = "/releases/tag/"
+    position = url.rfind(marker)
+    if position < 0:
+        return None
+    tag = url[position + len(marker):]
+    if tag[:1] in ("v", "V"):
+        tag = tag[1:]
+    if not re.fullmatch(r"\d+(?:\.\d+)*", tag):
+        return None
+    return tag
+
+
+def is_newer_version(candidate: str, current: str) -> bool:
+    """Returns whether dotted version candidate is newer than current.
+
+    Mirrors the plugin's IsNewerVersion: each component is compared by its
+    leading digits, and a missing component counts as zero.
+    """
+    def components(version: str) -> list[int]:
+        return [int(re.match(r"\d*", part).group() or 0) for part in version.split(".")]
+
+    candidate_parts = components(candidate)
+    current_parts = components(current)
+    length = max(len(candidate_parts), len(current_parts))
+    candidate_parts += [0] * (length - len(candidate_parts))
+    current_parts += [0] * (length - len(current_parts))
+    return candidate_parts > current_parts
+
+
+def newer_release_warning(source_version: str, latest_version: str) -> str | None:
+    """Returns the warning for source code older than the latest release, or None."""
+    if not is_newer_version(latest_version, source_version):
+        return None
+    return (
+        f"Warning: this source code is version {source_version}, but {latest_version} "
+        "has been released.\n"
+        f"Download the {latest_version} source code and follow \"When the mod updates\" "
+        "in RESKINNING.md.\n"
+        f"Otherwise, windows that changed in {latest_version} may show the built-in look "
+        "instead of your theme."
+    )
+
+
+def fetch_latest_release_version(user_agent: str) -> str | None:
+    """Asks GitHub for the newest release's version.
+
+    Returns None when the release tag isn't a plain dotted version. Raises
+    OSError or http.client.HTTPException when GitHub can't be reached.
+    """
+    request = urllib.request.Request(
+        LATEST_RELEASE_URL,
+        method="HEAD",
+        headers={"User-Agent": user_agent},
+    )
+    with urllib.request.urlopen(request, timeout=RELEASE_CHECK_TIMEOUT_SECONDS) as response:
+        return release_version_from_url(response.geturl())
+
+
+def check_for_newer_release() -> None:
+    """Warns on stderr when GitHub has a newer release than this source code.
+
+    The check only advises. When it can't run, it says so and the command
+    continues, so themes can still be built offline.
+    """
+    version_header = Path(__file__).resolve().parents[1] / "Dev" / "src" / "PluginVersion.h"
+    try:
+        source_version = base.read_plugin_version(version_header)
+    except (OSError, RuntimeError):
+        print(
+            "Note: couldn't read this source code's version, so the check for a newer "
+            "release was skipped.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        latest_version = fetch_latest_release_version(
+            f"SC4-ModernCamera-theme-tool/{source_version}"
+        )
+    except (OSError, http.client.HTTPException) as error:
+        reason = getattr(error, "reason", error)
+        print(f"Note: couldn't check GitHub for a newer release ({reason}).", file=sys.stderr)
+        return
+    if latest_version is None:
+        print("Note: couldn't read the latest release's version from GitHub.", file=sys.stderr)
+        return
+    warning = newer_release_warning(source_version, latest_version)
+    if warning:
+        print(warning, file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -289,6 +391,7 @@ def main() -> None:
     build_parser.add_argument("theme_dir", type=Path)
     build_parser.add_argument("destination", type=Path)
     args = parser.parse_args()
+    check_for_newer_release()
     if args.command == "export-template":
         export_template(args.destination, args.group)
     elif args.command == "validate":
