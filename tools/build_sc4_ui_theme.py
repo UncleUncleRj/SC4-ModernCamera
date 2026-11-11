@@ -18,6 +18,10 @@ import build_sc4_ui_dat as base
 
 CONTRACT_VERSION = "2.0"
 CONTRACT_MAJOR = 2
+# The kit's top folder, which holds tools/ and Dev/.
+KIT_ROOT = Path(__file__).resolve().parents[1]
+# A theme DAT with this name would replace the mod's own DAT when installed.
+PLUGIN_DAT_NAME = "SC4-ModernCamera.dat"
 # The plugin follows this same redirect to find the newest release.
 LATEST_RELEASE_URL = "https://github.com/UncleUncleRj/SC4-ModernCamera/releases/latest"
 RELEASE_CHECK_TIMEOUT_SECONDS = 5
@@ -212,7 +216,20 @@ def write_dbpf(resources: list[tuple[int, int, int, bytes]], destination: Path) 
     destination.write_bytes(header + payload + b"".join(index_entries))
 
 
-def build(theme_dir: Path, destination: Path) -> None:
+def build(theme_dir: Path, destination: Path | None = None) -> None:
+    """Builds a theme's DAT and makes sure its theme.json sits beside it.
+
+    Without a destination, the DAT is named after the theme folder and goes
+    inside it, next to the theme's own theme.json, so the two files players
+    need end up together. A DAT built elsewhere gets a copy of theme.json.
+    """
+    if destination is None:
+        destination = theme_dir / f"{theme_dir.resolve().name}.dat"
+    if destination.name.lower() == PLUGIN_DAT_NAME.lower():
+        raise ValueError(
+            f"a theme DAT can't be named {PLUGIN_DAT_NAME}, because installing it would "
+            "replace the mod's own DAT. Rename your theme folder."
+        )
     manifest, group = validate(theme_dir)
     resources: list[tuple[int, int, int, bytes]] = []
     group_text = f"{group:08x}"
@@ -250,12 +267,15 @@ def build(theme_dir: Path, destination: Path) -> None:
         f"Built theme {manifest['name']!r} ({manifest['contractVersion']}) "
         f"at {destination} with resource group 0x{group:08X}"
     )
+    manifest_copy = destination.parent / "theme.json"
+    if (theme_dir / "theme.json").resolve() != manifest_copy.resolve():
+        shutil.copyfile(theme_dir / "theme.json", manifest_copy)
+        print(f"Copied theme.json beside it to {manifest_copy}")
 
 
 def export_template(destination: Path, group: int) -> None:
-    repo = Path(__file__).resolve().parents[1]
-    ui_source = repo / "Dev" / "ui" / "SC4-ModernCamera-ControlLaboratory.txt"
-    version_header = repo / "Dev" / "src" / "PluginVersion.h"
+    ui_source = KIT_ROOT / "Dev" / "ui" / "SC4-ModernCamera-ControlLaboratory.txt"
+    version_header = KIT_ROOT / "Dev" / "src" / "PluginVersion.h"
     scripts = {
         "greeting.txt": base.build_greeting_script(version_header),
         "controls.txt": base.build_controls_script(),
@@ -323,13 +343,14 @@ def is_newer_version(candidate: str, current: str) -> bool:
 
 
 def newer_release_warning(source_version: str, latest_version: str) -> str | None:
-    """Returns the warning for source code older than the latest release, or None."""
+    """Returns the warning for a theme kit older than the latest release, or None."""
     if not is_newer_version(latest_version, source_version):
         return None
+    kit_name = f"theme-kit_{latest_version.replace('.', '_')}.zip"
     return (
-        f"Warning: this source code is version {source_version}, but {latest_version} "
+        f"Warning: this theme kit is for version {source_version}, but {latest_version} "
         "has been released.\n"
-        f"Download the {latest_version} source code and follow \"When the mod updates\" "
+        f"Download {kit_name} from the latest release and follow \"When the mod updates\" "
         "in RESKINNING.md.\n"
         f"Otherwise, windows that changed in {latest_version} may show the built-in look "
         "instead of your theme."
@@ -352,18 +373,18 @@ def fetch_latest_release_version(user_agent: str) -> str | None:
 
 
 def check_for_newer_release() -> None:
-    """Warns on stderr when GitHub has a newer release than this source code.
+    """Warns on stderr when GitHub has a newer release than this theme kit.
 
     The check only advises. When it can't run, it says so and the command
     continues, so themes can still be built offline.
     """
-    version_header = Path(__file__).resolve().parents[1] / "Dev" / "src" / "PluginVersion.h"
+    version_header = KIT_ROOT / "Dev" / "src" / "PluginVersion.h"
     try:
         source_version = base.read_plugin_version(version_header)
     except (OSError, RuntimeError):
         print(RELEASE_CHECK_FAILED_MESSAGE, file=sys.stderr)
         return
-    failed_message = f"{RELEASE_CHECK_FAILED_MESSAGE}\nThis source code is version {source_version}."
+    failed_message = f"{RELEASE_CHECK_FAILED_MESSAGE}\nThis theme kit is for version {source_version}."
     try:
         latest_version = fetch_latest_release_version(
             f"SC4-ModernCamera-theme-tool/{source_version}"
@@ -389,7 +410,7 @@ def main() -> None:
     validate_parser.add_argument("theme_dir", type=Path)
     build_parser = subparsers.add_parser("build")
     build_parser.add_argument("theme_dir", type=Path)
-    build_parser.add_argument("destination", type=Path)
+    build_parser.add_argument("destination", type=Path, nargs="?")
     args = parser.parse_args()
     check_for_newer_release()
     if args.command == "export-template":
